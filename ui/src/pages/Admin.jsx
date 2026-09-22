@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { IxKpi, IxInput, IxButton, IxEmptyState } from "@siemens/ix-react";
+import { iconLock } from "@siemens/ix-icons/icons";
 import { api } from "../api.js";
 import ErrorBox from "../components/ErrorBox.jsx";
 import { Loading } from "../components/widgets.jsx";
@@ -17,12 +19,6 @@ import { Loading } from "../components/widgets.jsx";
  */
 function pct(x) {
   return `${Math.round((x || 0) * 100)}%`;
-}
-
-function Stat({ value, label }) {
-  return (
-    <div className="stat"><span className="v">{value}</span><span className="k">{label}</span></div>
-  );
 }
 
 /**
@@ -121,25 +117,24 @@ function Administrators({ data, onChange }) {
         </table>
       )}
 
-      <form onSubmit={submit} style={{ display: "flex", gap: 6, marginTop: 10 }}>
-        {/* Visible label, not a placeholder: the placeholder disappears on focus, and this
-            field is one where getting the exact string right is the whole difficulty. */}
-        <label htmlFor="admin-grant-upn" className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-          Sign-in name
-        </label>
-        <input
-          id="admin-grant-upn"
-          className="input"
-          type="email"
-          placeholder="name@siemens.com"
-          value={upn}
-          disabled={busy}
-          onChange={(e) => setUpn(e.target.value)}
-          style={{ flex: 1, maxWidth: 320 }}
-        />
-        <button type="submit" className="btn" disabled={busy || !upn.trim()}>
+      <form onSubmit={submit} style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "flex-end" }}>
+        <div style={{ flex: 1, maxWidth: 320 }}>
+          {/* IxInput's own `label` prop replaces the separate <label htmlFor> — same reasoning
+              as before (a placeholder disappears on focus, and getting this string exactly right
+              is the whole difficulty), it's just IxInput's built-in mechanism for it now. */}
+          <IxInput
+            id="admin-grant-upn"
+            label="Sign-in name"
+            type="email"
+            placeholder="name@siemens.com"
+            value={upn}
+            disabled={busy}
+            onValueChange={(e) => setUpn(e.detail ?? e.target?.value ?? "")}
+          />
+        </div>
+        <IxButton type="submit" disabled={busy || !upn.trim()}>
           {busy ? "Working…" : "Grant access"}
-        </button>
+        </IxButton>
       </form>
       <p className="muted" style={{ fontSize: 11.5, marginTop: 6, marginBottom: 0 }}>
         Use the person&apos;s full Microsoft sign-in name. It must match exactly — they can read
@@ -199,14 +194,13 @@ export default function Admin() {
       <div>
         <div className="crumb">Workspace &gt; Admin</div>
         <div className="page-head"><h1 className="page-title">Admin</h1></div>
-        <div className="empty">
-          <h4>Administrator access required</h4>
-          <p>
-            This page shows activity across every reviewer, so it is limited to
-            administrators. Ask one of them to grant your sign-in name access from this page.
-          </p>
-          <button className="btn secondary" onClick={() => nav("/")}>Back to Home</button>
-        </div>
+        <IxEmptyState
+          header="Administrator access required"
+          subHeader="This page shows activity across every reviewer, so it is limited to administrators. Ask one of them to grant your sign-in name access from this page."
+          icon={iconLock}
+          action="Back to Home"
+          onActionClick={() => nav("/")}
+        />
       </div>
     );
   }
@@ -229,31 +223,39 @@ export default function Admin() {
       {overview && (
         <>
           <div className="stats-strip">
-            <Stat value={overview.users.total} label="Reviewers" />
-            <Stat value={overview.sessions.total} label="Sign-ins" />
-            <Stat value={overview.searches.total} label="Searches" />
-            <Stat value={overview.companies.searched} label="Companies searched" />
-            <Stat value={overview.companies.evaluated} label="Companies evaluated" />
-            <Stat value={pct(overview.cache_hit_rate)} label="Served from database" />
+            {/* Three sign-in numbers, adjacent because each is meaningless without the others:
+                how many people have ever signed in, how many times in total, and how many of
+                those people came back inside the window. Adoption is the third one. */}
+            <IxKpi value={overview.users.total} label="Reviewers" />
+            <IxKpi value={overview.sessions.total} label="Sign-ins" />
+            <IxKpi value={overview.users.recent} label={`Signed in (${overview.window_days}d)`} />
+            <IxKpi value={overview.searches.total} label="Searches" />
+            <IxKpi value={overview.companies.searched} label="Companies searched" />
+            <IxKpi value={overview.companies.evaluated} label="Companies evaluated" />
+            <IxKpi value={pct(overview.cache_hit_rate)} label="Served from database" />
           </div>
 
           <div className="grid2">
             <div className="panel">
               <h3>Reviewers</h3>
               {overview.per_user.length === 0 ? (
-                <p className="muted" style={{ fontSize: 12 }}>Nobody has searched yet.</p>
+                <p className="muted" style={{ fontSize: 12 }}>Nobody has signed in yet.</p>
               ) : (
                 <table className="dtable dense">
                   <thead>
-                    <tr><th>Reviewer</th><th>Searches</th><th>Companies</th><th>Last active</th></tr>
+                    <tr><th>Reviewer</th><th>Sign-ins</th><th>Searches</th><th>Companies</th>
+                      <th>Last sign-in</th></tr>
                   </thead>
                   <tbody>
                     {overview.per_user.map((u) => (
                       <tr key={u.oid} style={{ cursor: "default" }}>
                         <td>{u.upn || u.oid}</td>
-                        <td>{u.searches}</td>
-                        <td>{u.companies}</td>
-                        <td>{(u.last_seen || "").slice(0, 16).replace("T", " ")}</td>
+                        <td>{u.sign_ins || 0}</td>
+                        {/* Someone who signed in and never searched is a real row now, so the
+                            search columns need an empty state rather than a misleading 0. */}
+                        <td>{u.searches || "—"}</td>
+                        <td>{u.companies || "—"}</td>
+                        <td>{(u.last_sign_in || "").slice(0, 16).replace("T", " ") || "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -270,7 +272,15 @@ export default function Admin() {
                   <thead><tr><th>Company</th><th>Searches</th></tr></thead>
                   <tbody>
                     {overview.top_companies.map((c) => (
-                      <tr key={c.company} onClick={() => nav(`/startup/new?name=${encodeURIComponent(c.company)}`)}>
+                      // tabIndex + onKeyDown: a plain <tr onClick> has no keyboard path (UI-12).
+                      <tr key={c.company} tabIndex={0}
+                        onClick={() => nav(`/startup/new?name=${encodeURIComponent(c.company)}`)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            nav(`/startup/new?name=${encodeURIComponent(c.company)}`);
+                          }
+                        }}>
                         <td>{c.company}</td>
                         <td>{c.searches}</td>
                       </tr>
@@ -293,7 +303,10 @@ export default function Admin() {
                   </thead>
                   <tbody>
                     {companies.map((r) => (
-                      <tr key={r.id} onClick={() => nav(`/startup/${r.id}`)}>
+                      <tr key={r.id} tabIndex={0} onClick={() => nav(`/startup/${r.id}`)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); nav(`/startup/${r.id}`); }
+                        }}>
                         <td>{r.company}</td>
                         <td>{r.pillar}</td>
                         <td>{r.final_score == null ? "—" : Math.round(r.final_score)}</td>

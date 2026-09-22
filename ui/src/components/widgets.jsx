@@ -1,5 +1,5 @@
 import React from "react";
-import { IxPill, IxSpinner } from "@siemens/ix-react";
+import { IxKeyValue, IxPill, IxSpinner } from "@siemens/ix-react";
 import { DIMENSIONS, DIMENSION_LABELS } from "../scoring/index.js";
 
 // MIG-01: the four pillar colours themselves are unchanged (see tokens.css) — only the delivery
@@ -23,13 +23,18 @@ export function PillarPill({ pillar, ghost = false, children, ...rest }) {
   );
 }
 
+// MIG-29: both the primary pillar and each `secondary` pillar carried a `.pill.<Pillar>` class
+// (the secondary span's class list was `pill ghost <Pillar>`, which the CSS selector matches
+// regardless of the extra `ghost` class) — so both go through PillarPill now, and PillarPill's own
+// `ghost` prop (an outline treatment, see the component above) is what the secondary pillars use
+// in place of the old bespoke `.pill.ghost` rule.
 export function PillarPills({ routing }) {
   if (!routing) return null;
   return (
     <span>
-      <span className={`pill ${routing.pillar}`}>{routing.pillar}</span>{" "}
+      <PillarPill pillar={routing.pillar} />{" "}
       {(routing.secondary || []).map((s) => (
-        <span key={s} className={`pill ghost ${s}`}>+ {s}</span>
+        <span key={s}>+ <PillarPill pillar={s} ghost /></span>
       ))}{" "}
       {routing.sfs_relevant && (
         <span className="pill sfs" title={routing.sfs_rationale || ""}>💶 SFS financing</span>
@@ -111,20 +116,45 @@ export function Radar({ dimensions, overlay = null, overlayLabel = "", size = 26
   );
 }
 
+// MIG-20: IxKeyValue's `value` prop only takes a string (components.md), but Spec's callers pass
+// arbitrary JSX — links, chips, muted placeholders. Its compiled source (key-value.js) renders
+// the `custom-value` slot whenever `value` is left undefined, which is the only way to hand it a
+// React node rather than text, so `value` itself is never set here.
 export function Spec({ k, children }) {
   return (
-    <div className="spec">
-      <div className="k">{k}</div>
-      <div className="v">{children || <span className="muted">—</span>}</div>
-    </div>
+    <IxKeyValue label={k}>
+      <div slot="custom-value">{children || <span className="muted">—</span>}</div>
+    </IxKeyValue>
   );
 }
 
+/* A stored value without a scheme is still a link.
+   `core/data.py::web_profile_row` derives the website from a search result and can store a bare
+   host ("bliro.io"). Every such profile rendered the Website row EMPTY — the value was there the
+   whole time, and a strict `^https?://` test dropped it on the floor. Upgrading here is what
+   rescues the runs already in the database; the engine normalises new ones at the source.
+
+   The bar is deliberately narrow, because `source_url` legitimately carries non-URL labels:
+   "GlassDollar" for a database fact, a filename for a pitch deck. Prefixing those would
+   manufacture a link to a host that does not exist, which is worse than showing plain text. */
+const _BARE_DOMAIN = /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(\/\S*)?$/i;
+const _FILE_EXT = /\.(pdf|docx?|xlsx?|pptx?|csv|txt|zip|png|jpe?g|gif|svg)$/i;
+
+export function toHref(value) {
+  const s = String(value || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  // Any other scheme (mailto:, javascript:, data:) is never turned into an external link.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return "";
+  return _BARE_DOMAIN.test(s) && !_FILE_EXT.test(s) ? `https://${s}` : "";
+}
+
 export function ExtLink({ href, children }) {
-  if (!href || !/^https?:\/\//i.test(String(href))) return children || null;
+  const url = toHref(href);
+  if (!url) return children || null;
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer">
-      {children || String(href).replace(/^https?:\/\//, "")}
+    <a href={url} target="_blank" rel="noopener noreferrer">
+      {children || String(href).replace(/^https?:\/\//i, "")}
     </a>
   );
 }

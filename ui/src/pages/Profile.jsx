@@ -1,19 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api } from "../api.js";
+import { useResearch } from "../research.jsx";
+import { api, evaluateStream } from "../api.js";
 import { useApp } from "../state.jsx";
-import { ScoreBar, Radar, Spec, ExtLink, PillarPill } from "../components/widgets.jsx";
 import ErrorBox from "../components/ErrorBox.jsx";
-import WhatIfWeights from "../components/WhatIfWeights.jsx";
-import { contributionProfile, DEFAULT_WEIGHTS, DIMENSIONS, DIMENSION_LABELS } from "../scoring/index.js";
-
-const STEPS = ["Input", "Enrich", "Verify", "Structure", "Score", "Review", "Route"];
-const TABS = ["Overview", "Scoring & Fit", "Market & Risk", "Evidence", "Ask"];
-// Derived, not written out: these percentages used to be literals, which quietly became a claim
-// the code could contradict. They are the engine's weights and say so.
-const DIM_META = Object.fromEntries(
-  DIMENSIONS.map((k) => [k, `${DIMENSION_LABELS[k]} (${Math.round(DEFAULT_WEIGHTS[k])}%)`]),
-);
+import ProfileLayout from "./profile/ProfileLayout.jsx";
+import OverviewTab from "./profile/OverviewTab.jsx";
+import ScoringTab from "./profile/scoring/ScoringTab.jsx";
+import MarketTab from "./profile/MarketTab.jsx";
+import EvidenceTab from "./profile/EvidenceTab.jsx";
+import { DEFAULT_VIEW } from "./profile/sections.js";
 
 function SkeletonProfile({ name }) {
   return (
@@ -31,457 +27,16 @@ function SkeletonProfile({ name }) {
   );
 }
 
-/* ---------------- tab bodies ---------------- */
-/* A value the DB did not have, filled in from web research. Marked so it is never mistaken
-   for application data — the source link is the evidence for it.
-   `field` names which metric this badge sources (e.g. "employees"), so that when several of
-   these sit in the same row a screen reader hears which figure each one backs, not just "web"
-   repeated (UI-01). The visible text stays "web" — this is a dense data canvas and the label
-   isn't meant to grow — but WCAG 2.5.3 requires the accessible name to still start with the
-   visible word, so speech-input users saying "click web" keep matching. */
-function WebSourced({ src, field }) {
-  if (!src) return null;
-  const title = src.url ? `Web-sourced: ${src.url}` : "Web-sourced (no direct link captured)";
-  const label = field ? `web — ${field} source` : "web";
-  // The no-URL span is inert (no href to follow, nothing to activate), so it gets no role or
-  // tabstop — giving it an aria-label would announce a "control" that does nothing. Its visible
-  // "web" text plus the title tooltip is all the non-interactive case needs.
-  return src.url
-    ? <a className="chip" href={src.url} target="_blank" rel="noreferrer" title={title} aria-label={label}>web</a>
-    : <span className="chip" title={title}>web</span>;
-}
-
-// PROF-12. `deep_profile.employees_over_time` is either [] or >=2 cited points, sorted
-// ascending by year (core/profile.py's _clean_employee_series refuses a single-dot series, and
-// every point is guaranteed an http(s) source_url). A length-1 array is a contract violation
-// upstream, not something this component needs to guard against — but it still only renders the
-// list when there's enough to call a trend, matching the engine's own bar.
-function HeadcountTrend({ points }) {
-  const pts = points || [];
+/* A branch of the pipeline that has not finished yet.
+   Deliberately distinct from every view's own empty state: "no competitors found" and "we have
+   not looked yet" are opposite readings, and while an evaluation streams the second one is true. */
+function StillRunning({ what }) {
   return (
     <div className="panel">
-      <h3>Headcount trend</h3>
-      {pts.length >= 2 ? (
-        <>
-          <p style={{ marginTop: 0 }}>
-            <strong>{pts[0].count}</strong> → <strong>{pts[pts.length - 1].count}</strong> employees
-            <span className="muted"> ({pts[0].year}–{pts[pts.length - 1].year})</span>
-          </p>
-          {pts.map((pt, i) => (
-            <div key={i} className="list-row" style={{ padding: "5px 0", fontSize: 12.5 }}>
-              <div className="list-main">{pt.year} · {pt.count} employees</div>
-              <ExtLink href={pt.source_url}>{`source (${pt.year})`}</ExtLink>
-            </div>
-          ))}
-        </>
-      ) : (
-        <p className="muted" style={{ margin: 0 }}>
-          No cited headcount history — fewer than two independently sourced data points.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function OverviewTab({ res }) {
-  const p = res.profile || {}, sc = res.score || {}, dp = res.deep_profile || {};
-  const trend = res.trend || {};
-  const psrc = res.profile_sources || {};
-  const founders = (dp.founders || []).filter((f) => f?.name);
-  const advisors = (dp.advisors || []).filter((a) => a?.name);
-  const programs = (dp.programs || []).filter((x) => x?.name);
-  const customers = dp.reference_customers?.length ? dp.reference_customers
-    : String(p.customers || p["Reference customers"] || "").split(/[,;|\n]+/).map((s) => s.trim()).filter(Boolean);
-  return (
-    <div>
-      <div className="metric-row">
-        <div className="metric"><div className="k">Fit Score</div><div className="v">{Number(sc.final_score || 0).toFixed(0)}</div></div>
-        <div className="metric"><div className="k">Employees</div>
-          <div className="v">{dp.employees || p.employees_count || p.employee_band || "—"} <WebSourced src={psrc.employees_count} field="employees" /></div></div>
-        <div className="metric"><div className="k">Founded</div>
-          <div className="v">{p.founded_year || "—"} <WebSourced src={psrc.founded_year} field="founded year" /></div></div>
-        <div className="metric"><div className="k">Completeness</div><div className="v">{Math.round((sc.data_completeness || 0) * 100)}%</div></div>
-        <div className="metric"><div className="k">Verified customers</div><div className="v">{sc.verified_customers ?? "—"}</div></div>
-        <div className="metric"><div className="k">Market signal</div><div className="v" style={{ fontSize: 13 }}>{trend.label || "—"}</div></div>
-      </div>
-      <div className="grid2">
-        <div>
-          <div className="panel">
-            <h3>Executive summary</h3>
-            <p style={{ marginTop: 0 }}>{res.summary || <span className="muted">No summary.</span>}</p>
-            <Spec k="Headquarters">{p.hq}</Spec>
-            <Spec k="Stage">{p["Development stage of your solution"]}</Spec>
-            <Spec k="Business model">{p["Business model"]}</Spec>
-            <Spec k="Funding">{p.funding}{p.funding && <> <WebSourced src={psrc.funding} field="funding" /></>}</Spec>
-            <Spec k="Website"><ExtLink href={p.website} /></Spec>
-            <Spec k="LinkedIn"><ExtLink href={p.linkedin_url} /></Spec>
-            {dp.parent_group && <Spec k="Part of group">{dp.parent_group}</Spec>}
-          </div>
-          <HeadcountTrend points={dp.employees_over_time} />
-        </div>
-        <div>
-          <div className="panel">
-            <h3>Team &amp; ecosystem</h3>
-            {founders.length === 0 && advisors.length === 0 && programs.length === 0 && (
-              <p className="muted" style={{ margin: 0 }}>No researched team data.</p>
-            )}
-            {founders.map((f, i) => (
-              <Spec key={i} k="Founder">
-                {f.name} — {f.role || "founder"}
-                {f.background && <span className="muted"> · {f.background}</span>}{" "}
-                {f.linkedin && <ExtLink href={f.linkedin}>LinkedIn</ExtLink>}
-              </Spec>
-            ))}
-            {advisors.map((a, i) => (
-              <Spec key={i} k="Advisor">{a.name} — {a.role || "advisor"}{a.affiliation ? `, ${a.affiliation}` : ""}</Spec>
-            ))}
-            {programs.length > 0 && (
-              <div style={{ marginTop: 6 }}>
-                {programs.map((x, i) => {
-                  // A membership found only on the company's own site is a claim, not a
-                  // verified fact — several such programs publish no searchable member
-                  // directory, so it is shown but explicitly marked as uncorroborated.
-                  const claimed = String(x.confidence || "").toLowerCase() === "self_asserted";
-                  return (
-                    <span key={i} className="chip"
-                          title={claimed
-                            ? `${x.type} — company-claimed, not independently corroborated`
-                            : `${x.type} — independently corroborated`}>
-                      {x.name}{claimed && <span className="muted"> · claimed</span>}
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div className="panel">
-            <h3>Reference customers</h3>
-            {customers.length
-              ? customers.map((c, i) => <span key={i} className="chip">{c}</span>)
-              : <p className="muted" style={{ margin: 0 }}>
-                  {dp.customer_segment ? "None named on record." : "None on record."}
-                </p>}
-            {dp.customer_segment && (
-              <p className="muted" style={{ margin: "8px 0 0" }}>
-                Customer profile: {dp.customer_segment}
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-      {(trend.signals || []).length > 0 && (
-        <div className="panel">
-          <h3>Recent signals</h3>
-          {trend.signals.map((s, i) => <div key={i} className="reason">{s}</div>)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OverridePanel({ runId, currentPillar }) {
-  const [audit, setAudit] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [pillar, setPillar] = useState("");
-  const [reason, setReason] = useState("");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (runId) api.audit(runId).then((d) => setAudit(d.overrides || [])).catch(() => {});
-  }, [runId]);
-
-  const submit = async () => {
-    if (!pillar || reason.trim().length < 5 || busy) return;
-    setBusy(true); setError("");
-    try {
-      const rec = await api.override(runId, pillar, reason.trim(), note.trim());
-      setAudit((a) => [...a, rec]);
-      setOpen(false); setPillar(""); setReason(""); setNote("");
-    } catch (e) { setError(e.message); } finally { setBusy(false); }
-  };
-
-  if (!runId) return null;
-  return (
-    <div className="panel">
-      <h3>Reviewer decision</h3>
-      {audit.length === 0 && !open && (
-        <p className="muted" style={{ margin: "0 0 8px" }}>
-          Automated recommendation stands — no reviewer override recorded.
-        </p>
-      )}
-      {audit.map((o, i) => (
-        <div key={i} className="risk" style={{ borderLeftColor: "var(--accent)", background: "var(--accent-soft)" }}>
-          <strong>{o.prev_pillar} → {o.new_pillar}</strong>
-          {o.reviewer && <span className="badge">{o.reviewer}</span>}
-          <span className="badge">{String(o.created_at).slice(0, 10)}</span>
-          <div style={{ fontSize: 12.5 }}>{o.reason}</div>
-          {o.evidence_note && <div className="muted" style={{ fontSize: 12 }}>Evidence: {o.evidence_note}</div>}
-        </div>
-      ))}
-      {!open ? (
-        <button className="tool-btn" onClick={() => setOpen(true)}>Override routing…</button>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 460 }}>
-          <select className="input" value={pillar} onChange={(e) => setPillar(e.target.value)}
-            aria-label="New route">
-            <option value="">New route…</option>
-            {["Connect", "Collaborate", "Empower", "Pass"].filter((p) => p !== currentPillar)
-              .map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <input className="input" placeholder="Reason (required)" value={reason}
-            onChange={(e) => setReason(e.target.value)} />
-          <input className="input" placeholder="Supporting evidence (optional)" value={note}
-            onChange={(e) => setNote(e.target.value)} />
-          {error && <ErrorBox message={error} />}
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn" disabled={busy || !pillar || reason.trim().length < 5}
-              onClick={submit}>{busy ? "Saving…" : "Record override"}</button>
-            <button className="btn secondary" onClick={() => setOpen(false)}>Cancel</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ScoringTab({ res, runId }) {
-  const sc = res.score || {}, fit = res.fit || {}, rt = res.routing || {};
-  const dims = sc.dimensions || {};
-  const { whatIfWeights } = useApp();
-  // Lifted out of the panel so the radar overlay appears only while the panel is open. A second
-  // polygon beside a collapsed panel would be an unexplained line on the chart — exactly the
-  // mistaking-a-what-if-for-the-evaluation risk this feature has to avoid.
-  const [whatIfOpen, setWhatIfOpen] = useState(false);
-  const contribution = whatIfOpen ? contributionProfile(dims, whatIfWeights || DEFAULT_WEIGHTS) : null;
-  return (
-    <div className="grid2">
-      <div>
-        <div className="panel">
-          <h3>Score breakdown</h3>
-          {Object.entries(DIM_META).map(([k, label]) =>
-            k in dims ? <ScoreBar key={k} label={label} value={dims[k]} /> : null)}
-          <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
-            Raw {sc.raw_score} × data confidence {sc.data_confidence} (completeness{" "}
-            {Math.round((sc.data_completeness || 0) * 100)}%) = <strong>{Number(sc.final_score || 0).toFixed(0)}</strong>.
-            Effective traction {sc.effective_traction} (verified {sc.verified_customers} /
-            unverified {sc.unverified_customers}).
-          </p>
-        </div>
-        <WhatIfWeights score={sc} fit={fit} routing={rt} open={whatIfOpen} setOpen={setWhatIfOpen} />
-        <div className="panel">
-          <h3>Routing rationale</h3>
-          <p style={{ margin: "0 0 6px" }}>
-            <PillarPill pillar={rt.pillar} />{" "}
-            {(rt.secondary || []).map((s) => <PillarPill key={s} pillar={s} ghost>+{s}</PillarPill>)}{" "}
-            {rt.sfs_relevant && <span className="pill sfs" title={rt.sfs_rationale}>SFS financing</span>}
-            <span className="badge">confidence {Math.round((rt.confidence || 0) * 100)}%</span>
-          </p>
-          {(rt.reasons || []).map((r, i) => <div key={i} className="reason">{r}</div>)}
-          {(rt.risks || []).map((r, i) => <div key={i} className="risk">{r}</div>)}
-          {(rt.route_recommendations || []).length > 0 && (
-            <>
-              <h3 style={{ marginTop: 12 }}>Route scorecards</h3>
-              {rt.route_recommendations.map((r) => (
-                <div key={r.route} className="spec">
-                  <div className="k"><PillarPill pillar={r.route} /></div>
-                  <div className="v">
-                    <span className="num">{r.score}</span>
-                    <div className="muted" style={{ fontSize: 12.5 }}>{r.recommendation}</div>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-        {((sc.red_flags || []).length > 0 || (sc.missing_evidence || []).length > 0) && (
-          <div className="panel">
-            <h3>Red flags &amp; gaps</h3>
-            {(sc.red_flags || []).map((f, i) => (
-              <div key={i} className="risk" style={{ borderLeftColor: "var(--danger)", background: "var(--danger-soft)" }}>{f}</div>
-            ))}
-            {(sc.missing_evidence || []).length > 0 && (
-              <p className="muted" style={{ fontSize: 12.5, marginBottom: 0 }}>
-                Missing evidence (unknown, not negative): {sc.missing_evidence.join(", ")}
-              </p>
-            )}
-          </div>
-        )}
-        <OverridePanel runId={runId} currentPillar={rt.pillar} />
-      </div>
-      <div>
-        <div className="panel" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <Radar dimensions={dims} overlay={contribution ? contribution.values : null} />
-          {contribution && (
-            <p className="muted" style={{ fontSize: 11.5, margin: "6px 0 0", textAlign: "center" }}>
-              Solid = evidence scores · dashed = each dimension&apos;s share of the score under your
-              weighting. They coincide only when all six are weighted equally; the engine&apos;s own
-              weights lean on traction and Siemens fit.
-            </p>
-          )}
-        </div>
-        <div className="panel">
-          <h3>Siemens portfolio fit</h3>
-          {fit.aligned && (fit.matches || []).length ? fit.matches.map((m, i) => (
-            <div key={i} style={{ marginBottom: 10 }}>
-              <strong>{m.tool}</strong>
-              <span className="badge">{m.division}</span>
-              {m.relation && <span className="badge">{m.relation}</span>}
-              <ScoreBar label="match confidence" value={m.confidence} />
-              <p className="muted" style={{ margin: "3px 0 0", fontSize: 12.5 }}>{m.rationale}</p>
-            </div>
-          )) : <p className="muted">No tool met the fit threshold.</p>}
-          {fit.challenge_match?.library_size > 0 && (
-            <div className="info-box">
-              Challenge-library match <strong>{fit.challenge_match.score}</strong>
-              {fit.challenge_match.best_problem && <> — closest problem: “{fit.challenge_match.best_problem}”</>}
-            </div>
-          )}
-          <p className="muted" style={{ fontSize: 11.5, marginBottom: 0 }}>method: {fit.method || "—"}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MarketTab({ res }) {
-  const t = res.trend || {}, rt = res.routing || {};
-  if (!t.label || t.method === "disabled") {
-    return <div className="empty"><div className="big">◔</div><h4>No market analysis</h4>
-      <p>Trend analysis was disabled or returned nothing for this run.</p></div>;
-  }
-  return (
-    <div className="grid2">
-      <div className="panel">
-        <h3>Market trend</h3>
-        <div className="metric-row">
-          <div className="metric"><div className="k">Verdict</div><div className="v" style={{ fontSize: 14 }}>{t.label}</div></div>
-          <div className="metric"><div className="k">Momentum</div><div className="v">{t.momentum ?? "—"}</div></div>
-        </div>
-        {t.niche && <Spec k="Niche">{t.niche}</Spec>}
-        <p style={{ marginBottom: 0 }}>{t.summary}</p>
-      </div>
-      <div>
-        <div className="panel">
-          <h3>Signals</h3>
-          {(t.signals || []).length
-            ? t.signals.map((s, i) => <div key={i} className="reason">{s}</div>)
-            : <p className="muted" style={{ margin: 0 }}>No discrete signals extracted.</p>}
-          {(rt.risks || []).length > 0 && <h3 style={{ marginTop: 12 }}>Risks</h3>}
-          {(rt.risks || []).map((r, i) => <div key={i} className="risk">{r}</div>)}
-        </div>
-        {(t.evidence || []).length > 0 && (
-          <div className="panel">
-            <h3>Market evidence</h3>
-            {t.evidence.slice(0, 6).map((e, i) => (
-              <div key={i} className="list-row" style={{ fontSize: 12.5 }}>
-                <div className="list-main">
-                  <ExtLink href={e.url || e.href}>{e.title || e.url || e.href}</ExtLink>
-                  <div className="muted">{(e.snippet || e.body || "").slice(0, 140)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function EvidenceTab({ res }) {
-  const [filter, setFilter] = useState("");
-  const facts = (res.facts || []).filter((f) =>
-    !filter || `${f.key} ${f.value} ${f.method}`.toLowerCase().includes(filter.toLowerCase()));
-  const dot = (v) => (
-    <span className="status-dot" style={{ background: v ? "var(--success)" : "var(--border-2)" }} />
-  );
-  return (
-    <div className="panel" style={{ padding: 0 }}>
-      <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
-        <input className="input" style={{ maxWidth: 280 }} placeholder="Filter evidence…"
-          value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter evidence" />
-        <span className="muted" style={{ marginLeft: 10, fontSize: 12 }}>{facts.length} facts</span>
-      </div>
-      <div style={{ overflowX: "auto" }}>
-        <table className="dtable dense">
-          <thead>
-            <tr><th>Status</th><th>Claim</th><th>Value</th><th>Method</th><th>Source</th></tr>
-          </thead>
-          <tbody>
-            {facts.slice(0, 120).map((f, i) => (
-              <tr key={i} style={{ cursor: "default" }}>
-                <td>{dot(f.verified === true || f.verified === "True")}
-                  {f.verified === true || f.verified === "True" ? "verified" : "unverified"}</td>
-                <td>{f.key}</td>
-                <td style={{ whiteSpace: "normal", maxWidth: 380, overflowWrap: "anywhere" }}>{f.value}</td>
-                <td className="muted">{f.method}</td>
-                <td>{/^https?:\/\//.test(f.source_url || "")
-                  ? <ExtLink href={f.source_url}>link</ExtLink>
-                  : <span className="muted">{f.source_url || "—"}</span>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function AskTab({ res, runId }) {
-  const [msgs, setMsgs] = useState([]);
-  const [q, setQ] = useState("");
-  const [busy, setBusy] = useState(false);
-  const suggestions = [
-    "Summarise why this startup matches the brief",
-    "What are the top risks?",
-    "Compare this startup with similar companies",
-    "What evidence is weakest?",
-  ];
-  const send = async (text) => {
-    const question = (text || q).trim();
-    if (!question || busy) return;
-    setQ(""); setBusy(true);
-    setMsgs((m) => [...m, { role: "user", text: question }]);
-    try {
-      const r = await api.ask(question, runId);
-      setMsgs((m) => [...m, { role: "assistant", text: r.answer, source: r.source, evidence: r.evidence }]);
-    } catch (e) {
-      setMsgs((m) => [...m, { role: "assistant", text: `Request failed: ${e.message}`, source: "error" }]);
-    } finally { setBusy(false); }
-  };
-  return (
-    <div className="panel">
-      <h3>Ask about {res.company}</h3>
-      <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
-        The assistant drafts from AI knowledge, verifies against a targeted web search, and cites sources.
+      <p className="muted" style={{ margin: 0 }} role="status" aria-live="polite">
+        <span className="spinner" aria-hidden="true" /> {what} is still running. This section fills
+        in as soon as it finishes — the profile beside it is already complete.
       </p>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-        {suggestions.map((s) => (
-          <button key={s} className="chip action" onClick={() => send(s)}>{s}</button>
-        ))}
-      </div>
-      {msgs.map((m, i) => (
-        <div key={i} className={`dock-msg ${m.role}`} style={{ maxWidth: 760 }}>
-          {m.role === "assistant" && m.source && <div className="src">{m.source}</div>}
-          {m.text}
-          {m.evidence?.length > 0 && (
-            <div style={{ marginTop: 6 }}>
-              {m.evidence.slice(0, 5).map((e, j) => (
-                <div key={j} style={{ fontSize: 11 }}>
-                  <a href={e.url} target="_blank" rel="noopener noreferrer">[{j + 1}] {e.title || e.url}</a>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-      {busy && <p className="muted"><span className="spinner" /> Drafting, searching, refining…</p>}
-      <div style={{ display: "flex", gap: 6, maxWidth: 760 }}>
-        <input className="input" placeholder={`Ask about ${res.company}…`} value={q}
-          onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
-        <button className="btn ai" disabled={busy || !q.trim()} onClick={() => send()}>Ask</button>
-      </div>
     </div>
   );
 }
@@ -495,17 +50,19 @@ export default function Profile() {
   const [res, setRes] = useState(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const research = useResearch();
+  const jobId = params.get("job");
+  const job = research.jobs.find((j) => j.id === jobId);
   const evalName = params.get("name") || "";
-  const tab = params.get("tab") || "Overview";
-  const runId = id === "new" ? null : Number(id);
+  const tab = params.get("tab") || DEFAULT_VIEW;
+  const runId = id === "new" ? job?.result?.run_id || null : Number(id);
 
   const refreshData = async () => {
     if (!res || refreshing) return;
     setRefreshing(true);
     try {
-      const r = await api.evaluate(res.company, true, true);   // refresh=true bypasses cache
-      if (r.run_id) nav(`/startup/${r.run_id}`, { replace: true });
-      else setRes(r);
+      const [j] = await research.start({ names: [res.company], refresh: true });
+      nav(`/startup/new?name=${encodeURIComponent(res.company)}&job=${j.id}`, { replace: true });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -520,19 +77,43 @@ export default function Profile() {
     return d >= 0 ? d : null;
   })();
 
+  /* The run already on screen. When a streamed evaluation finishes we rewrite the URL from
+     /startup/new to /startup/:run_id, which changes `id` and re-runs this effect — and without
+     this guard that would throw away a complete profile and re-fetch it from the API. */
+  const loadedRunId = useRef(null);
+
   useEffect(() => {
+    if (runId && loadedRunId.current === runId) return;
+    let active = true;
     setRes(null); setError("");
     if (id === "new" && evalName) {
-      api.evaluate(evalName, true, params.get("refresh") === "1")
-        .then((r) => {
-          if (r.run_id) nav(`/startup/${r.run_id}`, { replace: true });
-          else setRes(r);
-        })
-        .catch((e) => setError(e.message));
+      /* Streamed, so the profile appears as soon as the engine has assembled it rather than
+         when routing finishes a minute later. Each partial merges into the same object the
+         non-streaming path produces, so every view below reads one shape and none of them know
+         this happened. `evaluateStream` falls back to api.evaluate on any stream failure. */
+      if (!jobId) {
+        research.start({ names: [evalName], refresh: params.get("refresh") === "1" })
+          .then(([j]) => { if (active) nav(`/startup/new?name=${encodeURIComponent(evalName)}&job=${j.id}`, { replace: true }); })
+          .catch((e) => setError(e.message));
+      }
     } else if (runId) {
-      api.run(runId).then(setRes).catch((e) => setError(e.message));
+      api.run(runId).then((r) => { if (active) { loadedRunId.current = runId; setRes(r); } })
+        .catch((e) => setError(e.message));
     }
-  }, [id, evalName]);           // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { active = false; };
+  }, [id, evalName, jobId]);           // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!job) return;
+    let active = true;
+    if (job.status === "error") setError(job.error);
+    else if (job.result) {
+      setRes(job.result);
+      if (job.result.run_id) api.run(job.result.run_id).then((r) => { if (active) setRes(r); }).catch(() => {});
+    }
+    else if (job.partial) setRes(job.partial);
+    return () => { active = false; };
+  }, [job]);
 
   useEffect(() => {
     if (res) setDockCtx({ runId, company: res.company });
@@ -554,13 +135,20 @@ export default function Profile() {
         <div className="big">△</div>
         <h4>Could not load this startup</h4>
         <p>{error}</p>
-        <button className="btn secondary" onClick={() => nav("/explore")}>Back to Explore</button>
+        <button className="btn secondary" onClick={() => nav("/explore")}>Back to Companies</button>
       </div>
     );
   }
-  if (!res) return <SkeletonProfile name={evalName || `run #${id}`} />;
+  /* The profile is the first thing worth reading and the first thing the engine finishes, so the
+     skeleton holds until it lands rather than flashing a page of em dashes for the seconds
+     between the company being resolved and its profile being assembled. */
+  if (!res || (res.streaming && !res.profile)) {
+    return <SkeletonProfile name={res?.company || evalName || `run #${id}`} />;
+  }
 
   const rt = res.routing || {}, sc = res.score || {};
+  // A section the run has not produced YET, which is not the same as a section it produced empty.
+  const pending = (section) => Boolean(res.streaming) && !res[section];
 
   return (
     <div>
@@ -570,16 +158,43 @@ export default function Profile() {
           <div style={{ flex: 1, minWidth: 240 }}>
             <h1 className="ph-title">
               {res.company}
-              <PillarPill pillar={rt.pillar} style={{ marginLeft: 10, verticalAlign: "middle" }} />{" "}
-              {(rt.secondary || []).map((s) => <PillarPill key={s} pillar={s} ghost>+{s}</PillarPill>)}
+              {/* No pillar until routing has run. An empty pill would read as a verdict of
+                  nothing rather than as a verdict not yet reached. */}
+              {rt.pillar && (
+                <span className={`pill ${rt.pillar}`} style={{ marginLeft: 10, verticalAlign: "middle" }}>{rt.pillar}</span>
+              )}{" "}
+              {(rt.secondary || []).map((s) => <span key={s} className={`pill ghost ${s}`}>+{s}</span>)}
+              {/* Only the competing case earns a place in the headline. A complementary or
+                  adjacent startup is the ordinary situation and belongs in the fit panel; one
+                  that does what a Siemens product already does is a different conversation
+                  entirely — competitive watch, or buy-instead-of-build — and used to be visible
+                  only as a quietly reduced fit score. */}
+              {rt.portfolio_stance?.competes && (
+                <span className="pill sfs" style={{ marginLeft: 6, verticalAlign: "middle" }}
+                  title={rt.portfolio_stance.note}>Competes</span>
+              )}
             </h1>
             <p className="ph-desc">{res.summary}</p>
+            {/* HQ and funding moved to the metric row below, where they sit beside the other
+                company facts instead of competing with the score for the same line. */}
             <div className="ph-meta">
-              {p.hq && <span>📍 {p.hq}</span>}
-              {p.funding && <span>💰 {p.funding}</span>}
-              <span>Score <strong>{Number(sc.final_score || 0).toFixed(0)}</strong></span>
-              <span>Confidence {Math.round((rt.confidence || 0) * 100)}%</span>
+              {pending("score") ? (
+                <span className="muted" role="status" aria-live="polite">
+                  <span className="spinner" aria-hidden="true" /> scoring…
+                </span>
+              ) : (
+                <>
+                  <span>Score <strong>{typeof sc.final_score === "number" ? sc.final_score.toFixed(0) : "—"}</strong></span>
+                  <span>Confidence {Math.round((rt.confidence || 0) * 100)}%</span>
+                </>
+              )}
               <span className="muted">{res.engine}</span>
+              {/* Rescued from the pipeline ribbon, which was the only place it appeared. A run
+                  assembled from the web rather than the curated GlassDollar record is a caveat on
+                  every figure below it, and dropping the caveat with the chrome would have been a
+                  quiet loss of meaning. */}
+              {res.source === "tracxn" && <span className="badge">Tracxn · your account · private for 30 days</span>}
+              {res.source === "web" && <span className="badge">web-sourced — verify figures</span>}
             </div>
             {tags.length > 0 && (
               <div style={{ marginTop: 4 }}>
@@ -605,38 +220,41 @@ export default function Profile() {
               onClick={() => toggleWatch(res.company)}>
               {watchlist.includes(res.company) ? "★ Watching" : "☆ Watch"}
             </button>
-            <button className="tool-btn" onClick={() => setDockOpen(true)}>✦ Assistant</button>
-            <button className="tool-btn" onClick={() => nav("/explore")}>← Explore</button>
+            <button className="tool-btn" onClick={() => nav("/explore")}>← Companies</button>
           </div>
-        </div>
-        <div className="ribbon" aria-label="Pipeline status">
-          {STEPS.map((s, i) => (
-            <React.Fragment key={s}>
-              <span className="step done">{s}</span>
-              {i < STEPS.length - 1 && <span className="sep">›</span>}
-            </React.Fragment>
-          ))}
-          {res.source === "web" && <span className="badge">web-sourced — verify figures</span>}
-        </div>
-        {/* sticky-header keeps the tab bar reachable while reading a long profile — the
-            Evidence tab in particular scrolls well past a screen, and losing the tabs means
-            scrolling back to the top to switch context. */}
-        <div className="tabs sticky-header" role="tablist">
-          {TABS.map((t) => (
-            <button key={t} role="tab" aria-selected={tab === t}
-              className={"tab" + (tab === t ? " active" : "")}
-              onClick={() => setParams({ tab: t }, { replace: true })}>
-              {t}
-            </button>
-          ))}
         </div>
       </div>
 
-      {tab === "Overview" && <OverviewTab res={res} />}
-      {tab === "Scoring & Fit" && <ScoringTab res={res} runId={runId} />}
-      {tab === "Market & Risk" && <MarketTab res={res} />}
-      {tab === "Evidence" && <EvidenceTab res={res} />}
-      {tab === "Ask" && <AskTab res={res} runId={runId} />}
+      {/* Navigation is the rail alone. The pipeline ribbon that used to sit here rendered all
+          seven steps as done on every finished run, so it reported nothing a reader could act on
+          while costing sticky height on every profile; the Ask tab left with it because the ✦
+          Assistant button above opens the same conversation in the dock, from any view. */}
+      {/* Merged into the existing query, not replacing it. `setParams({tab})` dropped every other
+          parameter — including the `name=` that /startup/new is evaluating — so selecting a group
+          mid-run reset the page to a skeleton. Unreachable before, because /startup/new used to
+          redirect to /startup/:id before anything was clickable. */}
+      <ProfileLayout view={tab} onSelectView={(v) => setParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", v);
+        return next;
+      }, { replace: true })}>
+        {/* A view whose branch of the pipeline is still running says so. Rendering its empty
+            state instead would report an absence of findings for work that has not happened —
+            the same mistake `employees_history_status` exists to prevent, one level up. */}
+        {tab === "Scoring & Fit"
+          ? (pending("score") ? <StillRunning what="Scoring and routing" />
+            : <ScoringTab res={res} runId={runId} onAssessment={(a) => setRes((old) => !old || (old.run_id && old.run_id !== runId) ? old : ({...old,
+                ...(a.routing?.status === "assessed" ? {routing:a.routing} : {}),
+                ...(a.score?.status === "assessed" ? {score:a.score} : {}),
+                ...(a.department_fit?.status === "assessed" ? {department_assessments:{...old.department_assessments,[a.department_fit.department.id]:a.department_fit}} : {}),
+              }))} />)
+          : tab === "Market & Risk"
+            ? (pending("trend") ? <StillRunning what="Market analysis" /> : <MarketTab res={res} />)
+            : tab === "Evidence"
+              ? (pending("facts") ? <StillRunning what="Evidence collection" />
+                : <EvidenceTab res={res} />)
+              : <OverviewTab res={res} />}
+      </ProfileLayout>
     </div>
   );
 }

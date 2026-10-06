@@ -1,0 +1,40 @@
+variables:
+  # Proxy settings the Siemens runners need to reach anything off-intranet
+  # (apk, docker hub). Leave these alone.
+  http_proxy: $CODE_PROXY
+  https_proxy: $CODE_PROXY
+  no_proxy: $CODE_NO_PROXY
+  HTTP_PROXY: $http_proxy
+  HTTPS_PROXY: $http_proxy
+  NO_PROXY: $no_proxy
+
+  CI_HUB_PROJECT_ID: "461093"
+  # Which branch of the CI HUB to run. Not your app's branch — that is
+  # SOURCE_BRANCH below.
+  CI_HUB_REF: "main"
+
+  APP_TYPE: "ECS_SR"
+  APP_PORT: "8080"
+
+trigger_ci_hub:
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl
+  script:
+    - |
+      echo "Triggering hydra ECS deploy for $CI_PROJECT_PATH ($CI_COMMIT_SHORT_SHA)"
+      echo "The hub resolves the slug, URL and secret name — see its job log."
+
+      curl -X POST --fail-with-body \
+        -F token=$ORCHESTRATOR_TRIGGER_TOKEN \
+        -F ref=$CI_HUB_REF \
+        -F "variables[APP_TYPE]=$APP_TYPE" \
+        -F "variables[APP_PORT]=$APP_PORT" \
+        -F "variables[HYDRA]=true" \
+        -F "variables[CI_PIPELINE_SOURCE_PROJECT_PATH]=$CI_PROJECT_PATH" \
+        -F "variables[SOURCE_BRANCH]=$CI_COMMIT_BRANCH" \
+        "https://code.siemens.com/api/v4/projects/${CI_HUB_PROJECT_ID}/trigger/pipeline"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual

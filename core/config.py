@@ -38,7 +38,9 @@ CONTRADICTION_FLOOR = 0.85       # never costs more than 15% of confidence
 FIT_ALIGN_THRESHOLD = 50.0       # below this, "not aligned with Siemens portfolio"
 MIN_OFFLINE_OVERLAP = 2          # offline mode needs >=2 meaningful shared terms to count
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-5.4")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
+# A full profile extraction writes ~2k tokens and measured 23s on gpt-5.4; at 30s the longer ones
+# were killed and retried from scratch.
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 
 # --- Program prestige -------------------------------------------------------------------
 # Membership in a startup program is a credibility signal, but not all programs are equal: a

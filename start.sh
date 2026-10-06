@@ -5,7 +5,7 @@ set -e
 # unprefixed names. Map them across without overriding anything already set.
 for name in GLASSDOLLAR_API_KEY OPENAI_API_KEY GEMINI_API_KEY SIEMENS_DIRECTORY_API_KEY \
             TRACXN_REDIRECT_URI ENTRA_TENANT_ID ENTRA_CLIENT_ID ENTRA_CLIENT_SECRET \
-            ENTRA_REDIRECT_URI ADMIN_UPNS; do
+            ENTRA_REDIRECT_URI ADMIN_UPNS SIEMENS_DIRECTORY_API_BASE SIEMENS_DIRECTORY_KEY_HEADER; do
   eval "val=\${USER_$name:-}"
   eval "cur=\${$name:-}"
   if [ -n "$val" ] && [ -z "$cur" ]; then

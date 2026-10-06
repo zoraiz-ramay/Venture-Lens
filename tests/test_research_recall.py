@@ -161,11 +161,11 @@ def test_thinking_models_get_completion_headroom(monkeypatch):
     client.provider = "gemini"
     monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
     client.complete("hi", max_tokens=1200)
-    assert seen["max_completion_tokens"] == 1200 + llm_mod.LLM_THINKING_HEADROOM
+    assert seen["max_completion_tokens"] == max(1200, llm_mod.LLM_MIN_BUDGET) + llm_mod.LLM_THINKING_HEADROOM
 
-    client.provider = "openai"          # non-reasoning gateway keeps the plain budget
-    client.complete("hi", max_tokens=1200)
-    assert seen["max_completion_tokens"] == 1200
+    client.provider = "openai"          # the gateway with reasoning off keeps the plain budget
+    client.complete("hi", max_tokens=1200, reasoning="none")
+    assert seen["max_completion_tokens"] == max(1200, llm_mod.LLM_MIN_BUDGET)
 
 
 def _hits(key, n, size=400):

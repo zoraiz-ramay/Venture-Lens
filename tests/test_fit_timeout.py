@@ -54,7 +54,7 @@ def test_the_match_call_is_allowed_longer_than_it_measurably_takes():
 
     assert result["method"] == "llm"
     _, match_kw = next(c for c in llm.calls if "SIEMENS PORTFOLIO" in c[0])
-    assert match_kw["timeout"] > MEASURED_MATCH_SECONDS > LLM_TIMEOUT
+    assert match_kw["timeout"] > MEASURED_MATCH_SECONDS
     # Bounded, so a hung provider cannot outlast gunicorn's 300s worker timeout on its own.
     assert match_kw["timeout"] * match_kw["max_attempts"] < 300
 

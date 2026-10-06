@@ -14,8 +14,9 @@ from core.directory_api import DirectoryClient, DirectoryError
 
 
 class _Resp:
-    def __init__(self, status, body=None, text=""):
+    def __init__(self, status, body=None, text="", headers=None):
         self.status_code, self._body, self.text = status, body, text
+        self.headers = headers or {}
 
     def json(self):
         if self._body is None:
@@ -29,8 +30,9 @@ class _Session:
     def __init__(self, *pages):
         self.pages, self.calls = list(pages), []
 
-    def get(self, url, params=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "params": dict(params or {}), "headers": dict(headers or {})})
+    def get(self, url, params=None, headers=None, timeout=None, allow_redirects=True):
+        self.calls.append({"url": url, "params": dict(params or {}), "headers": dict(headers or {}),
+                           "allow_redirects": allow_redirects})
         return self.pages.pop(0) if len(self.pages) > 1 else self.pages[0]
 
 
@@ -57,7 +59,7 @@ def test_the_client_sends_the_key_header_and_the_department_filter_and_returns_t
     out = DirectoryClient(api_key="k", session=session).people_in("DI SW PLM")
     assert out == [{"name": "Ada Lovelace", "department": "DI SW PLM", "email": "ada@siemens.test"}]
     call = session.calls[0]
-    assert call["url"].endswith("/people") and call["headers"] == {"apikey": "k"}
+    assert call["url"].endswith("/people") and call["headers"]["apikey"] == "k"
     assert call["params"] == {"filter[department]": "DI SW PLM", "page[limit]": config.SIEMENS_DIRECTORY_LIMIT}
 
 
@@ -250,3 +252,12 @@ def test_the_endpoint_deduplicates_tools_and_excludes_non_tool_entries(monkeypat
     headers = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
     assert client.post(f"/api/runs/{run_id}/lookup/contacts", headers=headers).status_code == 200
     assert seen["tools"] == [recommended[0], recommended[-1]]
+
+
+def test_a_redirect_to_sign_in_is_reported_not_followed():
+    """api.siemens.com answers every path with a 302 to Microsoft sign-in; following it read the
+    login page and reported "not JSON", which said nothing about what to fix."""
+    session = _Session(_Resp(302, headers={"location": "https://login.microsoftonline.com/t/oauth2/v2.0/authorize"}))
+    with pytest.raises(DirectoryError, match="sign-in page.*SIEMENS_DIRECTORY_API_BASE"):
+        DirectoryClient(api_key="k", session=session).people_in("DI SW PLM")
+    assert session.calls[0]["allow_redirects"] is False

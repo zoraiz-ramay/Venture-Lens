@@ -142,6 +142,21 @@ Everything in `core/profile.py` **transcribes** evidence; nothing there judges. 
 `core/programs.py`, over the `commercial` sub-profile (deployment, APIs, certifications, pricing,
 hardware, revenue shape, funding stage, investors) that the profile stage evidences.
 
+## A cut-off reply is a silent data loss
+
+`core/llm.py::complete` checks `finish_reason`. A reply that stops at its token ceiling is half a
+JSON object; `parse_json` rejects it and the caller drops to its offline fallback with no error
+recorded — the main profile extraction at its old 1200-token cap did exactly that for any
+well-documented startup, and the profile came back keyword-only (no founders, team, advisors,
+programs or customers). The truncated copy was also cached, so a re-run replayed the loss. Now the
+floor is `LLM_MIN_BUDGET` (4096, a ceiling rather than a charge), a truncated reply is re-asked
+at up to `LLM_MAX_BUDGET`, and a truncated reply is never cached. Do not lower these to "size"
+a call: a per-call `max_tokens` is a hint, not a limit to tune.
+
+Gateway calls that do not pass `reasoning` run at `LLM_REASONING_EFFORT` (default `high`, which
+drops `temperature`, since gpt-5.x rejects 0 while reasoning, and lifts the timeout to
+`LLM_REASONING_TIMEOUT`). Transcription prompts pass `reasoning="none"` and keep it off.
+
 ## Calibrate anything a model scores, and watch for dimensions going flat
 
 Three scored quantities had independently collapsed to constants, and a green test suite could not

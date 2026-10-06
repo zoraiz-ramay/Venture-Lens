@@ -77,7 +77,7 @@ def test_headroom_applies_even_with_reasoning_off(monkeypatch):
     for kwargs in ({"reasoning": "none"}, {}):
         r = _Recorder()
         _client("gemini", r).complete("hi", max_tokens=1200, **kwargs)
-        assert r.seen["max_completion_tokens"] == 1200 + llm_mod.LLM_THINKING_HEADROOM
+        assert r.seen["max_completion_tokens"] == max(1200, llm_mod.LLM_MIN_BUDGET) + llm_mod.LLM_THINKING_HEADROOM
 
 
 def test_rejected_parameter_is_dropped_and_retried(monkeypatch):
@@ -268,3 +268,99 @@ def test_site_fetch_cache_preserves_the_resolved_url(monkeypatch):
         assert len(hits) == 1
     finally:
         _uninstall_cache()
+
+
+class _Reply:
+    """A chat completion whose first replies stop at the token ceiling."""
+
+    def __init__(self, cut_offs=1):
+        self.seen, self.cut_offs = [], cut_offs
+
+    def create(self, **kwargs):
+        self.seen.append(dict(kwargs))
+        cut = len(self.seen) <= self.cut_offs
+        msg = type("M", (), {"content": '{"founders": [' if cut else '{"founders": []}'})()
+        choice = type("Ch", (), {"message": msg, "finish_reason": "length" if cut else "stop"})()
+        return type("R", (), {"choices": [choice], "usage": None})()
+
+
+def test_truncated_reply_is_reasked_with_room_and_not_cached(monkeypatch):
+    """A reply cut at its ceiling is half a JSON object; parse_json rejects it and the profile
+    silently fell back to keyword-only. It must be re-asked larger, and the cut copy never cached."""
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    stored = []
+    monkeypatch.setattr(llm_mod._web, "_store", lambda *a: stored.append(a))
+    monkeypatch.setattr(llm_mod._web, "_cached", lambda *a: None)
+    r = _Reply()
+    out = _client("openai", r).complete("hi", max_tokens=1200, reasoning="none")
+    assert llm_mod.LLMClient.parse_json(out) == {"founders": []}
+    assert r.seen[1]["max_completion_tokens"] > r.seen[0]["max_completion_tokens"]
+    assert len(stored) == 1
+
+    stored.clear()
+    r = _Reply(cut_offs=99)
+    _client("openai", r).complete("hi", reasoning="none")
+    assert r.seen[-1]["max_completion_tokens"] == llm_mod.LLM_MAX_BUDGET
+    assert stored == []
+
+
+def test_gateway_reasons_unless_the_call_opts_out(monkeypatch):
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    monkeypatch.setattr(llm_mod, "LLM_REASONING_EFFORT", "high")
+    r = _Recorder()
+    _client("openai", r).complete("hi")
+    assert r.seen["reasoning_effort"] == "high"
+    assert "temperature" not in r.seen            # gpt-5.x rejects temperature 0 while reasoning
+    assert r.seen["timeout"] >= llm_mod.LLM_REASONING_TIMEOUT
+
+    r2 = _Recorder()
+    _client("openai", r2).complete("hi", reasoning="none")
+    assert "reasoning_effort" not in r2.seen and r2.seen["temperature"] == 0
+
+
+# ----------------------------------------------------------------- truncation and reasoning
+
+class _Answers:
+    """Answers each create() from ``replies`` (finish_reason, text) in turn, recording the kwargs."""
+
+    def __init__(self, *replies):
+        self.replies, self.seen = list(replies), []
+
+    def create(self, **kwargs):
+        from types import SimpleNamespace as NS
+        self.seen.append(dict(kwargs))
+        finish, text = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return NS(choices=[NS(finish_reason=finish, message=NS(content=text))], usage=None)
+
+
+def test_a_reply_cut_off_at_its_ceiling_is_asked_again_with_room_and_not_cached(monkeypatch):
+    """gpt-5.4 stopped the profile extraction mid-JSON at its ceiling; parse_json rejected the
+    half object and the profile fell back to keyword-only — no founders, team or customers."""
+    stored = []
+    monkeypatch.setattr(llm_mod._web, "_cached", lambda *a, **k: None)
+    monkeypatch.setattr(llm_mod._web, "_store", lambda *a, **k: stored.append(a))
+    a = _Answers(("length", '{"founders": [{"na'), ("stop", '{"founders": []}'))
+    out = _client("openai", a).complete("hi", max_tokens=1200, reasoning="none")
+    assert out == '{"founders": []}'
+    assert a.seen[1]["max_completion_tokens"] > a.seen[0]["max_completion_tokens"]
+    assert len(stored) == 1                       # only the complete reply
+
+    stored.clear()
+    a = _Answers(("length", '{"cut'))
+    _client("openai", a).complete("hi", reasoning="none")
+    assert a.seen[-1]["max_completion_tokens"] == llm_mod.LLM_MAX_BUDGET
+    assert stored == []                           # a reply still cut off is never cached
+
+
+def test_the_gateway_reasons_unless_a_call_opts_out(monkeypatch):
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    monkeypatch.setattr(llm_mod, "LLM_REASONING_EFFORT", "high")
+    r = _Recorder()
+    _client("openai", r).complete("hi")
+    assert r.seen["reasoning_effort"] == "high"
+    assert "temperature" not in r.seen            # gpt-5.x rejects temperature 0 while reasoning
+    assert r.seen["timeout"] >= llm_mod.LLM_REASONING_TIMEOUT
+
+    r2 = _Recorder()
+    _client("openai", r2).complete("hi", reasoning="none")
+    assert "reasoning_effort" not in r2.seen and r2.seen["temperature"] == 0

@@ -81,11 +81,22 @@ class DirectoryClient:
 
     def _get(self, params: dict):
         try:
+            # Redirects are not followed: the one this host answers with is the Microsoft sign-in
+            # page, and following it turned an unusable endpoint into "not JSON".
             r = self._session.get(f"{self.base}/people", params=params,
-                                  headers={config.SIEMENS_DIRECTORY_KEY_HEADER: self.api_key},
-                                  timeout=config.SIEMENS_DIRECTORY_TIMEOUT)
+                                  headers={config.SIEMENS_DIRECTORY_KEY_HEADER: self.api_key,
+                                           "Accept": "application/json"},
+                                  timeout=config.SIEMENS_DIRECTORY_TIMEOUT, allow_redirects=False)
         except requests.RequestException as e:
             raise DirectoryError(f"Could not reach the Siemens Directory: {e}") from e
+        if 300 <= r.status_code < 400:
+            where = str(r.headers.get("location", ""))
+            sign_in = "login.microsoftonline.com" in where or "/oauth2/" in where
+            raise DirectoryError(
+                f"Siemens Directory endpoint {self.base} redirected ({r.status_code}) "
+                + ("to the Siemens sign-in page instead of answering with the API key. "
+                   if sign_in else "instead of answering. ")
+                + "Set SIEMENS_DIRECTORY_API_BASE to the Directory API gateway URL.")
         if r.status_code in (400, 422) and config.SIEMENS_DIRECTORY_CURSOR_PARAM in params \
                 and "cursor" in (r.text or "").lower():
             raise InvalidCursor(r.text[:200])

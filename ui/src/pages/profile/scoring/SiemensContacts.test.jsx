@@ -39,4 +39,21 @@ describe("SiemensContacts", () => {
     expect(await screen.findByText(/not configured/)).toBeInTheDocument();
     expect(screen.queryByText("No contact to show.")).toBeNull();
   });
+
+  it("displays a separate contact group for each of five relevant tools", async () => {
+    const tools = Array.from({ length: 5 }, (_, index) => ({
+      tool: `Relevant tool ${index + 1}`, department: "DI SW", translated: false, note: "",
+      contacts: [{ name: `Contact ${index + 1}`, department: "DI SW", email: `contact${index + 1}@siemens.test` }],
+    }));
+    api.runLookup.mockResolvedValueOnce({ status: "ok", tools });
+    render(<SiemensContacts runId={9} />);
+    await screen.findByText("Contact 5");
+    const groups = document.querySelectorAll(".contact-tools > .contact-tool");
+    expect(groups).toHaveLength(5);
+    tools.forEach((tool, index) => {
+      expect(groups[index]).toHaveTextContent(tool.tool);
+      expect(within(groups[index]).getByText(tool.contacts[0].name)).toBeInTheDocument();
+      expect(within(groups[index]).getByRole("link")).toHaveAttribute("href", `mailto:${tool.contacts[0].email}`);
+    });
+  });
 });

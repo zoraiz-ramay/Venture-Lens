@@ -11,9 +11,10 @@ import pathlib
 
 from dotenv import load_dotenv
 
-# Loads .env from the project root (if present) before any env var below is read, so a
-# local .env can carry secrets like GEMINI_API_KEY without exporting them in the shell.
-load_dotenv(pathlib.Path(__file__).resolve().parent.parent / ".env")
+_ENV_PATH = pathlib.Path(__file__).resolve().parent.parent / ".env"
+if not _ENV_PATH.is_file():
+    _ENV_PATH = _ENV_PATH.parent.parent / ".env"
+load_dotenv(_ENV_PATH)
 
 # six weighted dimensions from the deck (sum = 1.00)
 WEIGHTS = {
@@ -164,14 +165,11 @@ GLASSDOLLAR_API_TIMEOUT = float(os.getenv("GLASSDOLLAR_API_TIMEOUT", "60"))
 
 
 # ----------------------------------------------------------------------------- Siemens Directory
-# Employee directory (core/directory_api.py) for the "Relevant Siemens Contact" under Empower's
-# Tool fit. API-key header; /people filtered by department. Like the GlassDollar key, it resolves
-# only inside the Siemens network, so nothing about it can be verified from a laptop or CI. The
-# header and parameter names are configurable because only the endpoint is documented here.
 SIEMENS_DIRECTORY_API_BASE = os.getenv("SIEMENS_DIRECTORY_API_BASE", "https://api.siemens.com/directory").rstrip("/")
-SIEMENS_DIRECTORY_KEY_HEADER = os.getenv("SIEMENS_DIRECTORY_KEY_HEADER", "x-api-key")
-SIEMENS_DIRECTORY_DEPARTMENT_PARAM = os.getenv("SIEMENS_DIRECTORY_DEPARTMENT_PARAM", "department")
-SIEMENS_DIRECTORY_CURSOR_PARAM = os.getenv("SIEMENS_DIRECTORY_CURSOR_PARAM", "cursor")
+SIEMENS_DIRECTORY_KEY_HEADER = os.getenv("SIEMENS_DIRECTORY_KEY_HEADER", "apikey")
+SIEMENS_DIRECTORY_DEPARTMENT_PARAM = os.getenv("SIEMENS_DIRECTORY_DEPARTMENT_PARAM", "filter[department]")
+SIEMENS_DIRECTORY_CURSOR_PARAM = os.getenv("SIEMENS_DIRECTORY_CURSOR_PARAM", "page[cursor]")
+SIEMENS_DIRECTORY_LIMIT_PARAM = os.getenv("SIEMENS_DIRECTORY_LIMIT_PARAM", "page[limit]")
 # The docs recommend low limits: one page of this size, at most DIRECTORY_MAX_PAGES pages.
 SIEMENS_DIRECTORY_LIMIT = int(os.getenv("SIEMENS_DIRECTORY_LIMIT", "25"))
 SIEMENS_DIRECTORY_MAX_PAGES = int(os.getenv("SIEMENS_DIRECTORY_MAX_PAGES", "4"))

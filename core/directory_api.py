@@ -1,7 +1,8 @@
 """Siemens Directory API client: employees by department, for the "Relevant Siemens Contact" list.
 
-`GET {SIEMENS_DIRECTORY_API_BASE}/people` with the API key in a header and the department as a
-filter. Only three fields leave this module — `commonName`, `department` and `email` (LDAP `cn`,
+`GET {SIEMENS_DIRECTORY_API_BASE}/people` with the key in `apikey`, `filter[department]`,
+and `page[limit]` / `page[cursor]`. People are JSON:API resources under `data[].attributes`;
+pagination uses `meta.page.nextCursor`. Only three fields leave this module — `commonName`, `department` and `email` (LDAP `cn`,
 `department`, `mail`) — because a contact list needs nothing more, and anything else in a person
 record is not ours to copy. Any of the three may be null in LDAP; a person with neither a name
 nor an email is not a contact and is dropped.
@@ -11,8 +12,7 @@ SIEMENS_DIRECTORY_MAX_PAGES pages of SIEMENS_DIRECTORY_LIMIT. If a cursor is rej
 the search restarts from the beginning once, as the docs require — continuing from a guess would
 miss or repeat people.
 
-The key resolves only inside the Siemens network: tests/test_siemens_contacts.py drives this
-contract with a fake, and nothing here has been verified against the live service.
+Live service access requires an API key authorised for the Directory service.
 """
 from __future__ import annotations
 
@@ -42,6 +42,10 @@ def configured() -> bool:
 def _person(raw) -> dict | None:
     if not isinstance(raw, dict):
         return None
+    if "attributes" in raw:
+        raw = raw["attributes"]
+        if not isinstance(raw, dict):
+            return None
     out = {"name": _text(raw.get("commonName")), "department": _text(raw.get("department")),
            "email": _text(raw.get("email"))}
     return out if out["name"] or out["email"] else None
@@ -59,6 +63,11 @@ def _page(body) -> tuple[list, str]:
     if not isinstance(body, dict):
         return [], ""
     people = next((body[k] for k in ("people", "data", "items", "results") if isinstance(body.get(k), list)), [])
+    meta = body.get("meta")
+    page = meta.get("page") if isinstance(meta, dict) else None
+    if isinstance(page, dict) and "nextCursor" in page:
+        cursor = page["nextCursor"]
+        return people, str(cursor) if isinstance(cursor, (str, int)) and cursor else ""
     cursor = next((str(body[k]) for k in ("nextCursor", "next_cursor", "cursor", "next")
                    if body.get(k) and isinstance(body.get(k), (str, int))), "")
     return people, cursor
@@ -80,6 +89,11 @@ class DirectoryClient:
         if r.status_code in (400, 422) and config.SIEMENS_DIRECTORY_CURSOR_PARAM in params \
                 and "cursor" in (r.text or "").lower():
             raise InvalidCursor(r.text[:200])
+        if r.status_code == 401:
+            raise DirectoryError("Siemens Directory authentication failed (401). Check SIEMENS_DIRECTORY_API_KEY.")
+        if r.status_code == 403:
+            raise DirectoryError("Siemens Directory access denied (403). Check SIEMENS_DIRECTORY_KEY_HEADER "
+                                 "(documented as apikey), then this key's service subscription and access permissions.")
         if r.status_code != 200:
             raise DirectoryError(f"Siemens Directory request failed ({r.status_code})")
         try:
@@ -102,7 +116,8 @@ class DirectoryClient:
 
     def _read(self, department: str) -> list[dict]:
         out, cursor = [], ""
-        base = {config.SIEMENS_DIRECTORY_DEPARTMENT_PARAM: department, "limit": config.SIEMENS_DIRECTORY_LIMIT}
+        base = {config.SIEMENS_DIRECTORY_DEPARTMENT_PARAM: department,
+            config.SIEMENS_DIRECTORY_LIMIT_PARAM: max(1, min(100, config.SIEMENS_DIRECTORY_LIMIT))}
         for _ in range(max(1, config.SIEMENS_DIRECTORY_MAX_PAGES)):
             params = {**base, **({config.SIEMENS_DIRECTORY_CURSOR_PARAM: cursor} if cursor else {})}
             people, cursor = _page(self._get(params))

@@ -387,16 +387,44 @@ class LLMClient:
         return out
 
     def embedding_model(self) -> str:
-        """The embedding model this provider serves, or '' when none is known.
-
-        Gemini's is verified (gemini-embedding-001 through the same OpenAI-compatible endpoint and
-        key). Whether the Siemens gateway serves one cannot be checked from outside its network, so
-        it embeds only when EMBEDDING_MODEL names a model; otherwise callers use word matching.
-        """
+        """The embedding model served by the selected endpoint."""
         configured = os.getenv("EMBEDDING_MODEL", "").strip()
         if configured:
             return configured
+        if self.provider == "openai" and self.base_url.rstrip("/") == "https://llm.sdc.siemens.cloud/v1":
+            return "google/gemini-embedding-2"
         return "gemini-embedding-001" if self.provider == "gemini" else ""
+
+    def _gateway_embeddings(self, texts: list[str], model: str, dims: int) -> list:
+        from concurrent.futures import ThreadPoolExecutor
+        import requests
+        model_path = f"models/{model.removeprefix('google/')}"
+        url = f"{self.base_url.rstrip('/').removesuffix('/v1')}/v1beta/{model_path}:embedContent"
+
+        def embed_one(text: str) -> list:
+            attempt = 0
+            while True:
+                attempt += 1
+                if _rate_gate is not None:
+                    _rate_gate()
+                try:
+                    response = requests.post(
+                        url, headers={"x-api-key": self.key},
+                        json={"content": {"parts": [{"text": text}]}, "outputDimensionality": dims},
+                        timeout=LLM_TIMEOUT,
+                    )
+                    break
+                except (requests.ConnectionError, requests.Timeout):
+                    if attempt >= EMBED_RETRIES:
+                        raise
+                    time.sleep(RETRY_BACKOFF * attempt)
+            response.raise_for_status()
+            return list(response.json()["embedding"]["values"])
+
+        if len(texts) == 1:
+            return [embed_one(texts[0])]
+        with ThreadPoolExecutor(max_workers=min(8, len(texts))) as executor:
+            return list(executor.map(embed_one, texts))
 
     def embed(self, texts: list[str], dims: int = EMBEDDING_DIMS, cache: bool = True) -> Optional[list]:
         """Embedding vectors for ``texts`` (one per text), or None when this provider cannot embed.
@@ -423,11 +451,16 @@ class LLMClient:
         while True:
             attempt += 1
             try:
-                if _rate_gate is not None:
-                    _rate_gate()
-                resp = self._client.embeddings.create(model=model, input=list(texts), dimensions=dims,
-                                                      timeout=LLM_TIMEOUT)
-                vectors = [list(d.embedding) for d in resp.data]
+                if self.provider == "openai" and model.startswith("google/gemini-embedding-"):
+                    vectors = self._gateway_embeddings(texts, model, dims)
+                    usage = None
+                else:
+                    if _rate_gate is not None:
+                        _rate_gate()
+                    resp = self._client.embeddings.create(model=model, input=list(texts), dimensions=dims,
+                                                          timeout=LLM_TIMEOUT)
+                    vectors = [list(d.embedding) for d in resp.data]
+                    usage = getattr(resp, "usage", None)
                 break
             except Exception as e:                              # noqa: BLE001 — any failure means "no vectors"
                 wait = _rate_limit_wait(e, attempt)
@@ -441,7 +474,7 @@ class LLMClient:
                 _record_call(kind="embedding", model=model, provider=self.provider, started=started,
                              ok=False, reason=_failure_reason(e), attempts=attempt)
                 return None
-        usage = getattr(resp, "usage", None)
+        self.last_error = ""
         _record_call(kind="embedding", model=model, provider=self.provider, started=started,
                      input_tokens=getattr(usage, "prompt_tokens", 0), total_tokens=getattr(usage, "total_tokens", 0))
         if key:

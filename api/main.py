@@ -747,7 +747,7 @@ def run_business_flow(run_id: int, user: Principal = Depends(current_user)) -> d
 
 @app.post("/api/runs/{run_id}/lookup/contacts")
 def run_contacts(run_id: int, refresh: bool = False, user: Principal = Depends(current_user)) -> dict:
-    """Relevant Siemens contacts for the tools this run's Empower Tool fit cites, from the Siemens
+    """Relevant Siemens contacts for up to five tools recommended by this run's Empower pillar, from the Siemens
     Directory (core/siemens_contacts.py). Declared before the generic lookup route so "contacts" is
     not read as one of its kinds.
 
@@ -758,8 +758,19 @@ def run_contacts(run_id: int, refresh: bool = False, user: Principal = Depends(c
     res = _run_for(run_id, user)
     empower = ((res.get("assessment") or {}).get("pillars") or {}).get("Empower") or {}
     tool_fit = next((c for c in empower.get("criteria") or [] if c.get("id") == "tool_fit"), {})
-    return contacts([e for e in tool_fit.get("catalog") or [] if str(e.get("id", "")).startswith("tool:")],
-                    refresh=refresh)
+    candidates = list(empower.get("recommended_tools") or []) + list(tool_fit.get("catalog") or [])
+    tools, seen = [], set()
+    for entry in candidates:
+        if not isinstance(entry, dict) or not str(entry.get("id", "")).startswith("tool:"):
+            continue
+        name = str(entry.get("name") or "").strip().casefold()
+        if not name or name in seen:
+            continue
+        tools.append(entry)
+        seen.add(name)
+        if len(tools) == 5:
+            break
+    return contacts(tools, refresh=refresh)
 
 
 @app.post("/api/runs/{run_id}/lookup/{kind}")

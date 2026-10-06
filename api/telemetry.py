@@ -120,10 +120,10 @@ _LIBRARIES = (
     "opentelemetry.instrumentation.requests:RequestsInstrumentor",   # GlassDollar, Tracxn, sites
     "opentelemetry.instrumentation.httpx:HTTPXClientInstrumentor",   # the OpenAI SDK's transport
     "opentelemetry.instrumentation.botocore:BotocoreInstrumentor",   # the S3 upload per write
-    # Model, latency and token usage per completion. Prompt and completion text are NOT captured
-    # unless OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true, and should stay off: prompts
-    # carry the evidence the run gathered, which belongs in runs.db, not a log store.
-    "opentelemetry.instrumentation.openai_v2:OpenAIInstrumentor",
+    # openai_v2:OpenAIInstrumentor (model, latency and token usage per completion) is out until a
+    # published release imports cleanly — see requirements.txt. The httpx spans still time each
+    # completion. If it returns, leave OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT off:
+    # prompts carry the evidence the run gathered, which belongs in runs.db, not a log store.
     # SQLite is absent because it would record nothing: the dbapi instrumentation traces
     # cursor.execute, api/store.py calls con.execute, and the proxy it wraps every connection in
     # is pure risk for no spans. The S3 upload after each write is the slow part, and botocore

@@ -17,9 +17,10 @@ redis>=5.0
 # locally and fails in a clean image — hence the explicit pin.
 httpx>=0.27
 # Telemetry to SigNoz (api/telemetry.py), inert unless OTEL_EXPORTER_OTLP_ENDPOINT is set. core/
-# imports only opentelemetry-api, whose spans are no-ops without the SDK. Pinned as a set: the
-# instrumentations must match each other, openai-v2 2.4b0 imports a module no published
-# opentelemetry-util-genai has, and 2.3b0 calls wrapt with a keyword wrapt 2 renamed.
+# imports only opentelemetry-api, whose spans are no-ops without the SDK. Kept as one release
+# train: the instrumentations must match each other. opentelemetry-instrumentation-openai-v2 is
+# absent on purpose — 2.4b0 imports opentelemetry.util.genai.instruments, which no published
+# opentelemetry-util-genai ships, and 2.3b0 needs wrapt<2, a pin the dependency gate refuses.
 opentelemetry-api==1.45.0
 opentelemetry-sdk==1.45.0
 opentelemetry-exporter-otlp-proto-http==1.45.0
@@ -27,7 +28,5 @@ opentelemetry-instrumentation-fastapi==0.66b0
 opentelemetry-instrumentation-requests==0.66b0
 opentelemetry-instrumentation-httpx==0.66b0
 opentelemetry-instrumentation-botocore==0.66b0
-opentelemetry-instrumentation-openai-v2==2.3b0
-wrapt>=1.14,<2
 
 jsonschema>=4.23,<5

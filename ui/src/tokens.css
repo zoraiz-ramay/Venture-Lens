@@ -16,7 +16,7 @@
    (rail/top bar/side nav/assistant dock) previously carried iX's DARK-schema values as literals
    over an otherwise light workspace — a construct iX has no equivalent for. Per CLAUDE.md's
    design contract, that seam does not survive by default; MIG-06 through MIG-11 replace the
-   hand-rolled shell with iX's own shell primitives (IxApplication/IxApplicationHeader/IxMenu/
+   hand-rolled shell with iX's own shell primitives (IxApplication/IxApplicationHeader/IxMenu/  secret-scan:allow (component names)
    IxPane), which render in the same light schema as the rest of the app. `--chrome-*` consumers
    in styles.css now read the workspace tokens below instead.
    ========================================================================== */

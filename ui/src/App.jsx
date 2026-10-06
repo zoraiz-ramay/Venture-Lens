@@ -185,7 +185,7 @@ function Rail() {
           // one-way close. Not a route, so no href: there is nothing to link to, only a panel
           // to toggle.
           <IxMenuItem key={n.label} slot="bottom" icon={n.icon} label={n.label}
-            aria-label={n.label} active={dockOpen} aria-expanded={dockOpen}
+            aria-label={n.label} active={dockOpen} aria-expanded={String(dockOpen)}
             onClick={() => setDockOpen(!dockOpen)} />
         ) : (
           // home: Home is the one item TopBar's comment says is "relocated, not lost" from the

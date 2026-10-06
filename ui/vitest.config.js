@@ -18,6 +18,10 @@ export default mergeConfig(
       // either way, since Vite's client build already applies the "browser" condition there.
       conditions: ["browser"],
     },
+    // Vite 6 split resolution by environment: Vitest resolves (and externalizes) modules through
+    // the SSR environment, which no longer inherits resolve.conditions above. Without this the
+    // SSR build of @siemens/ix-react is loaded again and iX props never reach their elements.
+    ssr: { resolve: { conditions: ["browser"], externalConditions: ["browser"] } },
     test: {
       environment: "jsdom",
       globals: true,

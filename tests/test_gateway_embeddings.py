@@ -60,7 +60,7 @@ def test_gateway_uses_native_gemini_route_and_siemens_auth(monkeypatch):
     assert client.last_error == ""
     url, options = seen[0]
     assert url == "https://llm.sdc.siemens.cloud/v1beta/models/gemini-embedding-2:embedContent"
-    assert options["headers"] == {"x-api-key": "test-key"}
+    assert options["headers"] == {"x-api-key": "test-key"}  # secret-scan:allow (placeholder test value)
     assert options["json"] == {"content": {"parts": [{"text": "robot simulation"}]}, "outputDimensionality": 2}
     assert options["timeout"] == llm_mod.LLM_TIMEOUT
 

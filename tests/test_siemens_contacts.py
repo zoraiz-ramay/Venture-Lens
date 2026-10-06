@@ -126,7 +126,7 @@ def test_a_failed_request_is_an_error_not_an_empty_department():
 def test_authentication_and_authorisation_failures_are_actionable_without_exposing_secrets(status, expected):
     session = _Session(_Resp(status, {"message": "You cannot consume this service"}, text="sensitive response"))
     with pytest.raises(DirectoryError) as failure:
-        DirectoryClient(api_key="secret-test-key", session=session).people_in("DI")
+        DirectoryClient(api_key="secret-test-key", session=session).people_in("DI")  # secret-scan:allow (placeholder test value)
     message = str(failure.value)
     assert expected in message and str(status) in message
     assert "secret-test-key" not in message and "sensitive response" not in message

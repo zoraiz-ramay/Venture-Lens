@@ -14,6 +14,12 @@ for name in GLASSDOLLAR_API_KEY OPENAI_API_KEY GEMINI_API_KEY SIEMENS_DIRECTORY_
 done
 unset val cur
 
+# Entra refuses to boot without a redirect URI. When none is configured, derive it from the
+# Tracxn callback, which already carries this app's public origin.
+if [ -z "${ENTRA_REDIRECT_URI:-}" ] && [ -n "${TRACXN_REDIRECT_URI:-}" ]; then
+  export ENTRA_REDIRECT_URI="${TRACXN_REDIRECT_URI%/api/integrations/tracxn/callback}/api/auth/callback"
+fi
+
 # Start Redis
 echo "Starting Redis..."
 redis-server /app/redis.conf --daemonize yes

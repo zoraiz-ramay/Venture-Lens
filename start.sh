@@ -17,7 +17,15 @@ unset val cur
 # Entra refuses to boot without a redirect URI. When none is configured, derive it from the
 # Tracxn callback, which already carries this app's public origin.
 if [ -z "${ENTRA_REDIRECT_URI:-}" ] && [ -n "${TRACXN_REDIRECT_URI:-}" ]; then
-  export ENTRA_REDIRECT_URI="${TRACXN_REDIRECT_URI%/api/integrations/tracxn/callback}/api/auth/callback"
+  origin="${TRACXN_REDIRECT_URI%/api/integrations/tracxn/callback}"
+  origin="${origin%/}"
+  # A bare hostname has no scheme; Entra only accepts https redirects outside localhost.
+  case "$origin" in
+    http://*|https://*) ;;
+    *) origin="https://$origin" ;;
+  esac
+  export ENTRA_REDIRECT_URI="$origin/api/auth/callback"
+  unset origin
 fi
 
 # Start Redis

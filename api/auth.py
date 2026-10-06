@@ -126,6 +126,19 @@ def _enforce_seals(mode: str) -> None:
         )
 
 
+def _normalize_redirect_uri(uri: str) -> str:
+    """Collapse repeated slashes in the path (`host//api/...` -> `host/api/...`).
+
+    Entra compares redirect URIs character for character, so a stray slash pasted into the
+    secret turns into AADSTS50011 at sign-in rather than an error anyone can see at boot.
+    """
+    scheme, sep, rest = uri.partition("://")
+    if not sep:
+        return uri
+    host, slash, path = rest.partition("/")
+    return f"{scheme}://{host}{slash}{re.sub('/{2,}', '/', path).lstrip('/')}" if slash else uri
+
+
 @lru_cache(maxsize=1)
 def settings() -> AuthSettings:
     """Build (and validate) auth config once, at app construction.
@@ -145,7 +158,7 @@ def settings() -> AuthSettings:
         tenant_id=_secret_from_env("ENTRA_TENANT_ID"),
         client_id=_secret_from_env("ENTRA_CLIENT_ID"),
         client_secret=_secret_from_env("ENTRA_CLIENT_SECRET"),
-        redirect_uri=_secret_from_env("ENTRA_REDIRECT_URI"),
+        redirect_uri=_normalize_redirect_uri(_secret_from_env("ENTRA_REDIRECT_URI")),
         session_ttl=int(os.getenv("SESSION_TTL_SECONDS", "28800")),
         session_backend=os.getenv("SESSION_BACKEND", "redis").strip().lower(),
         redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1").strip(),

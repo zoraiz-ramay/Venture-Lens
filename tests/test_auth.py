@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from api.auth import ClaimsError, map_entra_error, validate_claims
+from api.auth import ClaimsError, _normalize_redirect_uri, map_entra_error, validate_claims
 from api.main import app
 
 TENANT = "11111111-2222-3333-4444-555555555555"
@@ -146,3 +146,12 @@ def test_entra_errors_map_to_actionable_codes(description, expected):
 
 def test_user_cancellation_is_not_reported_as_a_failure():
     assert map_entra_error("access_denied", "the user cancelled") == "cancelled"
+
+
+@pytest.mark.parametrize("raw", [
+    "https://venture-lens-hydra.app.hydra.siemens.com/api/auth/callback",
+    "https://venture-lens-hydra.app.hydra.siemens.com//api/auth/callback",
+    "https://venture-lens-hydra.app.hydra.siemens.com///api//auth/callback",
+])
+def test_redirect_uri_collapses_stray_slashes(raw):
+    assert _normalize_redirect_uri(raw) == "https://venture-lens-hydra.app.hydra.siemens.com/api/auth/callback"

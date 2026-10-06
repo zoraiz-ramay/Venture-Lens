@@ -84,6 +84,16 @@ def test_it_emits_the_profile_before_the_score(offline):
     assert seen[-1] == "routing"
 
 
+def test_the_traction_rubric_arrives_before_the_model_score(offline):
+    """The rubric needs no model, so it goes out the moment the research joins — a reviewer can
+    read the points breakdown while the scoring completion is still running."""
+    df, tools = offline
+    seen = []
+    _run(df, tools, on_partial=lambda s, d: seen.append(s))
+    assert seen.count("traction") == 1
+    assert seen.index("traction") < seen.index("score")
+
+
 def test_the_profile_is_emitted_before_the_research_that_deepens_it(offline):
     """The measurement that forced this: on a real run the deep-profile branch returned at 112s of
     118s. A page waiting for it waits for the whole evaluation, so the row-level profile goes out
@@ -134,7 +144,7 @@ def test_every_partial_matches_the_final_result(offline):
     df, tools = offline
     captured = {}
     result = _run(df, tools, on_partial=lambda s, d: captured.__setitem__(s, d))
-    for section in ("score", "routing", "trend", "fit", "verification", "summary"):
+    for section in ("score", "routing", "trend", "fit", "verification", "summary", "traction"):
         assert json.dumps(captured[section], sort_keys=True, default=str) == \
                json.dumps(result[section], sort_keys=True, default=str), section
 
@@ -154,3 +164,35 @@ def test_a_consumer_that_throws_does_not_break_the_evaluation(offline):
 def test_no_callback_is_still_the_supported_case(offline):
     df, tools = offline
     assert _run(df, tools)["found"]
+
+
+def test_scoring_that_never_reads_fit_starts_while_fit_is_still_running(offline, monkeypatch):
+    """Fit's match call takes ~35s and used to sit in front of all scoring. Here fit refuses to
+    finish until Team & Ecosystem and Market have started: under the old schedule (score only
+    after all five branches) that is a wait that never ends, so the run comes back without them."""
+    import threading
+    from core import team_ecosystem, market as market_mod
+    df, tools = offline
+    started = {"team": threading.Event(), "market": threading.Event()}
+    real_fit, real_team, real_market = pipeline.match_siemens_tools, team_ecosystem.assess_team, market_mod.assess_market
+
+    def slow_fit(*a, **kw):
+        overlapped = all(e.wait(5) for e in started.values())
+        out = real_fit(*a, **kw)
+        out["_overlapped"] = overlapped
+        return out
+
+    def team(*a, **kw):
+        started["team"].set()
+        return real_team(*a, **kw)
+
+    def market(*a, **kw):
+        started["market"].set()
+        return real_market(*a, **kw)
+
+    monkeypatch.setattr(pipeline, "match_siemens_tools", slow_fit)
+    monkeypatch.setattr(team_ecosystem, "assess_team", team)
+    monkeypatch.setattr(market_mod, "assess_market", market)
+    dep = {"id": "di", "label": "Digital Industries", "interests": ["machine vision"], "demo": True}
+    result = _run(df, tools, department=dep)
+    assert result["fit"]["_overlapped"] is True

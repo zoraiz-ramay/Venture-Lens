@@ -33,6 +33,7 @@ export function ResearchProvider({ userId, children }) {
     poll();
     return () => { stopped = true; clearTimeout(timer); };
   }, []);
+  // No department: every evaluation is assessed for all of them (api/main._all_departments).
   const start = ({ names, problem, refresh = false }) => {
     const signature = JSON.stringify([names, problem, refresh]);
     if (pendingStarts.current.has(signature)) return pendingStarts.current.get(signature);

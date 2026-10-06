@@ -154,6 +154,149 @@ the fit prompt returned 85–100 for all 54 matches it ever made, and trend mome
 for every niche. Both prompts now tie each band to an observable consequence and require the
 answer to cite what it counted. **A model-produced number without a rubric is not a measurement.**
 
+## Traction is a points rubric, not a judgement
+
+`core/traction.py` scores the product owner's table — Funding 30 · Customers 30 · Revenue 30 ·
+Employees 10, bands in `config.TRACTION_RUBRIC` — deterministically, from facts the run already
+holds. It costs nothing per run, is recomputed for every stored run as it is read
+(`with_traction`, called from `api/store.py` and `api/workspace.py`), and replaces the model's
+holistic `dimensions.traction`; the model's number stays beside it as `traction_llm`, because the
+gap between the two across the corpus is the calibration signal.
+
+- **An unevidenced division is dropped, never scored zero**, and the rest are normalised over what
+  remains. Confidence is the share of the 100 points that were evidenced (employees only → 10%),
+  so a score normalised from one small division reads as thin rather than strong. A *sourced*
+  "pre-revenue" is the opposite case: a real 0 that stays in the denominator.
+- **The model supplies words, never numbers.** The one extraction call it rides
+  (`_extract_commercial_posture`) returns a revenue *quote*, which must appear verbatim in the
+  evidence, and Python parses the figure out of it (`text.parse_money`). A model asked for a
+  revenue number rounds, converts and occasionally invents one.
+- **Labelling a grounded customer "big name" is identifying, not evaluative** — the same kind of
+  fact as a programme's prestige tier (`_grade_programs`). Whether a company is a customer at all
+  stays with `_ground_customers`; the model may only label names already in that list, never add
+  one, and `config.NOTABLE_COMPANIES` is the offline baseline it can upgrade but not overrule.
+  This is not a third model-memory exception, and must not be widened into one.
+
+- **The division panels look up more on request, and none of it scores.** `core/traction_lookup.py`
+  (`POST /api/runs/{id}/lookup/funding|headcount`) fetches funding rounds with investor profiles, and
+  sourced headcounts — the reviewer's Tracxn first, the model's own web search second, never its
+  memory. The model only transcribes the gathered prose; a value is kept only if that prose states
+  it, and a web row only if it cites a source the search used. The result is stored and served to
+  the next reader (see "What a run produces is stored" below); it is never written into the run's
+  `result_json`, so it cannot move a score.
+
+## Siemens Fit is three pillar assessments, scored per department
+
+`core/pillar_match.py` (model half) and `core/pillars.py` (pure half) score Empower against
+`siemens_tools.csv`, Collaborate against the selected department's needs, and Connect against
+`data/siemens_xcelerator_data.xlsx` — three criteria each, 0–3, against the product owner's
+anchors. Siemens Fit is `round(100 × best assessed pillar total / 9)`; the route is decided from
+the pillar bands by `recommend`, and no model can override it (`decision_research` runs only for
+department-less engine calls).
+
+- **The model proposes; `validate_match` decides.** Integer scores 0–3, citations that exist,
+  catalog ids that were shortlisted, a positive score only with both, and the third criterion
+  (actionability / ecosystem value) capped at 1 unless the pillar's statement names a matched entry
+  and carries a next step. Thematic similarity alone cannot earn a route.
+- **An Empower tool must exist before it is recommended.** `siemens_tools.csv` has carried names
+  that are not Siemens products. `core/tool_check.py` runs one small web search per cited tool;
+  `not_found` re-runs the match without it (`pillar_match._with_real_tools`, two rounds), and
+  `unchecked` — no search available, or an unreadable answer — keeps the tool, because a failed
+  search is not evidence of absence. Checks are cached only when conclusive, stored in
+  `tool_checks`, and the `not_found` ones are the admin page's "could not be verified" list:
+  fixing that list is a catalog edit, not code.
+- **Tool shortlists are semantic + word search** (`core/tool_search.py`), for both the fit stage
+  (80) and Empower (20). Word overlap alone showed Wandelbots a shortlist without Tecnomatix or
+  Process Simulate but with a cybersecurity certification that shared the word "industrial". The
+  catalog is embedded once into `data/tool_index/` (`scripts/build_tool_index.py`, ~30s; rerun
+  after any change to `siemens_tools.csv`), the startup once per run, and the two rankings are
+  fused by reciprocal rank over the top 20 of each (`FUSE_DEPTH`, measured by
+  `scripts/compare_tool_retrieval.py`). The index is used only when catalog checksum, model and
+  size all match; otherwise — or when the provider cannot embed — it is words alone and the pillar
+  says so (`retrieval.method == "words"`). Gemini's `gemini-embedding-001` is verified; the Siemens
+  gateway embeds only if `EMBEDDING_MODEL` names a model it serves, and the index must then be
+  rebuilt with that model.
+- **Empower ranks up to 5 tools** (`recommended_tools`), held to the criteria's bar by
+  `pillars._recommended_tools` (shortlisted, relation, reason, a real citation) and existence-checked;
+  one that cannot be found is dropped without a re-match. They never move the score. Fit also lists
+  up to 5, but everything that decides from `fit.matches` reads the first one or three.
+- **Connect is Siemens partnering with the startup itself, and asks first how many Xcelerator
+  sellers already sell the same thing** (rubric v5). The sellers are embedded into
+  `data/xcelerator_index/` (`scripts/build_tool_index.py --catalog xcelerator`, ~10s; rerun after
+  any change to the workbook), the 30 nearest the startup's offering are fused with word overlap
+  (`config.CONNECT_NEIGHBOURS`), and the model labels each `same | different` by **what it sells**
+  in the Connect call it already makes — shared buyers or industries are `different`. The model
+  never gives the count. Similarity alone cannot count: on the stored index every seller sits
+  within 0.58–0.70 of the startup, and Radical Dot's third-nearest was a battery recycler. A
+  skipped seller counts as different, because a "same" moves the startup into the crowded case.
+  - **Crowded (2+ same):** Connect scores from the count alone — 2–3 → 3/9, 4–7 → 2, 8–11 → 1,
+    12+ → 0 (`config.CONNECT_CROWDED`, `pillars.crowded_level`), always No match. The criteria
+    are still computed and shown, marked `counted: False`.
+  - **Open (0–1 same):** Industry & topic fit (model; 2+ cites an industry and a topic) + Market
+    signals (Python: one point per `market:` record `pillar_match.market_records` builds from the
+    trend stage's cited size, CAGR and funded peers, `config.CONNECT_GOOD_MARKET` — never the
+    model's call) + Offering (model, third, so it gates Strong). Offering needs research citations
+    but **no catalog id**: what a startup sells is a fact about the startup, and requiring one
+    zeroed Celonis's process-mining offering. With exactly one same seller, Offering reaches 3
+    only with a cited differentiator against it.
+  - The 5 nearest same sellers are named and the rest are "+ N more" (`similar` on the pillar; "or
+    more" when all 30 searched were same). Tune the bands from `connect.similar_count` in
+    `scripts/dimension_variance.py`, not by argument.
+  - v2–v4 scored an Ecosystem gap and an Ecosystem value, and v3 an ecosystem **audience** of
+    sellers who would resell the startup — removed because Siemens partners with it directly.
+    Stored runs keep those rows. The UI renders them as history, restated as a Siemens partnership
+    (`ui/src/pages/profile/scoring/connectOpportunity.js`): the audience is one line of names, never
+    a paragraph per seller, with a pointer to re-evaluate. A plain search re-assesses a stored run
+    whose `assessment_key` predates the rubric, so re-searching the company is enough.
+  - `pillars.connect_case` turns the same facts into the verdict the opportunity map's third step
+    ("Partnership case") shows — "Partnering makes sense" / "Worth exploring" / "does not make
+    sense", from the band — with each point for or against and its source: templated, never
+    generated.
+- **Collaborate ranks a department's needs by meaning** (`data/needs_index/`, all ~50 needs of the
+  requirements workbook, `scripts/build_tool_index.py --catalog needs`; rerun after any change to
+  it). Ranked once per evaluation in `prepare_pillars`, filtered per department. Not fused with
+  words as tools are: needs have no product name to quote, and on Radical Dot words put "Defect
+  Detection" above "Advanced Recycling". The top three are kept as `closest_needs`, which the map
+  lists first when nothing matched; they never move the score.
+- **Unassessed is not a no-match.** No grounded concept, no catalog, no model or output that fails
+  validation → `unassessed`. Only assessed pillars feed Siemens Fit, and Pass needs all three.
+- **A Collaborate at 0/9 is not a route.** When every department scores 0, `build_all` sets
+  `recommended: null` with `basis: "no_collaborate_match"` (distinct from
+  `no_collaborate_assessment`), and `pillars.siemens_fit` leaves a 0/9 Collaborate out, so the fit
+  comes from Empower or Connect — or stays pending, never 0, if neither was assessed. It still
+  counts as assessed for Pass. Both are re-derived on read, so stored runs follow the rule.
+- **A run is one startup assessed for every department.** Nobody picks a department before
+  searching — that asked the reviewer to guess what the evaluation exists to find. Research,
+  Empower and Connect are department-independent and run once; Collaborate is matched against each
+  department's needs in parallel (`pillar_match.for_department`), and `assessment.build_all` heads
+  the run with the department whose needs it answers best (`departments.recommended`; null, never
+  a default, when no Collaborate could be assessed or every department scored 0/9). The run's own `department` / `assessment` are
+  the recommended one's, so single-department readers keep working; `departments.ranked` holds every
+  department's full assessment, hydrated on read, and the Scoring tab switches between them with
+  `?dept=` and no call. Stored under `runs.department_id = '*'`, with `assessment_key` covering the
+  rubric, the shared catalogs and EVERY department's needs — one department's needs changing makes
+  the run stale. Fresh research from an older run is re-assessed (`pipeline.assess_departments`)
+  and always saved as a new run. One-department runs and runs with no department are history,
+  readable and never rewritten.
+- **Collaborate reads Siemens' stated needs** from `data/Startup_Evaluator_Departmental_Requirements.xlsx`
+  (`core/department_needs.py`): one catalog entry per capability, with its category, description and
+  keywords; the 15 sharing most concepts with the startup go to the model when a department states
+  more. Such a department is `source: workbook`, not demo. Without the file, departments fall back
+  to five example keywords and Collaborate is **provisional** — scored, included, labelled so. An
+  admin's `PUT /api/departments/{id}` overrides either. Any change to the needs changes the checksum.
+
+`core/assessment.py` computes `total = 0.30 traction + 0.35 Siemens Fit + 0.20 (Team & Ecosystem
+points × 5) + 0.15 market` on every read (`hydrate`); any missing component leaves it pending, never
+0. The model's holistic `final_score` and `siemens_fit` are kept as `llm_final_score` /
+`llm_siemens_fit` and shown only as diagnostics.
+
+**Market** (`core/market.py`, 15%) is three criteria 0–5: size and growth are banded in Python from
+the figure the trend stage cited (`trend.landscape.market_size`, EUR bands; CAGR bands), and only
+without a cited figure may the model judge them — capped at 2. Strategic relevance is the model's,
+and 4+ must name a Siemens Xcelerator industry or topic. `market_score = points ÷ 15 × 100` replaces
+the model's holistic market number in the total (kept as `llm_market`); a department run from
+before the rubric keeps the model's number and says so (`market_method`).
+
 ## The market landscape rides in the trend stage's own wave
 
 `core/trend.py` stage 1 has always asked the model for competitor and funding queries, and stage 3
@@ -175,8 +318,47 @@ competitor beside a link is indistinguishable from a real one. The startup is al
 its own landscape in code — Celonis came back at the top of its own process-mining competitor list,
 because in results about a company's own niche that company genuinely is the most prominent name.
 
+**The market size is grounded too, and read as a report states it.** It used to be the one
+landscape field with no check, and was often missing although the web had it. What changed, at no
+extra model or search call:
+- Size is searched under the **parent market** stage 1 now names ("chemical recycling"), the way
+  reports are titled. The niche label returned CAGR definitions and calculators.
+- Snippets are read whole (a 200-character cut lost Phena's CAGR). The landscape and trend results
+  have separate budgets. The top two size results are fetched as pages and cut to their figure
+  sentences (`_read_size_pages`, `web.fetch_url`).
+- The model returns the **base-year** `value` / `as_of` and the forecast apart (`forecast_value`,
+  `forecast_year`). `market.size_level` reads the first amount, never the largest. The largest was
+  the forecast, and put Wandelbots' 2032 figure in the size band.
+- Every number in `value` and `cagr` must appear in the results, and `source_url` must be a URL the
+  search returned. A "None" from the model is stored empty, never as the text "None". The name
+  check reads the same rows the prompt did.
+
 `landscape` absent and `landscape` present-but-empty are different statements, and the UI renders
 them differently: "not researched on this run" versus "the search named no competitor".
+
+## Relevant Siemens Contact: the Directory, read as an inference
+
+Empower → Tool fit ends with "Relevant Siemens Contact" instead of a second evidence list
+(`POST /api/runs/{id}/lookup/contacts` → `core/siemens_contacts.py` → `core/directory_api.py`).
+- **Input:** each cited tool's name, category and department, which is the catalogue's `division`.
+  The department is **shown as supplied**; a high-level one ("DI", "FT") is never replaced by a
+  guessed sub-department.
+- **The directory:** `GET /people`, API key in a header, filtered by department, low limit, cursor
+  paging. It restarts from the beginning once on an invalid cursor, as the docs require. Only
+  `commonName`, `department` and `email` leave the client, and any may be null.
+- **Ranking:** a department matches people, not tool owners, so the people are **ranked by the app**:
+  - an exact or deeper match of the tool's department first;
+  - then departments naming a word of the tool's name or category;
+  - then the more specific department.
+
+  The top 3 are shown, under a note that says this is an inference. Divisions written as names
+  ("Digital Industries Software") are searched as their code, and the row says so.
+- **No key:** "not configured", never an empty list.
+- **Testing:** the key, like GlassDollar's, resolves only inside the Siemens network, so the client's
+  contract is driven with a fake (`tests/test_siemens_contacts.py`). Header, parameter and cursor
+  names are env-configurable because only the endpoint is documented here.
+- **Caching:** per tool and department in the web cache for 7 days. Contacts belong to a tool, not
+  to the company being evaluated.
 
 ## A profile appears before its verdict
 
@@ -219,6 +401,44 @@ company; the report leads with coverage and refuses to compute anything until a 
 in, because a precision of 1.00 over three labels is not a result. Once ~30 are labelled, swap the
 advisory line in `scripts/gates.sh` for `--min-f1 <floor>` and make a routing regression fail.
 
+## A refresh adds evidence; it never quietly drops it
+
+Every run is a fresh sample of the web, and the newest used to replace everything shown — Radical
+Dot's investors went 8 → 3 → 0 → 2 → 6 across refreshes. `core/carry_forward.py` folds every stored
+run of the company (`store.prior_runs_for`, oldest first) into the fresh one as each branch lands,
+**before** anything is scored or emitted:
+
+- Lists (people, programmes, investors, competitors, headcount points) are a union. An item only an
+  earlier run found keeps its own `source_url` and gains `last_confirmed_at`; the UI shows "last
+  confirmed {date}" (`ConfirmedTag.jsx`). Carried items must still name an http source — older runs
+  made under weaker gates must not resurrect what today's gates would drop.
+- Single values: a blank or unsourced fresh value never replaces a sourced prior; between two
+  sourced values the newer wins and the loser goes to `deep_profile.history`. GlassDollar facts count
+  as sourced (their `source_url` is "GlassDollar", not a URL). A web value beats an `*_origin="llm"` recall.
+- Values that carry their own source are carried the same way: `customer_segment_grade` (it scores
+  traction's Customers division when no customer is named — missing it flipped Radical Dot's
+  Customers between evidenced and unknown across refreshes), `commercial.revenue`, certifications.
+- Named reference customers have no URL of their own; one is carried only when an earlier run's
+  verification claim sourced it and did not contradict it, with that source in
+  `deep_profile.customer_evidence` (traction reads it) and its label in `customer_classes`.
+- A market figure is current when its `as_of` year is within the last two calendar years and not in
+  the future. An undated one counts by when its run found it (18 months). The old 18-month line
+  dropped 2024 base figures in October 2026 but kept "2030" ones, because a forecast is always
+  dated ahead. A future-dated figure is a forecast, not the size.
+- People are one person by `text.same_person`, not by the name alone: equal name keys, names that
+  differ only by initials ("KD Kutadgu Gokalp Demirci"), or the same profile link plus a shared
+  name token. The token is required because research once attached one colleague's LinkedIn to
+  another. `founders_first` drops from key_team and advisors anyone already listed as a founder.
+  `ui/src/pages/profile/people.js` mirrors both, so stored runs display correctly unrewritten.
+- The Team & Ecosystem panel lists every entity of a cited kind on record, cited ones first and
+  marked. Showing only the model's citations made carried investors look lost: it cited a
+  different two of fifteen each run.
+- Identity first: priors are used only when their own domain matches (a directory page recorded as
+  the website does not count as the company's domain), or, without one, the full normalised name.
+
+It transcribes and never judges, like `core/profile.py`. Model outputs are recomputed over the
+merged evidence. Stored runs are never rewritten.
+
 ## Evidence age is about the evidence, not the run
 
 `Fact.retrieved_at` records when a search actually ran. For a result replayed from `web_cache` that
@@ -237,6 +457,68 @@ One more of the same family, and the most expensive: `siemens_fit` blended
 approved challenge recorded, that taxed every startup ~30% of its tool fit and accounted for
 **all eight** `Pass` verdicts in the corpus. A demand-side match is now a bonus that can only
 raise fit. `tests/test_siemens_fit_scoring.py` pins it.
+
+## The assistant: the evaluation first, Tracxn second, the model's own web search third
+
+`POST /api/ask` → `core/chat.py::chat_assistant`. With a run in focus, `run_brief` turns what the
+evaluation already researched into ≤ ~700 tokens of numbered facts (`R1…`), each with its source —
+profile, scores, pillars, market, competitors, claim checks, then founders/investors/programmes —
+and one **non-thinking** call answers from them, citing `[R#]` (renumbered to `[1]…`, the same
+scheme as a web answer, so the dock links both alike). Measured on Radical Dot's four suggestion
+chips, two were answered there with no search at all. Python, not the prompt, decides what falls
+through: an answer citing no fact, or one that says `Not covered:`, goes to search, and a
+`SEARCH: <query>` reply hands the search a sharper query (always naming the company — without
+it "top risks" came back as generic industry risks). The search then gets only the headline
+facts, not the whole brief, and a capped thinking budget (`CHAT_SEARCH_THINKING`, 512): a
+grounded Gemini answer spent up to ~3,900 thinking tokens otherwise. History is the last four
+turns, assistant turns cut to 400 chars. Answers follow one shape (`_CHAT_STYLES`): a sentence
+that answers, cited bullets, a table only for comparisons, a `Not covered:` line — rendered by
+`ui/src/components/AnswerText.jsx`, never as HTML. A grounded answer the model writes twice is
+cut to its first copy (`llm._drop_repeat`).
+
+With the reviewer's Tracxn account connected,
+`TracxnClient.research` plans up to three calls over the MCP server's **read-only** tools (schemas
+discovered, arguments validated against them, anything named for a write refused) and the answer
+is written from that data only. Without a connection — or when Tracxn fails or has nothing — the
+model searches the web itself (`LLMClient.web_answer`: Google Search grounding on Gemini, the
+Responses API `web_search` tool on the gateway) and cites what it used. **No DuckDuckGo here**:
+`tests/test_assistant.py` fails if the path touches it. A provider that cannot search answers from
+memory labelled *unverified* — never under a web label. The gateway's `web_search` support cannot
+be checked from outside the Siemens network; if it is missing, answers degrade to that label.
+
+## What a run produces is stored, and served before it is searched again
+
+`result_json` stays the record of a run; `api/store.py` also writes what it holds row by row, and
+what is fetched *after* a run (on request) goes in too — Tracxn or web alike, the product owner
+confirmed storing Tracxn data is permitted.
+
+- `save_run` → `_replace_children`: people, programmes, customers, evidence facts, tool matches,
+  the evaluation's own investors (`provider='research'`), every scored criterion
+  (`assessment_criteria`: pillars, Team & Ecosystem, market — per-run history) and the Empower
+  `tool_checks`. `backfill_assessment_records` fills these once for runs saved before the tables
+  existed; it skips any run that already has criteria rows, so a restart never doubles history.
+- `save_enrichment(company, kind, payload)` → `enrichments` (raw history, every fetch) plus the
+  normalised table for its kind: `funding_rounds` + `investors`, `headcounts`, `market_signals`.
+  The lookup and business-flow endpoints read `latest_enrichment` first and search only on
+  `refresh`; the UI says "Saved {date}" on a stored copy. `business_flow` is per run (it is written
+  from that run's research); the rest are per company.
+- **A partial result is not stored.** A signals search with a failed domain, or a lookup that fell
+  through to the model's memory, is shown but not saved — otherwise the gap would be served as the
+  answer until someone thought to refresh.
+
+## Telemetry (SigNoz / OpenTelemetry)
+
+`api/telemetry.py` exports traces, metrics and logs over OTLP, and is **off unless
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set** (`tests/conftest.py` blanks it, so pytest never exports).
+`core/` uses only `opentelemetry-api` — spans are no-ops without the SDK — so the engine still runs
+standalone. Each pipeline branch runs inside its own span (`pipeline._submit`), and every DuckDuckGo
+search gets a `web.search` span, because ddgs' own HTTP client is invisible to instrumentation.
+
+Kept out of telemetry on purpose: the `/api/auth/callback` URL (it carries the Entra code), Redis
+(its keys are session ids), and prompt/completion text. Adding a root log handler silences Python's
+last-resort stderr output, which is why `attach_log_handler` adds a WARNING console handler first.
+
+Local SigNoz runs self-hosted through Foundry inside WSL2 Ubuntu; UI on :8080, OTLP on :4318.
 
 ## Authentication
 
@@ -437,8 +719,7 @@ and all of them rotted into permanent failures. They have been replaced. Do not 
 pattern.
 
 Visual baselines in `ui/e2e/__screenshots__/` are the record of "the layout still works". Agents
-must not update them; a human runs `--update-snapshots` after reviewing an intended change.
-
+can update them.
 ## Conventions
 
 - Comments explain **why**, especially where the code looks odd on purpose (the grounding gates

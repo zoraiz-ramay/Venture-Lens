@@ -1,6 +1,12 @@
 import React from "react";
+import ConfirmedTag from "../../components/ConfirmedTag.jsx";
 import { Spec, ExtLink } from "../../components/widgets.jsx";
 import Section from "./Section.jsx";
+import { dedupePeople, withoutListed } from "./people.js";
+import BusinessFlow from "./BusinessFlow.jsx";
+import MarketSignals from "./MarketSignals.jsx";
+import ReferenceCustomers from "./ReferenceCustomers.jsx";
+import { formatMoney } from "./scoring/presentation.js";
 
 /* A value the DB did not have, filled in from web research. Marked so it is never mistaken
    for application data — the source link is the evidence for it.
@@ -96,16 +102,36 @@ function HeadcountTrend({ points, status, band, bandSource }) {
   );
 }
 
+/* Revenue, read from the traction rubric's revenue division (core/traction.py), which already
+   holds the one thing a revenue figure needs: the source it was quoted from. The rubric only keeps
+   a figure that is sourced and parses as revenue, so a tile that shows an amount always shows its
+   link; a sourced mention without an amount says so, and nothing sourced is an em dash. */
+const BASIS = { arr: "ARR", mrr: "MRR × 12" };
+
+function RevenueMetric({ division: d }) {
+  let value = "—", note = "";
+  if (d?.status === "evidenced") {
+    value = d.value_eur != null ? formatMoney(d.value_eur) : "—";
+    note = [BASIS[d.basis], d.stale ? "figure over 3 years old" : ""].filter(Boolean).join(" · ");
+  } else if (d?.status === "zero_evidenced") {
+    value = "Pre-revenue";
+  } else if (d?.source_url) {
+    note = "mentioned, no figure";
+  }
+  return (
+    <div className="metric"><div className="k">Revenue</div>
+      <div className="v" title={d?.value || ""}>{value}</div>
+      {d?.source_url && <div className="s">{note && `${note} · `}<ExtLink href={d.source_url}>source</ExtLink></div>}
+    </div>
+  );
+}
+
 export default function OverviewTab({ res }) {
   const p = res.profile || {}, sc = res.score || {}, dp = res.deep_profile || {};
-  const trend = res.trend || {};
   const psrc = res.profile_sources || {};
-  const founders = (dp.founders || []).filter((f) => f?.name);
-  const advisors = (dp.advisors || []).filter((a) => a?.name);
+  const founders = dedupePeople((dp.founders || []).filter((f) => f?.name));
+  const advisors = withoutListed(dedupePeople((dp.advisors || []).filter((a) => a?.name)), founders);
   const programs = (dp.programs || []).filter((x) => x?.name);
-  const customers = dp.reference_customers?.length ? dp.reference_customers
-    : String(p.customers || p["Reference customers"] || "").split(/[,;|\n]+/).map((s) => s.trim()).filter(Boolean);
-  const hasSignals = (trend.signals || []).length > 0;
   const headcount = dp.employees || p.employees_count || p.employee_band || "";
   const asOf = reportedAsOf(headcount, dp.employees_over_time);
 
@@ -136,7 +162,7 @@ export default function OverviewTab({ res }) {
         <div className="metric"><div className="k">Funding</div>
           <div className="v" style={{ fontSize: 13 }} title={p.funding || ""}>
             {p.funding || "—"}{p.funding && <> <WebSourced src={psrc.funding} field="funding" /></>}</div></div>
-        <div className="metric"><div className="k">Verified customers</div><div className="v">{sc.verified_customers ?? "—"}</div></div>
+        <RevenueMetric division={(res.traction?.divisions || []).find((d) => d.id === "revenue")} />
         <div className="metric"><div className="k">Location</div>
           <div className="v" style={{ fontSize: 13 }} title={p.hq || ""}>
             {p.hq || "—"}{p.hq && <> <WebSourced src={psrc.hq} field="location" /></>}</div></div>
@@ -157,6 +183,8 @@ export default function OverviewTab({ res }) {
         {dp.parent_group && <Spec k="Part of group">{dp.parent_group}</Spec>}
       </Section>
 
+      <BusinessFlow res={res} />
+
       <Section id="profile-team-ecosystem">
         <h3>Team &amp; ecosystem</h3>
         {founders.length === 0 && advisors.length === 0 && programs.length === 0 && (
@@ -166,11 +194,11 @@ export default function OverviewTab({ res }) {
           <Spec key={i} k="Founder">
             {f.name} — {f.role || "founder"}
             {f.background && <span className="muted"> · {f.background}</span>}{" "}
-            {f.linkedin && <ExtLink href={f.linkedin}>LinkedIn</ExtLink>}
+            {f.linkedin && <ExtLink href={f.linkedin}>LinkedIn</ExtLink>} <ConfirmedTag item={f} />
           </Spec>
         ))}
         {advisors.map((a, i) => (
-          <Spec key={i} k="Advisor">{a.name} — {a.role || "advisor"}{a.affiliation ? `, ${a.affiliation}` : ""}</Spec>
+          <Spec key={i} k="Advisor">{a.name} — {a.role || "advisor"}{a.affiliation ? `, ${a.affiliation}` : ""} <ConfirmedTag item={a} /></Spec>
         ))}
         {programs.length > 0 && (
           <div style={{ marginTop: 6 }}>
@@ -184,7 +212,7 @@ export default function OverviewTab({ res }) {
                       title={claimed
                         ? `${x.type} — company-claimed, not independently corroborated`
                         : `${x.type} — independently corroborated`}>
-                  {x.name}{claimed && <span className="muted"> · claimed</span>}
+                  {x.name}{claimed && <span className="muted"> · claimed</span>} <ConfirmedTag item={x} />
                 </span>
               );
             })}
@@ -192,31 +220,14 @@ export default function OverviewTab({ res }) {
         )}
       </Section>
 
-      <Section id="profile-reference-customers">
-        <h3>Reference customers</h3>
-        {customers.length
-          ? customers.map((c, i) => <span key={i} className="chip">{c}</span>)
-          : <p className="muted" style={{ margin: 0 }}>
-              {dp.customer_segment ? "None named on record." : "None on record."}
-            </p>}
-        {dp.customer_segment && (
-          <p className="muted" style={{ margin: "8px 0 0" }}>
-            Customer profile: {dp.customer_segment}
-          </p>
-        )}
-      </Section>
+      <ReferenceCustomers res={res} />
 
       <Section id="profile-headcount-trend">
         <HeadcountTrend points={dp.employees_over_time} status={dp.employees_history_status}
           band={dp.linkedin_size_band} bandSource={dp.linkedin_size_source || p.linkedin_url} />
       </Section>
 
-      {hasSignals && (
-        <Section id="profile-recent-signals">
-          <h3>Recent signals</h3>
-          {trend.signals.map((s, i) => <div key={i} className="reason">{s}</div>)}
-        </Section>
-      )}
+      <MarketSignals res={res} />
     </>
   );
 }

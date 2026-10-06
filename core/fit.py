@@ -1,6 +1,8 @@
 """Siemens portfolio fit — two-stage LLM tool matching with an offline fallback."""
 from __future__ import annotations
 
+import concurrent.futures
+import contextvars
 import logging
 import math
 import os
@@ -15,6 +17,15 @@ log = logging.getLogger(__name__)
 
 # Size of the LLM-ranked shortlist sent to the final fit match. Override with FIT_SHORTLIST_SIZE.
 FIT_SHORTLIST_SIZE = int(os.getenv("FIT_SHORTLIST_SIZE", "80"))
+
+# The final match call reasons over an 80-tool catalogue, and on Gemini 2.5 Flash that took 34.5 to
+# 36.2s in each of three runs (Wandelbots, cache off) — always past the 30s LLM_TIMEOUT. So the first
+# attempt was killed and retried every time (a SigNoz trace showed fit at 65s of a 90s evaluation),
+# and when all three attempts died the run fell back to keyword matching without saying why: 11 of
+# 52 stored runs carry method='offline_keyword' despite a working model. Lowering the reasoning
+# effort instead is faster (6s at "low", 2s at "none") but changed the answer — it dropped the
+# substitute finding and compressed confidence to 88-95 — which is a scoring change, not a fix.
+FIT_MATCH_TIMEOUT = float(os.getenv("FIT_MATCH_TIMEOUT", "90"))
 
 
 def _derive_fit_keywords(startup_text: str, llm: LLMClient) -> list[str]:
@@ -60,6 +71,20 @@ def _shortlist_tools(tools: list[dict], terms: list[str], limit: int) -> list[di
     return [tool for _, tool in scored[:limit]]
 
 
+def _hybrid_shortlist(tools: list[dict], terms: list[str], semantic, limit: int) -> list[dict]:
+    """Word-overlap shortlist fused with the semantic ranking (core/tool_search.py); words alone
+    when there is no semantic ranking."""
+    words = _shortlist_tools(tools, terms, len(tools))
+    if not semantic:
+        return words[:limit]
+    from .tool_search import fuse
+    by_name: dict = {}
+    for t in tools:
+        by_name.setdefault(str(t.get("product", "")).casefold(), t)
+    fused = fuse([str(t.get("product", "")) for t in words], semantic, limit)
+    return [by_name[n.casefold()] for n in fused if n.casefold() in by_name]
+
+
 def match_siemens_tools(row: pd.Series, pitch_pdf: str, tools: list[dict], llm: LLMClient) -> dict:
     """Return {'aligned': bool, 'matches': [{tool, division, confidence, rationale}], 'method': ...}.
 
@@ -72,17 +97,28 @@ def match_siemens_tools(row: pd.Series, pitch_pdf: str, tools: list[dict], llm: 
                              "about_enriched", "Which Siemens function will profit from your solution?")) + " " + pitch_pdf[:1500]
 
     if llm.available:
-        terms = _derive_fit_keywords(startup_text, llm)
-        shortlist = _shortlist_tools(tools, terms, FIT_SHORTLIST_SIZE)
-        log.info("[fit] %s — catalogue=%d keywords=%d shortlist=%d",
-                 row.get("company_name","?"), len(tools), len(terms), len(shortlist))
+        # The startup's semantic ranking of the catalog is fetched while the keyword call runs, so
+        # it costs no wall time (one ~1s embedding against a ~3s completion).
+        from . import catalogs, tool_search
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            semantic_job = ex.submit(contextvars.copy_context().run, tool_search.semantic_ranking,
+                                     startup_text, catalogs.tools_catalog(), llm)
+            terms = _derive_fit_keywords(startup_text, llm)
+            semantic, why = semantic_job.result()
+        shortlist = _hybrid_shortlist(tools, terms, semantic, FIT_SHORTLIST_SIZE)
+        retrieval = {"method": "hybrid" if semantic else "words", "reason": why,
+                     # Kept so the Empower pillar embeds the same text: its query is a cache hit.
+                     "query": startup_text[:4000]}
+        log.info("[fit] %s — catalogue=%d keywords=%d shortlist=%d retrieval=%s",
+                 row.get("company_name","?"), len(tools), len(terms), len(shortlist), retrieval["method"])
         if shortlist:
             catalogue = "\n".join(f"- {t['product']} | {t['category']} | {t['division']} | {t['description']}"
                                   for t in shortlist)
             prompt = (
-                "You match a startup to the Siemens software portfolio below. Pick the 3 tools whose "
+                "You match a startup to the Siemens software portfolio below. Pick up to 5 tools whose "
                 "deployable capability the startup most closely relates to (functional adjacency, "
-                "not keyword overlap). For each, classify the RELATION:\n"
+                "not keyword overlap), strongest first; fewer is right when fewer genuinely fit. "
+                "For each, classify the RELATION:\n"
                 "- complement: the startup adds capability the tool lacks (best for partnership)\n"
                 "- integration: the startup plugs into / extends the tool\n"
                 "- substitute: the startup does the same thing (competitor — weak partnership fit)\n"
@@ -111,7 +147,10 @@ def match_siemens_tools(row: pd.Series, pitch_pdf: str, tools: list[dict], llm: 
                 '[{"tool": "...", "division": "...", "confidence": 0-100, '
                 '"relation": "complement|integration|substitute|adjacent", "rationale": "one sentence"}]}'
             )
-            data = LLMClient.parse_json(llm.complete(prompt, max_tokens=900))
+            # Two attempts, not three: at 90s each, a third would push a hung provider past
+            # gunicorn's 300s worker timeout once the rest of the pipeline is added.
+            data = LLMClient.parse_json(llm.complete(prompt, max_tokens=900,
+                                                     timeout=FIT_MATCH_TIMEOUT, max_attempts=2))
             if isinstance(data, dict) and isinstance(data.get("matches"), list):
                 allowed = {t["product"].casefold(): t for t in shortlist}
                 clean, seen = [], set()
@@ -133,9 +172,13 @@ def match_siemens_tools(row: pd.Series, pitch_pdf: str, tools: list[dict], llm: 
                                   "rationale": str(match.get("rationale", ""))[:500]})
                     seen.add(tool["product"])
                 clean.sort(key=lambda m: m["confidence"], reverse=True)
+                # Up to 5 for the reviewer. Everything that DECIDES from these — portfolio stance,
+                # SFS, the Empower bundle, the old score — reads the first one or the first three,
+                # so the two extra tools can widen the list but never move a route.
                 return {"aligned": bool(clean) and clean[0]["confidence"] >= FIT_ALIGN_THRESHOLD,
-                        "matches": clean[:3], "method": "llm", "shortlist_size": len(shortlist),
-                        "keywords": terms, "challenge_match": _challenge_match(startup_text)}
+                        "matches": clean[:5], "method": "llm", "shortlist_size": len(shortlist),
+                        "keywords": terms, "retrieval": retrieval,
+                        "challenge_match": _challenge_match(startup_text)}
 
     # ---- offline keyword fallback ----
     skw = _keywords(startup_text)

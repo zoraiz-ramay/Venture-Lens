@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { IxButton, IxDropdown, IxDropdownItem } from "@siemens/ix-react";
-import { iconSearch, iconPlus } from "@siemens/ix-icons/icons";
+import { iconArrowRight, iconPlay, iconPlus, iconSearch } from "@siemens/ix-icons/icons";
 import Icon from "../components/Icon.jsx";
 import { useResearch } from "../research.jsx";
 import TracxnConnection from "../components/TracxnConnection.jsx";
@@ -29,6 +29,9 @@ export default function SearchHome() {
   const { jobs, start } = useResearch();
   const nav = useNavigate();
   const names = batch ? parseStartups(text) : [text.trim()].filter(Boolean);
+  /* No department to choose first. Every evaluation is assessed for all departments and the
+     profile recommends the one whose needs the startup answers best — the reviewer used to have
+     to guess that answer before the evaluation that exists to find it had run. */
   const submit = async () => {
     if (busy || !names.length || names.length > 10 || names.some((n) => n.length > 200)) return;
     setBusy(true); setError("");
@@ -41,12 +44,17 @@ export default function SearchHome() {
   };
   return <div className="startup-home search-hero">
     <h1 className="search-hero-title">Explore a startup</h1>
-    <div className="search-hero-field">
+    <p className="search-hero-sub">Find and evaluate companies against Siemens strategic needs, assessed for every department, with the best fit recommended.</p>
+    {/* The Assess button appears once there is something to assess: an always-present button
+        beside an empty field is a control that can only fail. Batch mode has its own below. */}
+    <div className={`search-hero-field${!batch && text.trim() ? " has-assess" : ""}`}>
       <span className="lens"><Icon icon={iconSearch} size={18} /></span>
       <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)}
         disabled={busy} onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-        placeholder={batch ? "Startup names, separated by commas…" : "Search a startup to evaluate…"}
+        placeholder={batch ? "Startup names, separated by commas…" : "e.g., Radical Dot"}
         aria-label={batch ? "Startup names or websites" : "Search a startup"} aria-describedby={batch ? "batch-help" : undefined} />
+      {!batch && text.trim() && <button type="button" className="search-assess" disabled={busy} onClick={submit}>
+        {busy ? "Starting…" : "Assess"}<Icon icon={iconArrowRight} size={16} /></button>}
       <button id="startup-search-options" className="batch-toggle" aria-label="Search options"
         title="Search options" aria-haspopup="menu"><Icon icon={iconPlus} size={20} /></button>
       <IxDropdown trigger="startup-search-options" placement="bottom-end">
@@ -65,7 +73,7 @@ export default function SearchHome() {
     {error && <ErrorBox message={error} />}
     <TracxnConnection compact />
     {jobs.length > 0 && <details className="research-session" open={showSession} onToggle={(e) => setShowSession(e.currentTarget.open)}>
-      <summary>Your research session ({jobs.length})</summary>
+      <summary><Icon icon={iconPlay} size={14} /><span>Your research session ({jobs.length})</span></summary>
       <div className="research-list">{jobs.map((j) => <article className="panel research-item" key={j.id}>
         <div><strong>{j.query}</strong><p className="muted">{j.kind === "solve" ? "Problem search" : "Startup evaluation"} · {j.status}</p>
           {j.error && <ErrorBox message={j.error} />}</div>

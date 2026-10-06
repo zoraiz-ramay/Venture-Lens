@@ -14,6 +14,7 @@ test("a batch continues across pages and restores after reload", async ({ page }
     else if (path === "/api/jobs") {
       const request=route.request().postDataJSON(); submissions++;
       expect(request.names).toHaveLength(10);
+      expect(request.department_id).toBeUndefined();   // every department, so none is sent
       body={jobs:request.names.map((query,i)=>{const j={id:`batch-${i}`,query,kind:"evaluate",status:"queued"};jobs.set(j.id,j);return j;})};
     } else if (path.startsWith("/api/jobs/")) {
       const j=jobs.get(path.split("/").pop());
@@ -39,9 +40,9 @@ test("a batch continues across pages and restores after reload", async ({ page }
   await page.getByRole("link",{name:"Open research"}).first().click();
   await expect(page.getByRole("heading",{name:/Startup 1/})).toBeVisible();
   await page.getByRole("button",{name:"Scoring & Fit",exact:true}).click();
-  await expect(page.getByRole("tab",{name:/Empower/})).toBeVisible();
-  await page.getByRole("tab",{name:/Collaborate/}).click();
-  await expect(page.getByRole("tabpanel",{name:/Collaborate/})).toBeVisible();
+  await expect(page.getByRole("button",{name:/^Empower:/})).toBeVisible();
+  await page.getByRole("button",{name:/^Collaborate:/}).click();
+  await expect(page).toHaveURL(/pillar=Collaborate/);
   await expect(page.getByText(/What-if weights/)).toHaveCount(0);
-  await page.getByRole("tabpanel",{name:/Collaborate/}).screenshot({path:testInfo.outputPath("collaborate-tab.png")});
+  await page.locator("#scoring-routes").screenshot({path:testInfo.outputPath("collaborate-route.png")});
 });

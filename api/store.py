@@ -5,11 +5,12 @@ DB lives at DATA_DIR/runs.db (override with RUNS_DB).
 
 On first connection the DB is restored from S3 if a remote copy exists and no
 local file is present. After every write (save_run, delete_run, add_override)
-the DB is uploaded back to S3 in a background thread so it survives container
+the DB is uploaded back to S3 (debounced, see _upload_to_s3) so it survives container
 restarts and redeployments.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -21,6 +22,10 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
 from core.config import BASE_DIR
+# Every stored run is read through this, so a traction-rubric change reaches old runs without a
+# migration, the weighted total always agrees with its components, and the Explore grid cannot
+# disagree with the profile it links to.
+from core.assessment import hydrate
 
 log = logging.getLogger(__name__)
 
@@ -75,20 +80,75 @@ def _restore_from_s3() -> None:
             os.remove(DB_PATH + ".s3tmp")
 
 
+# Writes within this many seconds share one upload. Every write used to start its own thread
+# uploading the whole file, so a single evaluation (run row, children, search, aliases, cache)
+# shipped the database to S3 several times over.
+S3_UPLOAD_DELAY = float(os.getenv("S3_UPLOAD_DELAY", "5"))
+_upload_state = threading.Lock()
+_upload_scheduled = False
+
+
 def _upload_to_s3() -> None:
-    """Upload the current runs.db to S3 in a background thread."""
+    """Schedule an upload of runs.db to S3; writes in the next S3_UPLOAD_DELAY seconds join it."""
+    global _upload_scheduled
     if not _s3_available():
         return
+    with _upload_state:
+        if _upload_scheduled:
+            return
+        _upload_scheduled = True
+    timer = threading.Timer(S3_UPLOAD_DELAY, _upload_now)
+    timer.daemon = True
+    timer.start()
 
-    def _do_upload():
-        with _s3_lock:
+
+def _snapshot(dest: str) -> None:
+    """A consistent copy of the database, including what is still only in the WAL.
+
+    The database runs in WAL mode (_cache_conn sets it, and the mode is a property of the file),
+    so a commit sits in runs.db-wal until a checkpoint folds it into runs.db. Uploading runs.db
+    itself therefore shipped a copy that could lack the newest runs, and a container restored from
+    it would come back without them. The backup API reads through the WAL.
+    """
+    src = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        out = sqlite3.connect(dest)
+        try:
+            src.backup(out)
+        finally:
+            out.close()
+    finally:
+        src.close()
+
+
+def _upload_now() -> None:
+    global _upload_scheduled
+    with _upload_state:
+        # Cleared before the snapshot, not after: a write landing during the upload schedules
+        # another one rather than being silently left out of S3.
+        _upload_scheduled = False
+    with _s3_lock:
+        tmp = DB_PATH + ".upload"
+        try:
+            _snapshot(tmp)
+            _s3_client().upload_file(tmp, _s3_bucket(), _S3_DB_KEY)
+            log.debug("[store] Synced DB to s3://%s/%s", _s3_bucket(), _S3_DB_KEY)
+        except Exception as exc:
+            log.warning("[store] S3 upload failed: %s", exc)
+        finally:
             try:
-                _s3_client().upload_file(DB_PATH, _s3_bucket(), _S3_DB_KEY)
-                log.debug("[store] Synced DB to s3://%s/%s", _s3_bucket(), _S3_DB_KEY)
-            except Exception as exc:
-                log.warning("[store] S3 upload failed: %s", exc)
+                os.remove(tmp)
+            except OSError:
+                pass
 
-    threading.Thread(target=_do_upload, daemon=True).start()
+
+def _flush_pending_upload() -> None:
+    """At shutdown, upload a scheduled write now instead of losing it with the timer thread."""
+    if _upload_scheduled:
+        _upload_now()
+
+
+atexit.register(_flush_pending_upload)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -181,7 +241,7 @@ CREATE TABLE IF NOT EXISTS searches (
     company_id   INTEGER,                 -- nullable: delete_run does not cascade
     company_name TEXT,                    -- resolved name, denormalized so the list survives deletes
     run_id       INTEGER,                 -- nullable for the same reason
-    served_from  TEXT,                    -- cache | fresh
+    served_from  TEXT,                    -- cache | fresh | research (another department's research reused) | shared (attached to another reviewer's in-flight run)
     created_at   TEXT NOT NULL
 );
 -- Sign-ins are recorded here rather than counted from Redis: sessions there expire after
@@ -224,6 +284,96 @@ CREATE TABLE IF NOT EXISTS admins (
     granted_at TEXT NOT NULL,
     note       TEXT NOT NULL DEFAULT ''
 );
+-- ---------------- research produced after an evaluation, kept so it is served, not re-searched ----------------
+-- Every on-demand lookup (funding rounds & investors, headcount, recent signals) and every
+-- business-flow write-up, exactly as returned, with where it came from and when. A profile reads
+-- the newest row; Refresh fetches again and appends, so the history stays. Tracxn results are
+-- stored like any other source.
+CREATE TABLE IF NOT EXISTS enrichments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id  INTEGER REFERENCES companies(id),
+    run_id      INTEGER,                  -- set for per-run kinds (business_flow), NULL for per-company ones
+    kind        TEXT NOT NULL,            -- funding | headcount | signals | business_flow
+    provider    TEXT,                     -- tracxn | web | model
+    payload     TEXT NOT NULL,
+    fetched_at  TEXT NOT NULL,
+    fetched_by  TEXT
+);
+-- The same research, normalised for querying across companies. Each is a snapshot of the latest
+-- lookup per company (replaced on refresh); the enrichments row above is the full history.
+CREATE TABLE IF NOT EXISTS investors (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    name       TEXT NOT NULL,
+    type       TEXT, hq TEXT, focus TEXT, portfolio TEXT,
+    source_url TEXT,
+    provider   TEXT NOT NULL,             -- research (the evaluation) | tracxn | web (the funding lookup)
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS funding_rounds (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id     INTEGER NOT NULL REFERENCES companies(id),
+    date TEXT, stage TEXT, amount TEXT,
+    lead_investors TEXT, investors TEXT, sources TEXT,
+    provider TEXT, fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS headcounts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id  INTEGER NOT NULL REFERENCES companies(id),
+    count TEXT, as_of TEXT, where_found TEXT, sources TEXT,
+    provider TEXT, fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS market_signals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id  INTEGER NOT NULL REFERENCES companies(id),
+    market TEXT, category TEXT, date TEXT, who TEXT, what TEXT, figure TEXT,
+    direction TEXT, relevance TEXT, sources TEXT,
+    provider TEXT, fetched_at TEXT NOT NULL
+);
+-- Every scored criterion of a run — Siemens Fit pillars, Team & Ecosystem, Market — with its
+-- level and reasoning, so they can be compared across startups without opening result_json.
+CREATE TABLE IF NOT EXISTS assessment_criteria (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     INTEGER NOT NULL REFERENCES runs(id),
+    company_id INTEGER REFERENCES companies(id),
+    block      TEXT NOT NULL,             -- Empower | Connect | Collaborate | team_ecosystem | market
+    criterion  TEXT NOT NULL, label TEXT,
+    score      REAL, max REAL, anchor TEXT, rationale TEXT
+);
+-- One row per siemens_tools.csv entry Empower has recommended and a web search has checked. A
+-- `not_found` row is a catalog entry a reviewer should look at — the admin page lists them.
+CREATE TABLE IF NOT EXISTS tool_checks (
+    tool_id     TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    category    TEXT, division TEXT,
+    status      TEXT NOT NULL,            -- verified | not_found | unchecked
+    url TEXT, note TEXT,
+    checked_at  TEXT NOT NULL,
+    last_run_id INTEGER,
+    times_recommended INTEGER NOT NULL DEFAULT 0
+);
+-- Every model call an evaluation made, for the admin dashboard's per-run token log. Written from
+-- result["token_usage"] by save_run; runs saved before the log existed have no rows.
+CREATE TABLE IF NOT EXISTS llm_calls (
+    run_id      INTEGER NOT NULL,
+    seq         INTEGER NOT NULL,
+    stage       TEXT NOT NULL,
+    kind        TEXT NOT NULL,            -- completion | web_search
+    model       TEXT, provider TEXT,
+    cached      INTEGER NOT NULL DEFAULT 0,
+    ok          INTEGER NOT NULL DEFAULT 1,
+    reason      TEXT,
+    attempts    INTEGER NOT NULL DEFAULT 1,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_enrichments ON enrichments(company_id, kind, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_enrichments_run ON enrichments(run_id, kind);
+CREATE INDEX IF NOT EXISTS idx_criteria_run ON assessment_criteria(run_id);
 CREATE INDEX IF NOT EXISTS idx_people_company ON people(company_id);
 CREATE INDEX IF NOT EXISTS idx_facts_run ON evidence_facts(run_id);
 CREATE INDEX IF NOT EXISTS idx_web_cache_created ON web_cache(created_at);
@@ -245,8 +395,11 @@ def _conn() -> sqlite3.Connection:
     # boolean. It is additive rather than a replacement: every row written before core/programs.py
     # existed has an sfs flag that was true regardless, and rewriting those to a line we never
     # determined would invent a finding. They read back blank, which is what we know.
+    # department_id / assessment_key: a run is one startup assessed for one department against one
+    # rubric and catalog version. NULL on runs written before departments existed — those are
+    # the legacy runs, kept as history and never served as a department's current result.
     for col, typ in (("summary", "TEXT"), ("parent_group", "TEXT"), ("company_id", "INTEGER"),
-                     ("sfs_line", "TEXT")):
+                     ("sfs_line", "TEXT"), ("department_id", "TEXT"), ("assessment_key", "TEXT")):
         try:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} {typ}")
         except sqlite3.OperationalError:
@@ -439,6 +592,107 @@ def _replace_children(con: sqlite3.Connection, cid: int, run_id: int, result: di
                 (run_id, cid, str(m.get("tool", ""))[:120], str(m.get("division", ""))[:80],
                  str(m.get("relation", ""))[:20], float(m.get("confidence", 0) or 0),
                  str(m.get("rationale", ""))[:400]))
+    # investors the evaluation itself evidenced (the funding lookup adds its own, by provider)
+    con.execute("DELETE FROM investors WHERE company_id=? AND provider='research'", (cid,))
+    for x in (dp.get("commercial") or {}).get("investors") or []:
+        if isinstance(x, dict) and str(x.get("name", "")).strip():
+            con.execute("INSERT INTO investors (company_id, name, source_url, provider, updated_at) VALUES (?,?,?,?,?)",
+                        (cid, str(x["name"])[:160], str(x.get("source_url", ""))[:500], "research", ts))
+    _record_criteria(con, cid, run_id, result)
+    _record_tool_checks(con, run_id, result)
+    _record_llm_calls(con, run_id, result)
+
+
+def _record_llm_calls(con: sqlite3.Connection, run_id: int, result: dict) -> None:
+    """The run's token log, one row per model call. Replaced, so a re-backfill never doubles it."""
+    con.execute("DELETE FROM llm_calls WHERE run_id=?", (run_id,))
+    for seq, c in enumerate((result.get("token_usage") or {}).get("log") or []):
+        if not isinstance(c, dict):
+            continue
+        con.execute(
+            "INSERT INTO llm_calls (run_id, seq, stage, kind, model, provider, cached, ok, reason, attempts, "
+            "input_tokens, output_tokens, reasoning_tokens, total_tokens, duration_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, seq, str(c.get("stage", ""))[:40], str(c.get("kind", "completion"))[:20],
+             str(c.get("model", ""))[:80], str(c.get("provider", ""))[:20], int(bool(c.get("cached"))),
+             int(bool(c.get("ok", True))), str(c.get("reason", ""))[:40], int(c.get("attempts") or 1),
+             *(int(c.get(k) or 0) for k in ("input_tokens", "output_tokens", "reasoning_tokens",
+                                             "total_tokens", "duration_ms"))))
+
+
+_TOKEN_SUMS = ("COUNT(c.seq), SUM(c.cached), SUM(1 - c.ok), SUM(c.input_tokens), SUM(c.output_tokens), "
+               "SUM(c.reasoning_tokens), SUM(c.total_tokens), SUM(c.duration_ms)")
+_TOKEN_KEYS = ("calls", "cached_calls", "failed_calls", "input_tokens", "output_tokens",
+               "reasoning_tokens", "total_tokens", "duration_ms")
+
+
+def token_usage_runs(limit: int = 100) -> dict:
+    """Per-run token totals, newest first, with who asked for each run and the overall sums."""
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT r.id, r.company, r.created_at, r.engine, r.department_id, {_TOKEN_SUMS}, "
+            "(SELECT s.user_upn FROM searches s WHERE s.run_id = r.id AND s.served_from IN ('fresh','research') "
+            " ORDER BY s.id LIMIT 1) "
+            "FROM runs r JOIN llm_calls c ON c.run_id = r.id GROUP BY r.id ORDER BY r.id DESC LIMIT ?",
+            (int(limit),)).fetchall()
+        totals = con.execute(f"SELECT COUNT(DISTINCT c.run_id), {_TOKEN_SUMS} FROM llm_calls c").fetchone()
+        unlogged = con.execute("SELECT COUNT(*) FROM runs r WHERE NOT EXISTS "
+                               "(SELECT 1 FROM llm_calls c WHERE c.run_id = r.id)").fetchone()[0]
+    runs = [{"run_id": r[0], "company": r[1], "created_at": r[2], "engine": r[3] or "",
+             "scope": "all departments" if r[4] == "*" else (r[4] or "no department"),
+             **{k: int(v or 0) for k, v in zip(_TOKEN_KEYS, r[5:13])}, "requested_by": r[13] or ""}
+            for r in rows]
+    return {"runs": runs, "unlogged_runs": int(unlogged),
+            "totals": {"runs": int(totals[0] or 0), **{k: int(v or 0) for k, v in zip(_TOKEN_KEYS, totals[1:])}}}
+
+
+def token_usage_log(run_id: int) -> list[dict]:
+    """One run's model calls in the order they finished."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT seq, stage, kind, model, provider, cached, ok, reason, attempts, input_tokens, output_tokens, "
+            "reasoning_tokens, total_tokens, duration_ms FROM llm_calls WHERE run_id=? ORDER BY seq",
+            (int(run_id),)).fetchall()
+    keys = ("seq", "stage", "kind", "model", "provider", "cached", "ok", "reason", "attempts", "input_tokens",
+            "output_tokens", "reasoning_tokens", "total_tokens", "duration_ms")
+    return [{**dict(zip(keys, r)), "cached": bool(r[5]), "ok": bool(r[6])} for r in rows]
+
+
+def _record_criteria(con: sqlite3.Connection, cid: int, run_id: int, result: dict) -> None:
+    """Every scored criterion of the run, one row each (per-run history, appended)."""
+    a = result.get("assessment") or {}
+    blocks = [(name, p.get("criteria") or [], 3) for name, p in (a.get("pillars") or {}).items() if isinstance(p, dict)]
+    blocks.append(("team_ecosystem", (a.get("team_ecosystem") or {}).get("criteria") or [], 5))
+    blocks.append(("market", (result.get("market") or {}).get("criteria") or [], 5))
+    for block, criteria, top in blocks:
+        for c in criteria:
+            if isinstance(c, dict) and c.get("id"):
+                con.execute("INSERT INTO assessment_criteria (run_id, company_id, block, criterion, label, score, max, "
+                            "anchor, rationale) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (run_id, cid, block, str(c["id"])[:60], str(c.get("label", ""))[:80],
+                             float(c["score"]) if isinstance(c.get("score"), (int, float)) else None, top,
+                             str(c.get("anchor", ""))[:300], str(c.get("rationale", ""))[:1000]))
+
+
+def _record_tool_checks(con: sqlite3.Connection, run_id: int, result: dict) -> None:
+    """The Empower tool checks of this run, one row per catalog tool (latest check wins)."""
+    empower = ((result.get("assessment") or {}).get("pillars") or {}).get("Empower") or {}
+    for c in empower.get("tool_checks") or []:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        con.execute(
+            "INSERT INTO tool_checks (tool_id, name, category, division, status, url, note, checked_at, last_run_id, "
+            "times_recommended) VALUES (?,?,?,?,?,?,?,?,?,1) ON CONFLICT(tool_id) DO UPDATE SET name=excluded.name, "
+            "category=excluded.category, division=excluded.division, "
+            # an inconclusive check never overwrites a conclusive one
+            "status=CASE WHEN excluded.status='unchecked' THEN tool_checks.status ELSE excluded.status END, "
+            "url=CASE WHEN excluded.status='unchecked' THEN tool_checks.url ELSE excluded.url END, "
+            "note=CASE WHEN excluded.status='unchecked' THEN tool_checks.note ELSE excluded.note END, "
+            "checked_at=excluded.checked_at, last_run_id=excluded.last_run_id, "
+            "times_recommended=tool_checks.times_recommended+1",
+            (str(c["id"])[:200], str(c.get("name", ""))[:200], str(c.get("category", ""))[:120],
+             str(c.get("division", ""))[:60], str(c.get("status", "unchecked"))[:20], str(c.get("url", ""))[:500],
+             str(c.get("note", ""))[:400], str(c.get("checked_at") or _now())[:32], run_id))
 
 
 def _norm_alias(value: str) -> str:
@@ -481,14 +735,20 @@ def save_run(result: dict, aliases: Iterable[str] = ()) -> int:
     with _conn() as con:
         cur = con.execute(
             "INSERT INTO runs (company, pillar, secondary, final_score, sfs, sfs_line, engine, "
-            "created_at, result_json, summary, parent_group) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "created_at, result_json, summary, parent_group, department_id, assessment_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (str(result.get("company", "")), str(rt.get("pillar", "")),
              ",".join(rt.get("secondary", []) or []), float(sc["final_score"]) if sc.get("final_score") is not None else None,
              1 if rt.get("sfs_relevant") else 0, str(rt.get("sfs_line", ""))[:60],
              str(result.get("engine", "")),
              datetime.now(timezone.utc).isoformat(timespec="seconds"),
              json.dumps(result, default=str),
-             str(result.get("summary", ""))[:300], str(dp.get("parent_group", ""))[:120]))
+             str(result.get("summary", ""))[:300], str(dp.get("parent_group", ""))[:120],
+             # An all-departments run is filed under "*", with the key covering every department;
+             # result["department"] is only its recommended one.
+             "*" if result.get("departments") else (result.get("department") or {}).get("id") or None,
+             (result.get("departments") or {}).get("assessment_key")
+             or (result.get("assessment") or {}).get("assessment_key") or None))
         run_id = int(cur.lastrowid)
         cid = _upsert_company(con, result, run_id)
         con.execute("UPDATE runs SET company_id=? WHERE id=?", (cid, run_id))
@@ -525,6 +785,90 @@ def save_assessment(run_id, score, department_fit, routing=None):
     return result
 
 
+# ---------------------------------------------------------------------- stored research
+
+ENRICHMENT_KINDS = ("funding", "headcount", "signals", "business_flow")
+PER_RUN_KINDS = ("business_flow",)          # written from one run's research, so served per run
+
+
+def _ensure_company(con: sqlite3.Connection, name: str) -> int:
+    name = str(name or "").strip()
+    row = con.execute("SELECT id FROM companies WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+    if row:
+        return int(row[0])
+    cur = con.execute("INSERT INTO companies (name, created_at, updated_at) VALUES (?,?,?)", (name, _now(), _now()))
+    return int(cur.lastrowid)
+
+
+def latest_enrichment(company: str, kind: str, run_id: int | None = None) -> dict | None:
+    """The newest stored result of a lookup for this company (or, for per-run kinds, this run):
+    {**payload, 'stored_at', 'from_store': True}, or None when it was never fetched."""
+    with _conn() as con:
+        if kind in PER_RUN_KINDS:
+            row = con.execute("SELECT payload, fetched_at FROM enrichments WHERE run_id=? AND kind=? "
+                              "ORDER BY id DESC LIMIT 1", (run_id, kind)).fetchone()
+        else:
+            row = con.execute("SELECT e.payload, e.fetched_at FROM enrichments e JOIN companies c ON c.id=e.company_id "
+                              "WHERE c.name=? COLLATE NOCASE AND e.kind=? ORDER BY e.id DESC LIMIT 1",
+                              (str(company or "").strip(), kind)).fetchone()
+    if not row:
+        return None
+    return {**json.loads(row[0]), "stored_at": row[1], "from_store": True}
+
+
+def save_enrichment(company: str, kind: str, payload: dict, *, run_id: int | None = None, user_oid: str = "") -> None:
+    """Keep a lookup's result (history in `enrichments`, the latest also normalised by kind)."""
+    if kind not in ENRICHMENT_KINDS or not isinstance(payload, dict):
+        return
+    ts = _now()
+    clean = {k: v for k, v in payload.items() if k not in ("stored_at", "from_store", "note")}
+    provider = str(payload.get("provider") or "")
+    with _conn() as con:
+        cid = _ensure_company(con, company)
+        con.execute("INSERT INTO enrichments (company_id, run_id, kind, provider, payload, fetched_at, fetched_by) "
+                    "VALUES (?,?,?,?,?,?,?)", (cid, run_id if kind in PER_RUN_KINDS else None, kind, provider,
+                                               json.dumps(clean, default=str), ts, user_oid or None))
+        src = lambda row: json.dumps(row.get("sources") or [], default=str)  # noqa: E731
+        if kind == "funding":
+            con.execute("DELETE FROM funding_rounds WHERE company_id=?", (cid,))
+            for r in clean.get("rounds") or []:
+                con.execute("INSERT INTO funding_rounds (company_id, date, stage, amount, lead_investors, investors, sources, "
+                            "provider, fetched_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (cid, r.get("date", ""), r.get("stage", ""), r.get("amount", ""),
+                             json.dumps(r.get("lead_investors") or []), json.dumps(r.get("investors") or []), src(r), provider, ts))
+            con.execute("DELETE FROM investors WHERE company_id=? AND provider<>'research'", (cid,))
+            for i in clean.get("investors") or []:
+                con.execute("INSERT INTO investors (company_id, name, type, hq, focus, portfolio, source_url, provider, updated_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?)",
+                            (cid, str(i.get("name", ""))[:160], i.get("type", ""), i.get("hq", ""), i.get("focus", ""),
+                             json.dumps(i.get("portfolio") or []), ((i.get("sources") or [{}])[0] or {}).get("url", ""),
+                             provider or "web", ts))
+        elif kind == "headcount":
+            con.execute("DELETE FROM headcounts WHERE company_id=?", (cid,))
+            for f in clean.get("figures") or []:
+                con.execute("INSERT INTO headcounts (company_id, count, as_of, where_found, sources, provider, fetched_at) "
+                            "VALUES (?,?,?,?,?,?,?)", (cid, f.get("count", ""), f.get("as_of", ""), f.get("where", ""), src(f), provider, ts))
+        elif kind == "signals":
+            con.execute("DELETE FROM market_signals WHERE company_id=?", (cid,))
+            for s in clean.get("signals") or []:
+                con.execute("INSERT INTO market_signals (company_id, market, category, date, who, what, figure, direction, "
+                            "relevance, sources, provider, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (cid, clean.get("market", ""), s.get("category", ""), s.get("date", ""), s.get("who", ""),
+                             s.get("what", ""), s.get("figure", ""), s.get("direction", ""), s.get("relevance", ""),
+                             src(s), provider, ts))
+    _upload_to_s3()
+
+
+def list_tool_checks(status: str | None = None) -> list[dict]:
+    """Checked Siemens catalog tools, newest check first; `status='not_found'` is the admin's list."""
+    q = ("SELECT tool_id, name, category, division, status, url, note, checked_at, last_run_id, times_recommended "
+         "FROM tool_checks" + (" WHERE status=?" if status else "") + " ORDER BY checked_at DESC")
+    with _conn() as con:
+        rows = con.execute(q, (status,) if status else ()).fetchall()
+    keys = ("tool_id", "name", "category", "division", "status", "url", "note", "checked_at", "last_run_id", "times_recommended")
+    return [dict(zip(keys, r)) for r in rows]
+
+
 def backfill_entities() -> int:
     """Idempotent migration: populate the normalized tables from runs saved before
     the schema existed. Returns the number of runs backfilled."""
@@ -540,6 +884,35 @@ def backfill_entities() -> int:
                 cid = _upsert_company(con, result, run_id)
                 con.execute("UPDATE runs SET company_id=? WHERE id=?", (cid, run_id))
                 _replace_children(con, cid, run_id, result)
+                n += 1
+            except Exception:
+                continue
+    return n
+
+
+def backfill_assessment_records() -> int:
+    """Idempotent migration: criteria, evaluation investors and tool checks for runs saved before
+    those tables existed. A run that already has criteria rows is skipped, so this never doubles
+    history; investors come from each company's latest run, as `_replace_children` would."""
+    n = 0
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT id, company_id, result_json FROM runs WHERE company_id IS NOT NULL AND id NOT IN "
+            "(SELECT DISTINCT run_id FROM assessment_criteria) ORDER BY id").fetchall()
+        latest = dict(con.execute("SELECT company_id, MAX(id) FROM runs WHERE company_id IS NOT NULL "
+                                  "GROUP BY company_id").fetchall())
+        for run_id, cid, blob in rows:
+            try:
+                result = json.loads(blob or "{}")
+                _record_criteria(con, cid, run_id, result)
+                _record_tool_checks(con, run_id, result)
+                if latest.get(cid) == run_id:
+                    have = con.execute("SELECT 1 FROM investors WHERE company_id=? AND provider='research'", (cid,)).fetchone()
+                    for x in [] if have else ((result.get("deep_profile") or {}).get("commercial") or {}).get("investors") or []:
+                        if isinstance(x, dict) and str(x.get("name", "")).strip():
+                            con.execute("INSERT INTO investors (company_id, name, source_url, provider, updated_at) "
+                                        "VALUES (?,?,?,?,?)", (cid, str(x["name"])[:160],
+                                                               str(x.get("source_url", ""))[:500], "research", _now()))
                 n += 1
             except Exception:
                 continue
@@ -600,11 +973,18 @@ def list_runs(limit: int = 100) -> list[dict]:
                 "summary": r[9] or "", "parent_group": r[10] or "",
                 "overridden": r[0] in overridden}
         try:
-            res = json.loads(r[11] or "{}")
+            res = hydrate(json.loads(r[11] or "{}"))
             p, sc = res.get("profile", {}) or {}, res.get("score", {}) or {}
             dims = sc.get("dimensions", {}) or {}
             facts = res.get("facts", []) or []
+            dep = res.get("department") or {}
+            asmt = res.get("assessment") or {}
             item.update({
+                "department_id": dep.get("id") or "",
+                "department_label": dep.get("label") or "",
+                "legacy": not dep,
+                "total_status": asmt.get("total_status", "") if dep else "",
+                "siemens_fit_partial": bool((asmt.get("siemens_fit") or {}).get("partial")),
                 "department_assessments": res.get("department_assessments", {}),
                 "hq": str(p.get("hq", "")),
                 "funding": str(p.get("funding", "")),
@@ -648,7 +1028,7 @@ def get_run(run_id: int) -> dict | None:
         row = con.execute("SELECT result_json, created_at FROM runs WHERE id=?", (run_id,)).fetchone()
     if not row:
         return None
-    res = json.loads(row[0])
+    res = hydrate(json.loads(row[0]))
     res["run_id"] = run_id
     res["run_created_at"] = row[1]        # lets the UI show freshness + Refresh
     return res
@@ -665,10 +1045,89 @@ def latest_run_for_company(company: str) -> dict | None:
             "ORDER BY id DESC LIMIT 1", (company.strip(),)).fetchone()
     if not row:
         return None
-    res = json.loads(row[2])
+    res = hydrate(json.loads(row[2]))
     res["run_id"] = row[0]
     res["run_created_at"] = row[1]
     return res
+
+
+def prior_runs_for(name: str, limit: int = 50) -> list[dict]:
+    """Every stored run of the company ``name`` resolves to, oldest first — the evidence a fresh
+    evaluation carries forward (core/carry_forward.py). Not hydrated: only research is read.
+
+    Resolved through aliases like the cache lookup, plus an exact-name match for runs written
+    before company ids existed. Whether each run really is the same company is decided in the
+    engine on domain, not here on name.
+    """
+    cid = _company_id_for(name)
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT id, created_at, result_json FROM runs WHERE company_id=? OR LOWER(company)=LOWER(?) "
+            "ORDER BY created_at DESC, id DESC LIMIT ?", (cid if cid is not None else -1, str(name).strip(), limit)).fetchall()
+    out = []
+    for run_id, created_at, raw in reversed(rows):
+        try:
+            res = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        out.append({**res, "run_id": run_id, "run_created_at": created_at})
+    return out
+
+
+def _company_id_for(name: str) -> int | None:
+    key = _norm_alias(name)
+    with _conn() as con:
+        row = con.execute("SELECT company_id FROM company_aliases WHERE alias=?", (key,)).fetchone() if key else None
+        if not row:
+            row = con.execute("SELECT id FROM companies WHERE LOWER(name)=LOWER(?)", (str(name).strip(),)).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _run_row(row) -> dict:
+    res = hydrate(json.loads(row[2]))
+    res["run_id"] = row[0]
+    res["run_created_at"] = row[1]
+    return res
+
+
+def latest_department_run(name: str, department_id: str, assessment_key: str | None = None) -> dict | None:
+    """The newest run of this company for this department — current version only when a key is
+    given. Another department's run is never returned: switching departments must not surface,
+    or overwrite, someone else's result."""
+    cid = _company_id_for(name)
+    if cid is None or not department_id:
+        return None
+    sql = "SELECT id, created_at, result_json FROM runs WHERE company_id=? AND department_id=?"
+    args: list = [cid, department_id]
+    if assessment_key:
+        sql += " AND assessment_key=?"
+        args.append(assessment_key)
+    with _conn() as con:
+        row = con.execute(sql + " ORDER BY id DESC LIMIT 1", args).fetchone()
+    return _run_row(row) if row else None
+
+
+def company_department_runs(name: str) -> list[dict]:
+    """Latest run id per department for one company, legacy runs under department None."""
+    cid = _company_id_for(name)
+    if cid is None:
+        return []
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT department_id, MAX(id), assessment_key FROM runs WHERE company_id=? "
+            "GROUP BY department_id", (cid,)).fetchall()
+    return [{"department_id": r[0], "run_id": r[1], "assessment_key": r[2]} for r in rows]
+
+
+def latest_research_run(name: str) -> dict | None:
+    """The newest run of the company for ANY department — its research can seed another's."""
+    cid = _company_id_for(name)
+    if cid is None:
+        return None
+    with _conn() as con:
+        row = con.execute("SELECT id, created_at, result_json FROM runs WHERE company_id=? "
+                          "ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    return _run_row(row) if row else None
 
 
 def latest_run_for_alias(name: str) -> dict | None:
@@ -689,7 +1148,7 @@ def latest_run_for_alias(name: str) -> dict | None:
             "JOIN runs r ON r.id = c.latest_run_id "
             "WHERE a.alias = ?", (key,)).fetchone()
     if row:
-        res = json.loads(row[2])
+        res = hydrate(json.loads(row[2]))
         res["run_id"] = row[0]
         res["run_created_at"] = row[1]
         return res
@@ -754,8 +1213,11 @@ def list_user_runs(user_oid: str, limit: int = 200) -> list[dict]:
     # and is still reachable from the profile.
     for item in list_runs(limit=max(limit * 5, 500)):
         k = str(item.get("company", "")).lower()
-        if k in order and k not in seen:
-            seen.add(k)
+        # One row per company AND department: a startup assessed for two departments is two
+        # results, and the newer must not hide the older.
+        pair = (k, item.get("department_id", ""))
+        if k in order and pair not in seen:
+            seen.add(pair)
             item["searched_at"] = searched_at[k]
             mine.append(item)
     mine.sort(key=lambda i: order[str(i["company"]).lower()])

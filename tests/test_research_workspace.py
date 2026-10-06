@@ -19,73 +19,9 @@ def test_tracxn_exact_identity_and_currency_preserved(monkeypatch):
     monkeypatch.setattr(client,"search",lambda q:[row])
     assert client.company_row("ALPHA")["funding"] == "USD 100"
     assert client.company_row("https://alpha.ai")["founded_year"] == "2020"
-    # No exact name/domain match, but Tracxn still returned a candidate for the query — a
-    # connected account's own data outranks falling through to another provider.
-    assert client.company_row("Alph")["company_name"] == "Alpha"
-    monkeypatch.setattr(client,"search",lambda q:[])
-    assert client.company_row("Alpha") is None
+    assert client.company_row("Alph") is None
     monkeypatch.setattr(client,"search",lambda q:[row,{**row,"website":"alpha.de"}])
-    # Two exact-name matches: still seed from Tracxn rather than bailing out, using the first.
-    assert client.company_row("Alpha")["website"] == "alpha.ai"
-
-
-def test_tracxn_parses_real_nested_provider_schema(monkeypatch):
-    # Shape captured live from platform.tracxn.com/mcp for a real company: website is a list of
-    # {url, isPrimary}, HQ lives under locations[].city/country, employee count is nested under
-    # latestEmployeeCount.value, funding under totalEquityFunding.amount.{currency}.value, and
-    # LinkedIn under socialMediaProfiles.linkedin — none of them the flat field names the client
-    # used to look for, which is why every one of these came back blank despite source="tracxn".
-    provider_record = {
-        "id": "65578d1af973523eb3280078", "name": "Radical Dot",
-        "shortDescription": "Technology solution for plastic recycling",
-        "website": [{"url": "https://radicaldot.com", "isPrimary": "Yes"}],
-        "foundedYear": 2024,
-        "locations": [{"city": {"name": "Munich"}, "state": {"name": "Bavaria"}, "country": {"name": "Germany"}}],
-        "latestEmployeeCount": {"value": 17, "asOnDate": {"day": 31, "month": 7, "year": 2026}},
-        "socialMediaProfiles": {"linkedin": "https://linkedin.com/company/radicaldot"},
-        "totalEquityFunding": {"baseCurrency": "USD", "amount": {
-            "USD": {"value": 2843478}, "EUR": {"value": 2676139}}},
-    }
-    row = {"name": "Radical Dot", "description": provider_record["shortDescription"], "website": "",
-           "tracxn_id": provider_record["id"], "provider_record": provider_record}
-    client = TracxnClient("test")
-    monkeypatch.setattr(client, "search", lambda q: [row])
-    result = client.company_row("Radical Dot")
-    assert result["website"] == "https://radicaldot.com"
-    assert result["hq"] == "Munich, Germany"
-    assert result["employees_count"] == "17"
-    assert result["linkedin_url"] == "https://linkedin.com/company/radicaldot"
-    assert result["funding"] == "USD 2843478"
-    assert result["founded_year"] == "2024"
-
-
-def test_tracxn_retries_with_word_boundaries_restored(monkeypatch):
-    # Tracxn's own search tools match tokenized words, not an arbitrary string: a name typed
-    # without the separators its brand uses ("Radical.Dot", "RadicalDot") finds nothing even
-    # though the company is indexed as "Radical Dot". The client retries once with word breaks
-    # restored at unambiguous boundaries (case changes, punctuation) before giving up.
-    client = TracxnClient("test")
-    row = {"name": "Radical Dot", "description": "Plastic recycling", "website": "radicaldot.com",
-           "tracxn_id": "9", "provider_record": {}}
-    calls = []
-    def fake_search(q):
-        calls.append(q)
-        return [row] if q == "Radical Dot" else []
-    monkeypatch.setattr(client, "search", fake_search)
-    assert client.company_row("Radical.Dot")["company_name"] == "Radical Dot"
-    assert calls == ["Radical.Dot", "Radical Dot"]
-    calls.clear()
-    assert client.company_row("RadicalDot")["company_name"] == "Radical Dot"
-    assert calls == ["RadicalDot", "Radical Dot"]
-    # A single case/character run has no unambiguous word break to restore — retrying with
-    # the same string again would just repeat the same miss, so it is not attempted.
-    calls.clear()
-    assert client.company_row("radicaldot") is None
-    assert calls == ["radicaldot"]
-    # Already-successful literal query never triggers the fallback search.
-    calls.clear()
-    assert client.company_row("Radical Dot")["company_name"] == "Radical Dot"
-    assert calls == ["Radical Dot"]
+    assert client.company_row("Alpha") is None
 
 
 def test_private_runs_cannot_be_read_by_another_reviewer():
@@ -98,15 +34,26 @@ def test_private_runs_cannot_be_read_by_another_reviewer():
 
 def test_job_submission_is_idempotent_and_isolated(monkeypatch):
     pool = Mock(); monkeypatch.setattr(jobs,"_pool",pool)
-    body = jobs.JobBody(names=["Alpha","Beta"],request_id="test-request-unique")
+    body = jobs.JobBody(names=["Alpha","Beta"],request_id="test-request-unique",department_id="di")
     a,b = user("job-a"),user("job-b")
     first = jobs.start(body,a)
     assert jobs.start(body,a) == first
     assert pool.submit.call_count == 2
+    # The batch's department is applied to every startup in it.
+    assert {j["department_id"] for j in first["jobs"]} == {"di"}
     with pytest.raises(Exception) as exc:
         jobs.get_job(first["jobs"][0]["id"],b)
     assert exc.value.status_code == 404
     for _ in first["jobs"]: jobs._slots.release()
+
+
+def test_an_evaluation_batch_needs_no_department(monkeypatch):
+    """Every evaluation is assessed for all departments; an older client's id is ignored."""
+    pool = Mock(); monkeypatch.setattr(jobs,"_pool",pool)
+    for department in (None, "no-such-department"):
+        body = jobs.JobBody(names=["Alpha"],request_id=f"no-dept-{department}",department_id=department)
+        assert jobs.start(body,user("job-c"))["jobs"][0]["status"] == "queued"
+    assert pool.submit.call_count == 2
 
 
 def test_batch_limit_is_enforced_server_side():

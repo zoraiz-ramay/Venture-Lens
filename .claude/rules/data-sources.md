@@ -43,8 +43,14 @@ the client contract with a fake and says so at the top.
 
 ## The search engine is switchable; the evidence is always a page
 
-`SEARCH_BACKEND=ddg` (default) scrapes DuckDuckGo. `SEARCH_BACKEND=gemini` lets Gemini's Google
-Search grounding find pages (`web._grounded_search`), then **throws the model's answer away**,
+`SEARCH_BACKEND=ddg` scrapes DuckDuckGo. `SEARCH_BACKEND=grounded` (or `gemini`) lets the model's own
+web search — Gemini's Google Search grounding, or the gateway's `web_search` tool, whose
+`web_search_call.action.sources` list every page searched — find pages (`web._grounded_search`).
+`auto`, the default, is `grounded` on the Siemens gateway and `ddg` elsewhere: from the deployed
+network DuckDuckGo timed out on every request (~21s per search after three attempts, and a third of
+the enrichment wave abandoned), and one Wandelbots run went from 109s to 47s with more customers and
+Siemens engagements found — but ~834k tokens instead of ~36k, since each gateway search bills its
+results as ~8-10k input tokens. Either way the engine **throws the model's answer away**,
 resolves Google's redirect link (`_resolve_grounding_redirect` — the only off-site redirect the
 engine follows), fetches each page through the SSRF-guarded `_fetch_with_url`, and builds each
 hit's `body` from at most two ~200-character passages of the page that share the query's words.

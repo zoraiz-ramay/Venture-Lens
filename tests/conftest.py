@@ -20,3 +20,6 @@ os.environ.pop("APP_ENV", None)
 # Set (to blank) rather than popped: load_dotenv never overrides a key already in os.environ,
 # so this is what stops a developer's .env from shipping every test request to their SigNoz.
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
+# "auto" would search through the gateway whenever a developer's key is set, and the search tests
+# drive the DuckDuckGo path with fakes. Tests of "auto" itself set it explicitly.
+os.environ["SEARCH_BACKEND"] = "ddg"

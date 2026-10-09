@@ -148,10 +148,25 @@ def _store(kind: str, key: str, payload, shared: bool = False) -> None:
         pass
 
 
-# Which engine answers ddg_search. "ddg" scrapes DuckDuckGo; "gemini" has Gemini's Google Search
-# grounding find the pages and then reads the pages itself (_grounded_search). Every caller gets
-# the same {title, href, body} hits either way, so no grounding gate changes.
-SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", "ddg").strip().lower()
+# Which engine answers ddg_search. "ddg" scrapes DuckDuckGo; "grounded" (or "gemini") has the
+# model's own web search — Gemini's Google Search, or the gateway's web_search tool — find the
+# pages and then reads the pages itself (_grounded_search). Every caller gets the same
+# {title, href, body} hits either way, so no grounding gate changes. "auto", the default, is
+# "grounded" on the Siemens gateway and "ddg" elsewhere: from the deployed network DuckDuckGo
+# does not answer at all (every request timed out at ~6.5s, three attempts each, and the
+# enrichment wave abandoned a third of its queries), while a gateway search lists ~11 pages in
+# ~3.5s. A laptop reaches DuckDuckGo, so local runs keep it.
+SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", "auto").strip().lower()
+
+
+def search_backend() -> str:
+    """The engine ddg_search uses: "grounded" or "ddg"."""
+    if SEARCH_BACKEND in ("grounded", "gemini"):
+        return "grounded"
+    if SEARCH_BACKEND == "ddg":
+        return "ddg"
+    llm = _grounding_client()
+    return "grounded" if llm.available and llm.provider == "openai" else "ddg"
 
 
 @_tracer.start_as_current_span("web.search")
@@ -169,7 +184,7 @@ def ddg_search(query: str, max_results: int = 5,
     Results are cached (see install_cache): re-running the same query inside the TTL replays
     the same hits, which is what makes a re-evaluation fast AND reproducible."""
     import random
-    if SEARCH_BACKEND == "gemini":
+    if search_backend() == "grounded":
         return _grounded_search(query, max_results, meta)
     key = _cache_key("ddg", query, max_results)
     hit = _cached("ddg", key, meta)
@@ -296,7 +311,7 @@ def _grounding_client():
 
 
 def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None) -> list[dict]:
-    """ddg_search's contract — [{title, href, body}] — answered by Gemini's Google Search.
+    """ddg_search's contract — [{title, href, body}] — answered by the model's own web search.
 
     A page that cannot be fetched is dropped rather than described from the answer: no page text,
     no evidence. Cached like a DuckDuckGo search (own key, so switching engines never replays the
@@ -308,7 +323,7 @@ def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None)
     if hit is not None:
         return hit
     llm = _grounding_client()
-    if not llm.available or llm.provider != "gemini":
+    if not llm.available or llm.provider not in ("gemini", "openai"):
         return []
     answer = llm.web_answer(f"Search the web for: {query}\nList the pages you found, one per line.",
                             max_tokens=256, thinking_budget=0)
@@ -386,10 +401,11 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
         with sem:
             try:
                 # A cached result needs no slot: replaying it must not queue behind live searches.
-                hits = (None if SEARCH_BACKEND != "ddg"
+                ddg = search_backend() == "ddg"
+                hits = (None if not ddg
                         else _cached("ddg", _cache_key("ddg", query, max_results), meta))
                 if hits is None:
-                    with (_ddg_slots if SEARCH_BACKEND == "ddg" else _search_slots):
+                    with (_ddg_slots if ddg else _search_slots):
                         if not first_search:
                             first_search.append(time.time())
                         started.set()

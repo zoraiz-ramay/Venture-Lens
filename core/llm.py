@@ -619,7 +619,7 @@ class LLMClient:
             if self.provider == "gemini":
                 return _gemini_grounded(self, prompt, system, max_tokens, thinking_budget)
             if self.provider == "openai":
-                return _openai_web_search(self, prompt, system, max_tokens)
+                return _openai_web_search(self, prompt, system, max_tokens, thinking_budget)
         except Exception as e:                              # noqa: BLE001 — any failure means "no search"
             self.last_error = str(e)
             log.warning("web-search completion failed: %s", e)
@@ -734,29 +734,46 @@ def _gemini_grounded(client: "LLMClient", prompt: str, system: str, max_tokens: 
             "pages": pages}
 
 
-def _openai_web_search(client: "LLMClient", prompt: str, system: str, max_tokens: int) -> Optional[dict]:
+# gpt-5, gpt-5-mini and gpt-5-nano reject reasoning effort "none", and the gateway refuses
+# web_search at "minimal", so "low" is the least they can search at.
+_GPT_NO_NONE = re.compile(r"^gpt-5(-mini|-nano)?$", re.I)
+
+
+def _openai_web_search(client: "LLMClient", prompt: str, system: str, max_tokens: int,
+                       thinking_budget: Optional[int] = None) -> Optional[dict]:
     ceiling = max(max_tokens, LLM_MIN_BUDGET)
     headroom = LLM_THINKING_HEADROOM if _reasons(client.provider, client.model) else 0
+    # Every page the search returned, not only the ones the answer cites: web._grounded_search
+    # reads these pages itself and never the answer.
+    extra: dict = {"include": ["web_search_call.action.sources"]}
+    # thinking_budget=0 is a search that only lists pages; reasoning first measured 4.5s against
+    # 3.5s without, for the same eleven sources.
+    if thinking_budget == 0 and _GPT_REASONING.match(client.model or ""):
+        extra["reasoning"] = {"effort": "low" if _GPT_NO_NONE.match(client.model) else "none"}
     resp = client._client.responses.create(
         model=client.model, tools=[{"type": "web_search"}], instructions=system or None,
         input=prompt, timeout=WEB_SEARCH_TIMEOUT,
-        max_output_tokens=ceiling + headroom)
+        max_output_tokens=ceiling + headroom, **extra)
     # Search results and the answer share the ceiling; one that ran out answers only in part.
     if getattr(resp, "status", "") == "incomplete" and ceiling < LLM_MAX_BUDGET:
         log.warning("web-search answer incomplete at %d tokens; retrying", ceiling)
         resp = client._client.responses.create(
             model=client.model, tools=[{"type": "web_search"}], instructions=system or None,
             input=prompt, timeout=WEB_SEARCH_TIMEOUT * 2,
-            max_output_tokens=LLM_MAX_BUDGET + headroom)
+            max_output_tokens=LLM_MAX_BUDGET + headroom, **extra)
     usage = getattr(resp, "usage", None)
     _tls.web_usage = {"input_tokens": getattr(usage, "input_tokens", 0),
                          "output_tokens": getattr(usage, "output_tokens", 0),
                          "reasoning_tokens": getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0),
                          "total_tokens": getattr(usage, "total_tokens", 0)}
-    text, sources, index, marks, searched = "", [], {}, {}, False
+    text, sources, index, marks, searched, pages = "", [], {}, {}, False, []
     for item in getattr(resp, "output", None) or []:
         if getattr(item, "type", "") == "web_search_call":
             searched = True
+            for src in getattr(getattr(item, "action", None), "sources", None) or []:
+                url = getattr(src, "url", "") or ""
+                if url and all(p["url"] != url for p in pages):
+                    pages.append({"title": getattr(src, "title", "") or "", "url": url})
         for part in getattr(item, "content", None) or []:
             if getattr(part, "type", "") != "output_text":
                 continue
@@ -780,4 +797,5 @@ def _openai_web_search(client: "LLMClient", prompt: str, system: str, max_tokens
     # A gateway that accepts the tool but never runs it would return memory under a search label.
     if not text.strip() or not (searched or sources):
         return None
-    return {"text": text.strip(), "sources": sources, "queries": []}
+    return {"text": text.strip(), "sources": sources, "queries": [],
+            "pages": pages or [dict(src) for src in sources]}

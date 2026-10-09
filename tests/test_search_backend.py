@@ -1,8 +1,9 @@
-"""SEARCH_BACKEND=gemini: Gemini's Google Search finds the pages; the engine reads the pages.
+"""SEARCH_BACKEND=grounded: the model's web search finds the pages; the engine reads the pages.
 
 The grounded answer is prose the model wrote. Every grounding gate asks whether independent text
 supports a claim, so that prose must never reach a result's body — otherwise the model would be
-checked against itself. These pin that, and that the default DuckDuckGo path is untouched.
+checked against itself. These pin that, that the DuckDuckGo path is untouched, and which engine
+"auto" picks.
 """
 import os
 import sys
@@ -97,8 +98,49 @@ def test_only_googles_grounding_redirect_is_followed_off_site(monkeypatch):
     assert calls == [google, google]
 
 
-def test_the_default_engine_is_duckduckgo_and_never_asks_the_model(monkeypatch):
-    assert web.SEARCH_BACKEND == "ddg"
+def test_ddg_engine_never_asks_the_model(monkeypatch):
+    monkeypatch.setattr(web, "SEARCH_BACKEND", "ddg")
     monkeypatch.setattr(web, "_grounding_client", lambda: pytest.fail("the model was asked to search"))
     monkeypatch.setattr(web, "_cached", lambda kind, key, meta=None, shared=False: [{"href": "cached"}])
     assert web.ddg_search("anything", 5) == [{"href": "cached"}]
+
+
+class _Client:
+    def __init__(self, provider, available=True):
+        self.provider, self.available = provider, available
+
+
+@pytest.mark.parametrize("client, engine", [
+    (_Client("openai"), "grounded"),              # the Siemens gateway: DuckDuckGo is unreachable there
+    (_Client("gemini"), "ddg"),                   # a laptop with a Gemini key keeps DuckDuckGo
+    (_Client("openai", available=False), "ddg"),  # no model configured
+])
+def test_auto_searches_through_the_gateway_only(monkeypatch, client, engine):
+    monkeypatch.setattr(web, "SEARCH_BACKEND", "auto")
+    monkeypatch.setattr(web, "_grounding_client", lambda: client)
+    assert web.search_backend() == engine
+
+
+def test_the_gateway_lists_every_searched_page_not_only_the_cited_ones(monkeypatch):
+    """Under SEARCH_BACKEND=grounded on the gateway, the pages come from the web_search call's
+    sources, and a listing-only search (thinking_budget=0) asks gpt-6 not to reason."""
+    from types import SimpleNamespace as NS
+    from core import llm as llm_mod
+    seen = {}
+
+    def create(**kw):
+        seen.update(kw)
+        call = NS(type="web_search_call", action=NS(sources=[NS(url="https://a.example/x"), NS(url="https://b.example/y"),
+                                                             NS(url="https://a.example/x")]))
+        msg = NS(type="message", content=[NS(type="output_text", text="a.example/x", annotations=[])])
+        return NS(status="completed", output=[call, msg], output_text="", usage=None)
+
+    client = NS(provider="openai", model="gpt-6-luna", _client=NS(responses=NS(create=create)))
+    out = llm_mod._openai_web_search(client, "Search the web for: acme", "", 256, thinking_budget=0)
+    assert [p["url"] for p in out["pages"]] == ["https://a.example/x", "https://b.example/y"]
+    assert seen["include"] == ["web_search_call.action.sources"]
+    assert seen["reasoning"] == {"effort": "none"}
+
+    client.model = "gpt-5-mini"
+    llm_mod._openai_web_search(client, "Search the web for: acme", "", 256, thinking_budget=0)
+    assert seen["reasoning"] == {"effort": "low"}             # the gateway refuses web_search at "minimal"

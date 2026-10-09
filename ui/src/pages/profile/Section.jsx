@@ -12,7 +12,10 @@ import { sectionLabel } from "./sections.js";
  * unnamed landmarks in a row are read out as "region, region, region". Taking the name from the
  * same list the rail reads means the entry and its destination cannot be spelled differently.
  */
-export default function Section({ id, children, className = "panel" }) {
+export default function Section({ id, children, className = "panel", bare = false }) {
+  // Inside a dialog (Scoring & Fit's score popups) the panel is not a place on the page: the box it
+  // opened from keeps the id, the rail entry and the landmark, and the dialog names itself.
+  if (bare) return <div className="dialog-panel">{children}</div>;
   return (
     <section id={id} className={`profile-section ${className}`} aria-label={sectionLabel(id)}>
       {children}

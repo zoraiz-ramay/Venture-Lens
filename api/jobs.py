@@ -37,24 +37,34 @@ def _key(oid, job_id):
 
 
 def _execute(oid, job_id, body, user):
-    from api.main import evaluate, solve, EvaluateBody, SolveBody, _run_evaluation
+    from api.main import EvaluateBody, SolveBody, _run_evaluation, run_solve
     key = _key(oid, job_id)
     record = sessions().get(key)
     if not record:
         _slots.release(); return
+    # Solve reports from two threads at once (the applicants and the interpretation land
+    # concurrently), and two read-merge-writes of `partial` interleaved would drop one of them.
+    guard = threading.RLock()
     def update(**fields):
-        record.update(fields, updated_at=time.time())
-        sessions().put(key, json.loads(json.dumps(record, default=str)), TTL)
+        with guard:
+            record.update(fields, updated_at=time.time())
+            sessions().put(key, json.loads(json.dumps(record, default=str)), TTL)
+    def merge_partial(section, data):
+        with guard:
+            update(partial={**(record.get("partial") or {}), **data})
     try:
         update(status="running")
         if body.kind == "solve":
-            result = solve(SolveBody(problem=record["query"]), user)
+            result = run_solve(SolveBody(problem=record["query"]), user, merge_partial)
         else:
             # Preserve partial rendering; use the same source/cache semantics as the public endpoint.
+            # Guarded for the same reason as merge_partial: the researched profile is emitted from
+            # the profile branch's own thread while the main thread emits the other sections.
             def partial(section, data):
-                previous = record.get("partial") or {"found": True, "streaming": True}
-                previous.update(data if section in ("identity", "profile") else {section: data})
-                update(partial=previous)
+                with guard:
+                    previous = record.get("partial") or {"found": True, "streaming": True}
+                    previous.update(data if section in ("identity", "profile") else {section: data})
+                    update(partial=previous)
             from api.main import _evaluation_cached
             request = EvaluateBody(name=record["query"], refresh=body.refresh,
                                    department_id=body.department_id)

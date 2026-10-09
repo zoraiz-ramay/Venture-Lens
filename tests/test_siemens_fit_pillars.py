@@ -247,6 +247,7 @@ def test_a_positive_score_without_evidence_or_catalog_is_zeroed():
     lambda r: r["criteria"]["tool_fit"].update(score=True),
     lambda r: r["criteria"]["tool_fit"].update(citations=["E99"]),           # fabricated evidence
     lambda r: r["criteria"]["tool_fit"].update(catalog_ids=["tool:invented"]),  # not shortlisted
+    lambda r: r["criteria"]["tool_fit"].update(catalog_ids=["invented"]),       # bare, and not shortlisted
     lambda r: r["criteria"]["tool_fit"].update(citations="E1"),
 ])
 def test_malformed_model_output_is_rejected_not_scored(mutate):
@@ -254,6 +255,23 @@ def test_malformed_model_output_is_rejected_not_scored(mutate):
     mutate(r)
     with pytest.raises(ValueError):
         P.validate_match("Empower", r, EVIDENCE, CATALOG)
+
+
+@pytest.mark.parametrize("pillar, bare, full", [("Collaborate", "inspection", "need:inspection"),
+                                                ("Empower", "simatic-ai", "tool:simatic-ai")])
+def test_a_shortlisted_id_written_without_its_prefix_is_the_entry_it_names(pillar, bare, full):
+    """Gemini 3.5 Flash Lite writes "di-02-1" for "need:di-02-1"; the entry was shortlisted."""
+    out = P.validate_match(pillar, raw(pillar, [3, 2, 3], GOOD_STATEMENT[pillar], "Book a pilot scoping call.",
+                                       cats=[bare]), EVIDENCE, CATALOG)
+    assert out["status"] == "assessed" and out["total"] == 8
+    assert {e["id"] for row in out["criteria"] for e in row["catalog"]} == {full}
+
+
+def test_a_bare_id_two_shortlisted_entries_share_is_still_rejected():
+    catalog = {**CATALOG, "tool:inspection": {"id": "tool:inspection", "name": "Inspection tool"}}
+    r = raw("Collaborate", [2, 2, 2], GOOD_STATEMENT["Collaborate"], "Next step here.", cats=["inspection"])
+    with pytest.raises(ValueError):
+        P.validate_match("Collaborate", r, EVIDENCE, catalog)
 
 
 def test_prompt_injection_in_a_rationale_changes_nothing_python_checks():

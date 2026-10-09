@@ -16,7 +16,6 @@ vi.mock("../../../api.js", () => ({
 import { api } from "../../../api.js";
 import FitSummary from "./FitSummary.jsx";
 import FitComparison from "./FitComparison.jsx";
-import TotalContribution from "./TotalContribution.jsx";
 import TeamPanel from "./TeamPanel.jsx";
 import MarketScorePanel from "./MarketScorePanel.jsx";
 import DepartmentPanel from "./DepartmentPanel.jsx";
@@ -82,6 +81,29 @@ describe("FitSummary", () => {
     const audit = screen.getByText("Route reasoning (audit)").closest("details");
     expect(within(audit).getByText("Tool fit 3/3: because")).toBeInTheDocument();
     expect(screen.getAllByText(/3\/3/).every((el) => audit.contains(el))).toBe(true);
+  });
+});
+
+describe("FitSummary hero", () => {
+  it("states the route's strength and lists the other routes with their scores", () => {
+    withRouter(<FitSummary res={RUN} runId={1} />);
+    expect(screen.getByText("Recommended · Empower").parentElement).toHaveTextContent("Recommended · Empower9/9 · Strong match");
+    const others = within(screen.getByRole("list", { name: "Other routes" })).getAllByRole("listitem");
+    expect(others.map((li) => li.textContent)).toEqual(["Connect 9/9 · Strong match", "Collaborate 0/9 · No match"]);
+  });
+
+  it("names the department for Collaborate, leads with one sentence and hides catalog ids", () => {
+    const collab = { ...COLLAB, total: 7, band: "strong", next_step: "Book a pilot.",
+      statement: "Digital Industries could pilot Oxolysis for Predictive Maintenance (need:di-02-3). It fits a second need too." };
+    const res = { ...RUN, routing: { ...RUN.routing, pillar: "Collaborate" },
+      assessment: { ...RUN.assessment, pillars: { ...RUN.assessment.pillars, Collaborate: collab } } };
+    withRouter(<FitSummary res={res} runId={1} />);
+    expect(screen.getByText("Recommended · Collaborate")).toBeInTheDocument();
+    expect(screen.getByText("7/9 · Strong match · Digital Industries")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Digital Industries could pilot Oxolysis for Predictive Maintenance." }))
+      .toBeInTheDocument();
+    expect(screen.getByText("It fits a second need too.")).toBeInTheDocument();
+    expect(screen.queryByText(/need:di-02-3/)).not.toBeInTheDocument();
   });
 });
 
@@ -267,36 +289,6 @@ describe("FitComparison", () => {
   it("shows a skeleton while a pillar is still being assessed", () => {
     withRouter(<FitComparison res={{ streaming: true, department: RUN.department }} />);
     expect(screen.getByRole("status", { name: "Empower is being assessed" })).toBeInTheDocument();
-  });
-});
-
-describe("TotalContribution", () => {
-  it("draws earned points against each component's maximum and never shows a partial sum", () => {
-    render(<TotalContribution res={RUN} />);
-    expect(screen.getByRole("img", { name: "Traction: 19.7 of 30 points (score 66/100)" })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Siemens Fit: 35 of 35 points (score 100/100)" })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Team & Ecosystem: 15 of 20 points (score 75/100)" })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Market: not scored, up to 15 points" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Total pending · Market not scored yet");
-    expect(screen.queryByText("69.7")).toBeNull();                      // 19.7 + 35 + 15 is never shown
-  });
-
-  it("links each component to the section that scores it", () => {
-    render(<TotalContribution res={RUN} />);
-    const hrefs = ["Traction", "Siemens Fit", "Team & Ecosystem", "Market"].map((name) =>
-      screen.getByRole("link", { name: new RegExp(`^${name}: .*Go to ${name}$`) }).getAttribute("href"));
-    expect(hrefs).toEqual(["#scoring-traction", "#scoring-routes", "#scoring-team", "#scoring-market"]);
-  });
-
-  it("shows the total when all four are scored", () => {
-    const res = { ...RUN, assessment: { ...RUN.assessment, components: { ...RUN.assessment.components, market: 73.3 }, total: 80.7 } };
-    render(<TotalContribution res={res} />);
-    expect(screen.getByText("80.7")).toBeInTheDocument();
-  });
-
-  it("labels a legacy run instead of inventing a total", () => {
-    render(<TotalContribution res={{ company: "Old" }} />);
-    expect(screen.getByRole("status")).toHaveTextContent(/Legacy run/);
   });
 });
 

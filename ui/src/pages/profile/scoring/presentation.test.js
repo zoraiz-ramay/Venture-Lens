@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { catalogGroups, contributions, dedupeEvidence, evidenceLabel, opportunity, pillarRows, signals } from "./presentation.js";
+import { catalogGroups, contributions, dedupeEvidence, evidenceLabel, opportunity, pillarRows, readableStatement,
+  signals, splitLead } from "./presentation.js";
+
+describe("readableStatement", () => {
+  const collab = { criteria: [{ id: "need_fit", catalog: [{ id: "need:si-02-2", name: "Simulation & Optimization" }] }] };
+  it("drops an id in brackets after its own name", () => {
+    expect(readableStatement("could address Predictive Maintenance (need:si-02-3) by integrating AI.", collab))
+      .toBe("could address Predictive Maintenance by integrating AI.");
+  });
+  it("names a bare cited id and drops one it cannot name", () => {
+    expect(readableStatement("pilot need:si-02-2 first.", collab)).toBe("pilot Simulation & Optimization first.");
+    expect(readableStatement("address need:xx-9-9 later.", collab)).toBe("address later.");
+  });
+  it("leaves prose without ids untouched", () => {
+    expect(readableStatement("SIMATIC AI could help the startup.", {})).toBe("SIMATIC AI could help the startup.");
+  });
+});
+
+describe("splitLead", () => {
+  it("splits off the first sentence and keeps a single sentence whole", () => {
+    expect(splitLead("One thing. Two things follow.")).toEqual(["One thing.", "Two things follow."]);
+    expect(splitLead("Only one sentence here.")).toEqual(["Only one sentence here.", ""]);
+  });
+});
 
 /* The adapter reads the engine's decisions; these pin that it never makes one. */
 const p = (total, band, third, extra = {}) => ({ status: "assessed", total, band,

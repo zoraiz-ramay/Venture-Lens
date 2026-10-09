@@ -14,6 +14,17 @@ import { evidenceLabel } from "./scoring/presentation.js";
    hovering a card shows the sentence it was written from. Written once per run, kept per visit. */
 const ICON = { problem: iconWarning, offer: iconRocket, how: iconCogwheel, customers: iconGroup, money: iconMoney };
 const cache = new Map();
+// The request for a run already on its way. A second mount while it is pending — React's dev-mode
+// double effect, or the profile re-rendering — waits for it instead of sending another: the first
+// view of a run is a model call, and the database held two copies of the flow for eight runs.
+const inflight = new Map();
+
+function loadFlow(runId) {
+  if (!inflight.has(runId)) {
+    inflight.set(runId, api.runBusinessFlow(runId).finally(() => inflight.delete(runId)));
+  }
+  return inflight.get(runId);
+}
 
 function numberSources(steps) {
   const list = [];
@@ -34,7 +45,7 @@ export default function BusinessFlow({ res }) {
     if (runId == null || cache.has(runId)) return undefined;
     let live = true;
     setState({ loading: true });
-    api.runBusinessFlow(runId)
+    loadFlow(runId)
       .then((data) => { cache.set(runId, data); if (live) setState({ data }); })
       .catch((e) => { if (live) setState({ error: e.message }); });
     return () => { live = false; };

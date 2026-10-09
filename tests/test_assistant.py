@@ -238,3 +238,40 @@ def test_the_endpoint_passes_history_and_the_reviewers_tracxn_connection(monkeyp
                       json={"question": "And their competitors?", "history": [{"role": "user", "text": "Radical Dot?"}]})
     assert res.status_code == 200 and res.json()["provider"] == "tracxn"
     assert seen["tracxn"] == "tracxn-client" and seen["history"] == [{"role": "user", "text": "Radical Dot?"}]
+
+
+# ------------------------------------------------------------------ the stored conversation
+
+def test_a_conversation_is_kept_per_reviewer_and_capped():
+    from api import store
+    store.clear_chat("oid-alice", "chat-cap-co")
+    store.append_chat("oid-alice", "chat-cap-co", [{"role": "user", "text": f"q{i}"} for i in range(store.CHAT_KEEP + 5)])
+    kept = store.get_chat("oid-alice", "chat-cap-co")
+    assert len(kept) == store.CHAT_KEEP and kept[-1]["text"] == f"q{store.CHAT_KEEP + 4}"
+    assert store.get_chat("oid-bob", "chat-cap-co") == []                       # never another reviewer's
+
+
+def test_asking_stores_the_turn_under_the_company_so_a_refreshed_run_resumes_it(monkeypatch):
+    """The dock used to keep the chat in component state: a reload lost it, and so did an answer
+    that landed after the reviewer moved on. Two runs of one company share one thread."""
+    from api import main
+    runs = {7101: {"company": "Chatresume GmbH"}, 7102: {"company": "Chatresume GmbH"}}
+    monkeypatch.setattr(main.store, "get_run", lambda rid: runs.get(rid))
+    monkeypatch.setattr(main, "run_brief", lambda res: ("", None))
+    monkeypatch.setattr(main, "tracxn_client_for", lambda user, llm=None: None)
+    monkeypatch.setattr(main.core, "chat_assistant", lambda q, **kw: {
+        "answer": "Seed, from UVC.", "evidence": [], "source": "This evaluation", "provider": "run", "note": ""})
+    client = TestClient(main.app)
+    client.get("/api/auth/login", follow_redirects=False)
+    csrf = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
+    client.delete("/api/my/chat?run_id=7101", headers=csrf)
+
+    assert client.post("/api/ask", headers=csrf, json={"question": "Who funds it?", "run_id": 7101}).status_code == 200
+    thread = client.get("/api/my/chat?run_id=7102").json()["messages"]           # the re-evaluated run
+    assert [(m["role"], m["text"]) for m in thread] == [("user", "Who funds it?"), ("assistant", "Seed, from UVC.")]
+    assert thread[1]["source"] == "This evaluation"
+    assert client.get("/api/my/chat").json()["messages"] == [] or all(
+        m["text"] != "Who funds it?" for m in client.get("/api/my/chat").json()["messages"])   # not the general thread
+
+    assert client.delete("/api/my/chat?run_id=7102", headers=csrf).json() == {"cleared": True}
+    assert client.get("/api/my/chat?run_id=7101").json()["messages"] == []

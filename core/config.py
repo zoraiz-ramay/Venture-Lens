@@ -16,6 +16,22 @@ if not _ENV_PATH.is_file():
     _ENV_PATH = _ENV_PATH.parent.parent / ".env"
 load_dotenv(_ENV_PATH)
 
+
+def _export_secret_blob() -> None:
+    """Expose keys from a JSON secret blob (as api/auth.py reads them) as env vars, never overriding."""
+    import json
+    blob = os.getenv("APP_SECRETS", "").strip() or os.getenv("AWS_SECRET_JSON", "").strip()
+    try:
+        data = json.loads(blob) if blob else {}
+    except ValueError:
+        return
+    for key, value in (data.items() if isinstance(data, dict) else ()):
+        if isinstance(key, str) and key.isidentifier() and value is not None and not os.getenv(key):
+            os.environ[key] = str(value)
+
+
+_export_secret_blob()
+
 # six weighted dimensions from the deck (sum = 1.00)
 WEIGHTS = {
     "traction": 0.28,
@@ -37,10 +53,10 @@ CONTRADICTION_PENALTY = 0.05     # per contradicted claim
 CONTRADICTION_FLOOR = 0.85       # never costs more than 15% of confidence
 FIT_ALIGN_THRESHOLD = 50.0       # below this, "not aligned with Siemens portfolio"
 MIN_OFFLINE_OVERLAP = 2          # offline mode needs >=2 meaningful shared terms to count
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-5.4")
-# A full profile extraction writes ~2k tokens and measured 23s on gpt-5.4; at 30s the longer ones
-# were killed and retried from scratch.
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+# The Siemens gateway's chat model (production). Local runs without OPENAI_API_KEY use
+# core/llm.GEMINI_MODEL instead — the same model, served directly by Google.
+LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-3.5-flash-lite")
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
 
 # --- Program prestige -------------------------------------------------------------------
 # Membership in a startup program is a credibility signal, but not all programs are equal: a

@@ -6,7 +6,7 @@ import { api } from "../api.js";
 import ErrorBox from "../components/ErrorBox.jsx";
 import UnverifiedTools from "../components/UnverifiedTools.jsx";
 import TokenUsage from "../components/TokenUsage.jsx";
-import { Loading } from "../components/widgets.jsx";
+import { Loading, duration } from "../components/widgets.jsx";
 
 /**
  * Usage across the whole tenant, for whoever is listed in ADMIN_UPNS.
@@ -237,6 +237,10 @@ export default function Admin() {
             <IxKpi value={overview.companies.searched} label="Companies searched" />
             <IxKpi value={overview.companies.evaluated} label="Companies evaluated" />
             <IxKpi value={pct(overview.cache_hit_rate)} label="Served from database" />
+            {/* The median, not the mean: one run stuck behind a rate limit would otherwise set the
+                headline. Fresh evaluations only — a database answer is near-instant. */}
+            <IxKpi value={duration(overview.evaluation_time?.median_ms)}
+              label={`Typical evaluation time (${overview.window_days}d)`} />
           </div>
 
           <div className="grid2">
@@ -332,7 +336,7 @@ export default function Admin() {
               <div style={{ overflowX: "auto" }}>
                 <table className="dtable dense">
                   <thead>
-                    <tr><th>When</th><th>Reviewer</th><th>Typed</th><th>Resolved to</th><th>Source</th></tr>
+                    <tr><th>When</th><th>Reviewer</th><th>Typed</th><th>Resolved to</th><th>Source</th><th>Took</th></tr>
                   </thead>
                   <tbody>
                     {searches.map((s) => (
@@ -346,6 +350,7 @@ export default function Admin() {
                             {s.served_from === "cache" ? "database" : "pipeline"}
                           </span>
                         </td>
+                        <td>{duration(s.duration_ms)}</td>
                       </tr>
                     ))}
                   </tbody>

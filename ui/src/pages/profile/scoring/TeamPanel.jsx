@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { IxContentHeader } from "@siemens/ix-react";
 import { RadarChart } from "../../../components/charts.jsx";
 import Section from "../Section.jsx";
 import CriterionDetail from "./CriterionDetail.jsx";
+import PanelHeader from "./PanelHeader.jsx";
 import TeamEvidence, { EvidencePreview } from "./TeamEvidence.jsx";
 import { CRITERION_QUESTIONS } from "./presentation.js";
 
@@ -14,22 +14,22 @@ const boxId = (id) => `team-box-${id}`;
    facets of one team whose overall shape matters; the four boxes beside it carry each criterion's
    level in words and open its reasoning, one at a time — the same interaction as a Siemens Fit
    criterion cell. The same whatever department the run is for, so switching department reuses it. */
-export default function TeamPanel({ res }) {
+export default function TeamPanel({ res, inDialog = false }) {
   const [open, setOpen] = useState(null);
   const t = res.assessment?.team_ecosystem || res.team_ecosystem;
-  const header = <IxContentHeader headerTitle="Team & Ecosystem"
-    headerSubtitle="Founder experience, domain expertise, external validation and strategic network, 0–5 each. Select one to see how it was scored." />;
+  const header = <PanelHeader title="Team & Ecosystem" inDialog={inDialog}
+    subtitle="Founder experience, domain expertise, external validation and strategic network, 0–5 each. Select one to see how it was scored." />;
   if (!t) {
-    return <Section id="scoring-team">{header}<p className="muted" role="status">
+    return <Section id="scoring-team" bare={inDialog}>{header}<p className="muted" role="status">
       {res.streaming ? "Team & Ecosystem is being assessed…" : "Not assessed on this run."}</p></Section>;
   }
   if (t.status !== "assessed") {
-    return <Section id="scoring-team">{header}<p role="status"><span className="verdict unassessed">Not assessed</span> <span className="muted">{t.message}</span></p></Section>;
+    return <Section id="scoring-team" bare={inDialog}>{header}<p role="status"><span className="verdict unassessed">Not assessed</span> <span className="muted">{t.message}</span></p></Section>;
   }
   const index = t.criteria.findIndex((c) => c.id === open);
   const close = () => { const back = open; setOpen(null); document.getElementById(boxId(back))?.focus(); };
   return (
-    <Section id="scoring-team">
+    <Section id="scoring-team" bare={inDialog}>
       {header}
       <p className="section-score"><strong className="big-num">{t.points}</strong><span className="muted">/20</span>
         <span className="badge">{t.band}</span><span className="muted">counts as {t.score_0_100}/100 in the total</span></p>

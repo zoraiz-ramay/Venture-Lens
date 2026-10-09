@@ -5,16 +5,24 @@ import { ExtLink } from "../../../components/widgets.jsx";
    `unassessed` is a real state: a run from before the commercial posture was extracted knows
    nothing either way, and showing that as "not relevant" would be a negative finding the evidence
    does not support. */
+/* The verdict in one word and its badge class. */
+function sfsStatus(rt) {
+  const lines = rt.sfs_lines || [];
+  const blockers = rt.sfs_blockers || [];
+  return {
+    status: lines.length ? (rt.sfs_relevant ? "relevant" : "conditional") : (blockers.length ? "not relevant" : "not assessed"),
+    verdict: rt.sfs_relevant ? "eligible" : blockers.length ? "blocked" : "unassessed",
+  };
+}
+
 export default function SfsPanel({ rt, verdictShown = false }) {
   const lines = rt.sfs_lines || [];
   const blockers = rt.sfs_blockers || [];
-  const status = lines.length ? (rt.sfs_relevant ? "relevant" : "conditional")
-    : (blockers.length ? "not relevant" : "not assessed");
+  const { status, verdict } = sfsStatus(rt);
   return (
     <>
-      <h3>Siemens Financial Services</h3>
       {!verdictShown && <p style={{ margin: "0 0 8px" }}>
-        <span className={`verdict ${rt.sfs_relevant ? "eligible" : blockers.length ? "blocked" : "unassessed"}`}>
+        <span className={`verdict ${verdict}`}>
           {status}
         </span>
         {rt.sfs_line && <span className="pill sfs" style={{ marginLeft: 8 }}>{rt.sfs_line}</span>}

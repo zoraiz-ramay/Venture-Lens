@@ -49,6 +49,9 @@ const EMPTY_HEADCOUNT = {
     + "for two datable points.",
   not_found: "No cited headcount history — fewer than two independently sourced data points.",
   unavailable: "Headcount history could not be retrieved on this run. Re-evaluate to try again.",
+  // A fourth, about a run that has not finished: the series is looked up after the profile first
+  // reaches the page, and "no cited history" before then would be a finding nobody made.
+  researching: "Still researching the headcount history…",
 };
 
 /* Where the displayed headcount actually came from.
@@ -132,6 +135,9 @@ export default function OverviewTab({ res }) {
   const founders = dedupePeople((dp.founders || []).filter((f) => f?.name));
   const advisors = withoutListed(dedupePeople((dp.advisors || []).filter((a) => a?.name)), founders);
   const programs = (dp.programs || []).filter((x) => x?.name);
+  // The profile reaches the page before its recall nets finish (core/pipeline.py), and an empty
+  // list then means "not found yet", not "not found". Only a streaming partial carries the flag.
+  const researching = Boolean(res.streaming && res.profile_researching);
   const headcount = dp.employees || p.employees_count || p.employee_band || "";
   const asOf = reportedAsOf(headcount, dp.employees_over_time);
 
@@ -188,7 +194,9 @@ export default function OverviewTab({ res }) {
       <Section id="profile-team-ecosystem">
         <h3>Team &amp; ecosystem</h3>
         {founders.length === 0 && advisors.length === 0 && programs.length === 0 && (
-          <p className="muted" style={{ margin: 0 }}>No researched team data.</p>
+          <p className="muted" style={{ margin: 0 }}>
+            {researching ? "Still researching founders, advisors and programmes…" : "No researched team data."}
+          </p>
         )}
         {founders.map((f, i) => (
           <Spec key={i} k="Founder">
@@ -223,7 +231,8 @@ export default function OverviewTab({ res }) {
       <ReferenceCustomers res={res} />
 
       <Section id="profile-headcount-trend">
-        <HeadcountTrend points={dp.employees_over_time} status={dp.employees_history_status}
+        <HeadcountTrend points={dp.employees_over_time}
+          status={researching && !dp.employees_history_status ? "researching" : dp.employees_history_status}
           band={dp.linkedin_size_band} bandSource={dp.linkedin_size_source || p.linkedin_url} />
       </Section>
 

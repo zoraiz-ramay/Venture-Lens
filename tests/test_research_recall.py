@@ -12,6 +12,7 @@ import os
 import sys
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -128,6 +129,22 @@ def test_knowledge_gapfill_never_invents_verifiable_facts():
         assert verifiable not in gap, f"{verifiable} must not be filled from model memory"
 
 
+@pytest.mark.parametrize("hits, expected", [
+    # A press article about the company is not its website: blank, for the identity-gated recovery.
+    ([{"title": "Daedalus Defence builds interceptor drones", "body": "Daedalus Defence, a startup",
+       "href": "https://www.engineering.com/catching-drones"}], ""),
+    # Its own domain, even spelled differently from the name ("defense", "llc"), is.
+    ([{"title": "Daedalus Defence", "body": "Daedalus Defence press", "href": "https://www.engineering.com/a"},
+      {"title": "Daedalus Defence LLC", "body": "Daedalus Defence home", "href": "https://daedalusdefensellc.com"}],
+     "https://daedalusdefensellc.com"),
+])
+def test_a_guessed_website_must_carry_the_company_name(monkeypatch, hits, expected):
+    from core import data as data_mod
+    monkeypatch.setattr(data_mod, "_ddg_many", lambda queries, **kw: {k: hits for k in queries})
+    row = data_mod.web_profile_row("Daedalus Defence", llm=None)
+    assert row["website"] == expected
+
+
 def test_queries_degrade_cleanly_without_a_domain():
     """No domain must mean today's behaviour, not a query with a dangling space."""
     q = _queries("Acme", pd.Series({"company_name": "Acme"}), _NoLLM())
@@ -163,8 +180,8 @@ def test_thinking_models_get_completion_headroom(monkeypatch):
     client.complete("hi", max_tokens=1200)
     assert seen["max_completion_tokens"] == max(1200, llm_mod.LLM_MIN_BUDGET) + llm_mod.LLM_THINKING_HEADROOM
 
-    client.provider = "openai"          # the gateway with reasoning off keeps the plain budget
-    client.complete("hi", max_tokens=1200, reasoning="none")
+    client.provider, client.model = "openai", "gpt-4o"    # non-reasoning gateway model keeps the plain budget
+    client.complete("hi", max_tokens=1200)
     assert seen["max_completion_tokens"] == max(1200, llm_mod.LLM_MIN_BUDGET)
 
 

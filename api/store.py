@@ -242,7 +242,8 @@ CREATE TABLE IF NOT EXISTS searches (
     company_name TEXT,                    -- resolved name, denormalized so the list survives deletes
     run_id       INTEGER,                 -- nullable for the same reason
     served_from  TEXT,                    -- cache | fresh | research (another department's research reused) | shared (attached to another reviewer's in-flight run)
-    created_at   TEXT NOT NULL
+    created_at   TEXT NOT NULL,
+    duration_ms  INTEGER                  -- how long the reviewer waited; NULL on rows logged before it was timed
 );
 -- Sign-ins are recorded here rather than counted from Redis: sessions there expire after
 -- SESSION_TTL (8h by default), so Redis can answer "who is online" but never "how many
@@ -262,6 +263,13 @@ CREATE TABLE IF NOT EXISTS company_aliases (
     alias      TEXT PRIMARY KEY COLLATE NOCASE,
     company_id INTEGER NOT NULL REFERENCES companies(id),
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_threads (
+    user_oid      TEXT NOT NULL,
+    thread_key    TEXT NOT NULL,
+    messages_json TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (user_oid, thread_key)
 );
 CREATE TABLE IF NOT EXISTS saved_views (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -369,6 +377,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     duration_ms INTEGER NOT NULL DEFAULT 0,
+    start_ms    INTEGER,                  -- offset into the run; NULL on runs logged before it existed
     PRIMARY KEY (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_enrichments ON enrichments(company_id, kind, fetched_at);
@@ -414,6 +423,18 @@ def _conn() -> sqlite3.Connection:
             con.execute(f"ALTER TABLE overrides ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass
+    # When each call started, so a run's log reads as a waterfall. NULL on older rows: we never
+    # recorded it, and inventing one from the finish order would draw a chain that never ran.
+    try:
+        con.execute("ALTER TABLE llm_calls ADD COLUMN start_ms INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    # How long each search took. NULL on older rows rather than an estimate: the only other clock
+    # is the token log, whose call times overlap and add up to more than the run took.
+    try:
+        con.execute("ALTER TABLE searches ADD COLUMN duration_ms INTEGER")
+    except sqlite3.OperationalError:
+        pass
     return con
 
 
@@ -427,7 +448,15 @@ def _conn() -> sqlite3.Connection:
 # written locally and ride along on the next save_run upload, which sends the entire file
 # anyway.
 WEB_CACHE_TTL_DAYS = float(os.getenv("WEB_CACHE_TTL_DAYS", "7"))
+# Whether a Siemens catalog tool exists is not evidence about a startup and does not go stale in a
+# week: at the shared 7 days every tool cited across the corpus was searched again weekly, one
+# gateway web search each, inside whichever evaluation cited it first.
+_KIND_TTL_DAYS = {"tool_check": float(os.getenv("TOOL_CHECK_TTL_DAYS", "180"))}
 _cache_lock = threading.Lock()
+
+
+def _ttl_days(kind: str) -> float:
+    return _KIND_TTL_DAYS.get(kind, WEB_CACHE_TTL_DAYS)
 
 
 def _cache_conn() -> sqlite3.Connection:
@@ -456,7 +485,7 @@ def cache_get(kind: str, key: str) -> "object | None":
             return None
         age = (datetime.now(timezone.utc)
                - datetime.fromisoformat(row[1])).total_seconds() / 86400
-        if age > WEB_CACHE_TTL_DAYS or age < 0:
+        if age > _ttl_days(kind) or age < 0:
             return None
         return json.loads(row[0])
     except Exception:
@@ -480,7 +509,7 @@ def cache_get_entry(kind: str, key: str) -> "tuple | None":
             return None
         age = (datetime.now(timezone.utc)
                - datetime.fromisoformat(row[1])).total_seconds() / 86400
-        if age > WEB_CACHE_TTL_DAYS or age < 0:
+        if age > _ttl_days(kind) or age < 0:
             return None
         return json.loads(row[0]), row[1]
     except Exception:
@@ -499,13 +528,19 @@ def cache_put(kind: str, key: str, payload) -> None:
 
 
 def cache_purge_expired() -> int:
-    """Drop rows past the TTL; returns how many were removed."""
-    cutoff = (datetime.now(timezone.utc)
-              - timedelta(days=WEB_CACHE_TTL_DAYS)).isoformat(timespec="seconds")
+    """Drop rows past their kind's TTL; returns how many were removed."""
+    def cutoff(days):
+        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
     try:
         with _cache_lock, _cache_conn() as con:
-            return int(con.execute("DELETE FROM web_cache WHERE created_at < ?",
-                                   (cutoff,)).rowcount or 0)
+            kinds = list(_KIND_TTL_DAYS)
+            removed = con.execute(
+                f"DELETE FROM web_cache WHERE created_at < ? AND kind NOT IN ({','.join('?' * len(kinds))})",
+                (cutoff(WEB_CACHE_TTL_DAYS), *kinds)).rowcount or 0
+            for kind, days in _KIND_TTL_DAYS.items():
+                removed += con.execute("DELETE FROM web_cache WHERE created_at < ? AND kind = ?",
+                                       (cutoff(days), kind)).rowcount or 0
+            return int(removed)
     except Exception:
         return 0
 
@@ -611,13 +646,14 @@ def _record_llm_calls(con: sqlite3.Connection, run_id: int, result: dict) -> Non
             continue
         con.execute(
             "INSERT INTO llm_calls (run_id, seq, stage, kind, model, provider, cached, ok, reason, attempts, "
-            "input_tokens, output_tokens, reasoning_tokens, total_tokens, duration_ms) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "input_tokens, output_tokens, reasoning_tokens, total_tokens, duration_ms, start_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, seq, str(c.get("stage", ""))[:40], str(c.get("kind", "completion"))[:20],
              str(c.get("model", ""))[:80], str(c.get("provider", ""))[:20], int(bool(c.get("cached"))),
              int(bool(c.get("ok", True))), str(c.get("reason", ""))[:40], int(c.get("attempts") or 1),
              *(int(c.get(k) or 0) for k in ("input_tokens", "output_tokens", "reasoning_tokens",
-                                             "total_tokens", "duration_ms"))))
+                                             "total_tokens", "duration_ms")),
+             int(c["start_ms"]) if isinstance(c.get("start_ms"), int) else None))
 
 
 _TOKEN_SUMS = ("COUNT(c.seq), SUM(c.cached), SUM(1 - c.ok), SUM(c.input_tokens), SUM(c.output_tokens), "
@@ -632,6 +668,8 @@ def token_usage_runs(limit: int = 100) -> dict:
         rows = con.execute(
             f"SELECT r.id, r.company, r.created_at, r.engine, r.department_id, {_TOKEN_SUMS}, "
             "(SELECT s.user_upn FROM searches s WHERE s.run_id = r.id AND s.served_from IN ('fresh','research') "
+            " ORDER BY s.id LIMIT 1), "
+            "(SELECT s.duration_ms FROM searches s WHERE s.run_id = r.id AND s.served_from IN ('fresh','research') "
             " ORDER BY s.id LIMIT 1) "
             "FROM runs r JOIN llm_calls c ON c.run_id = r.id GROUP BY r.id ORDER BY r.id DESC LIMIT ?",
             (int(limit),)).fetchall()
@@ -640,7 +678,8 @@ def token_usage_runs(limit: int = 100) -> dict:
                                "(SELECT 1 FROM llm_calls c WHERE c.run_id = r.id)").fetchone()[0]
     runs = [{"run_id": r[0], "company": r[1], "created_at": r[2], "engine": r[3] or "",
              "scope": "all departments" if r[4] == "*" else (r[4] or "no department"),
-             **{k: int(v or 0) for k, v in zip(_TOKEN_KEYS, r[5:13])}, "requested_by": r[13] or ""}
+             **{k: int(v or 0) for k, v in zip(_TOKEN_KEYS, r[5:13])}, "requested_by": r[13] or "",
+             "wall_ms": r[14]}
             for r in rows]
     return {"runs": runs, "unlogged_runs": int(unlogged),
             "totals": {"runs": int(totals[0] or 0), **{k: int(v or 0) for k, v in zip(_TOKEN_KEYS, totals[1:])}}}
@@ -651,10 +690,10 @@ def token_usage_log(run_id: int) -> list[dict]:
     with _conn() as con:
         rows = con.execute(
             "SELECT seq, stage, kind, model, provider, cached, ok, reason, attempts, input_tokens, output_tokens, "
-            "reasoning_tokens, total_tokens, duration_ms FROM llm_calls WHERE run_id=? ORDER BY seq",
+            "reasoning_tokens, total_tokens, duration_ms, start_ms FROM llm_calls WHERE run_id=? ORDER BY seq",
             (int(run_id),)).fetchall()
     keys = ("seq", "stage", "kind", "model", "provider", "cached", "ok", "reason", "attempts", "input_tokens",
-            "output_tokens", "reasoning_tokens", "total_tokens", "duration_ms")
+            "output_tokens", "reasoning_tokens", "total_tokens", "duration_ms", "start_ms")
     return [{**dict(zip(keys, r)), "cached": bool(r[5]), "ok": bool(r[6])} for r in rows]
 
 
@@ -1051,6 +1090,32 @@ def latest_run_for_company(company: str) -> dict | None:
     return res
 
 
+def run_ref_for(name: str) -> dict | None:
+    """The newest stored evaluation of ``name`` as {run_id, created_at, profile}, or None.
+
+    For Solve a Problem, which lists up to eighteen companies and only needs to know whether one
+    was already evaluated and what its header said. Resolved like the cache lookup (aliases, then
+    the exact name) but never hydrated: hydrating recomputes the whole assessment per company.
+    """
+    key = _norm_alias(name)
+    if not key:
+        return None
+    with _conn() as con:
+        row = con.execute(
+            "SELECT r.id, r.created_at, r.result_json FROM company_aliases a "
+            "JOIN companies c ON c.id = a.company_id JOIN runs r ON r.id = c.latest_run_id "
+            "WHERE a.alias = ?", (key,)).fetchone() or con.execute(
+            "SELECT id, created_at, result_json FROM runs WHERE LOWER(company)=LOWER(?) "
+            "ORDER BY id DESC LIMIT 1", (str(name).strip(),)).fetchone()
+    if not row:
+        return None
+    try:
+        profile = json.loads(row[2]).get("profile") or {}
+    except (TypeError, ValueError):
+        profile = {}
+    return {"run_id": row[0], "created_at": row[1], "profile": profile if isinstance(profile, dict) else {}}
+
+
 def prior_runs_for(name: str, limit: int = 50) -> list[dict]:
     """Every stored run of the company ``name`` resolves to, oldest first — the evidence a fresh
     evaluation carries forward (core/carry_forward.py). Not hydrated: only research is read.
@@ -1157,7 +1222,8 @@ def latest_run_for_alias(name: str) -> dict | None:
 
 # ------------------------------------------------- per-reviewer searches & sessions
 def record_search(user: dict, query: str, *, company_name: str = "", company_id: int | None = None,
-                  run_id: int | None = None, served_from: str = "fresh") -> None:
+                  run_id: int | None = None, served_from: str = "fresh",
+                  duration_ms: int | None = None) -> None:
     """Log one evaluate call against the signed-in principal.
 
     Uploads to S3 like the other write paths: unlike web_cache this is an audit record and
@@ -1170,9 +1236,10 @@ def record_search(user: dict, query: str, *, company_name: str = "", company_id:
     with _conn() as con:
         con.execute(
             "INSERT INTO searches (user_oid, user_upn, query, company_id, company_name, run_id, "
-            "served_from, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            "served_from, created_at, duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
             (oid, str((user or {}).get("upn", "") or ""), str(query)[:200], company_id,
-             str(company_name or "")[:200], run_id, served_from, _now()))
+             str(company_name or "")[:200], run_id, served_from, _now(),
+             int(duration_ms) if duration_ms is not None else None))
     _upload_to_s3()
 
 
@@ -1224,6 +1291,13 @@ def list_user_runs(user_oid: str, limit: int = 200) -> list[dict]:
     return mine
 
 
+def _median(values: list[int]) -> int | None:
+    if not values:
+        return None
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) // 2
+
+
 def admin_overview(recent_days: int = 30, top: int = 10) -> dict:
     """Usage metrics for the admin dashboard. One connection, small aggregate queries."""
     since = (datetime.now(timezone.utc) - timedelta(days=recent_days)).isoformat(timespec="seconds")
@@ -1246,6 +1320,11 @@ def admin_overview(recent_days: int = 30, top: int = 10) -> dict:
         companies_searched = q("SELECT COUNT(DISTINCT LOWER(company_name)) FROM searches "
                                "WHERE company_name<>''")
         cache_hits = q("SELECT COUNT(*) FROM searches WHERE served_from='cache'")
+        # Fresh runs only: a database answer takes milliseconds and would drag the median to
+        # nothing, hiding the minute-plus wait the pipeline actually costs.
+        fresh_ms = sorted(r[0] for r in con.execute(
+            "SELECT duration_ms FROM searches WHERE served_from='fresh' AND duration_ms IS NOT NULL "
+            "AND created_at>=?", (since,)).fetchall())
         runs_total = q("SELECT COUNT(*) FROM runs")
         companies_total = q("SELECT COUNT(*) FROM companies")
         top_companies = [{"company": r[0], "searches": r[1]} for r in con.execute(
@@ -1281,6 +1360,8 @@ def admin_overview(recent_days: int = 30, top: int = 10) -> dict:
         # The share of searches answered from the database instead of the pipeline — the
         # number that says whether the shared cache is actually earning its keep.
         "cache_hit_rate": round(cache_hits / searches_total, 3) if searches_total else 0.0,
+        "evaluation_time": {"timed": len(fresh_ms), "median_ms": _median(fresh_ms),
+                            "longest_ms": fresh_ms[-1] if fresh_ms else None},
         "top_companies": top_companies,
         "per_user": per_user,
     }
@@ -1290,11 +1371,58 @@ def list_searches(limit: int = 200) -> list[dict]:
     """The full activity log, newest first. Admin-only — see require_admin in api/auth.py."""
     with _conn() as con:
         rows = con.execute(
-            "SELECT id, user_oid, user_upn, query, company_name, run_id, served_from, created_at "
-            "FROM searches ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)).fetchall()
+            "SELECT id, user_oid, user_upn, query, company_name, run_id, served_from, created_at, "
+            "duration_ms FROM searches ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)).fetchall()
     return [{"id": r[0], "user_oid": r[1], "user_upn": r[2] or "", "query": r[3],
              "company": r[4] or "", "run_id": r[5], "served_from": r[6] or "",
-             "created_at": r[7]} for r in rows]
+             "created_at": r[7], "duration_ms": r[8]} for r in rows]
+
+
+# ------------------------------------------------------------------- assistant conversations
+# One thread per reviewer and company (key "" is the dock with no startup open). The dock used to
+# hold its conversation in component state, so a reload lost it and a reply that landed after the
+# reviewer moved on was never seen. Private like saved views: there is no read across principals.
+CHAT_KEEP = 40          # messages kept per thread; the prompt only ever reads the last few turns
+
+
+def get_chat(user_oid: str, thread_key: str) -> list[dict]:
+    with _conn() as con:
+        row = con.execute("SELECT messages_json FROM chat_threads WHERE user_oid=? AND thread_key=?",
+                          (str(user_oid), str(thread_key))).fetchone()
+    try:
+        msgs = json.loads(row[0]) if row else []
+    except ValueError:
+        return []
+    return msgs if isinstance(msgs, list) else []
+
+
+def append_chat(user_oid: str, thread_key: str, messages: list[dict]) -> None:
+    """Add turns to a thread, keeping the newest CHAT_KEEP."""
+    if not messages:
+        return
+    with _conn() as con:
+        row = con.execute("SELECT messages_json FROM chat_threads WHERE user_oid=? AND thread_key=?",
+                          (str(user_oid), str(thread_key))).fetchone()
+        try:
+            prior = json.loads(row[0]) if row else []
+        except ValueError:
+            prior = []
+        merged = (prior if isinstance(prior, list) else []) + list(messages)
+        con.execute(
+            "INSERT INTO chat_threads (user_oid, thread_key, messages_json, updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_oid, thread_key) DO UPDATE SET messages_json=excluded.messages_json, "
+            "updated_at=excluded.updated_at",
+            (str(user_oid), str(thread_key), json.dumps(merged[-CHAT_KEEP:], default=str), _now()))
+    _upload_to_s3()
+
+
+def clear_chat(user_oid: str, thread_key: str) -> bool:
+    with _conn() as con:
+        deleted = con.execute("DELETE FROM chat_threads WHERE user_oid=? AND thread_key=?",
+                              (str(user_oid), str(thread_key))).rowcount > 0
+    if deleted:
+        _upload_to_s3()
+    return deleted
 
 
 # ------------------------------------------------------------------- saved views

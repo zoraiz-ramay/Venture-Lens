@@ -68,9 +68,13 @@ def test_streaming_does_not_change_the_answer(offline):
     df, tools = offline
     plain = _run(df, tools)
     streamed = _run(df, tools, on_partial=lambda s, d: None)
-    # run_id / timestamps are added by the API layer, not here, so these are directly comparable.
-    assert json.dumps(plain, sort_keys=True, default=str) == \
-           json.dumps(streamed, sort_keys=True, default=str)
+    # run_id is added by the API layer, not here. Each Fact is stamped with the second it was
+    # gathered, so two runs straddling a second differ there and only there: that is the clock,
+    # not the answer, and comparing it made this test fail whenever the runs crossed a second.
+    import re
+    clock = re.compile(r'"retrieved_at": "[^"]*"')
+    assert clock.sub("", json.dumps(plain, sort_keys=True, default=str)) == \
+           clock.sub("", json.dumps(streamed, sort_keys=True, default=str))
 
 
 def test_it_emits_the_profile_before_the_score(offline):
@@ -101,9 +105,36 @@ def test_the_profile_is_emitted_before_the_research_that_deepens_it(offline):
     df, tools = offline
     seen = []
     _run(df, tools, on_partial=lambda s, d: seen.append(s))
-    assert seen.count("profile") == 2
+    # Row-only, researched-before-the-recall-nets, final.
+    assert seen.count("profile") == 3
     # The early one lands before any of the five concurrent branches report.
     assert seen.index("profile") < min(seen.index(s) for s in ("fit", "trend", "verification"))
+
+
+def test_the_researched_profile_is_shown_before_the_recall_nets_finish(offline, monkeypatch):
+    """The recall nets take as long again as the extraction before them, and the header facts are
+    usually settled by then, so the researched profile goes out first and the nets refine it."""
+    import importlib
+    profile_mod, enrich_mod, trend_mod = (importlib.import_module(f"core.{m}") for m in ("profile", "enrich", "trend"))
+    df, tools = offline
+    # The recall nets only run on a web run; every search is stubbed empty, so nothing leaves.
+    for mod in (profile_mod, enrich_mod, trend_mod):
+        monkeypatch.setattr(mod, "_ddg_many", lambda q, **kw: {k: [] for k in q})
+    monkeypatch.setattr(enrich_mod, "fetch_site_text", lambda *a, **kw: {})
+    seen = []
+    real = profile_mod._recover_headline_facts
+
+    def headline_net(*a, **kw):
+        seen.append("recall_nets")
+        return real(*a, **kw)
+    monkeypatch.setattr(profile_mod, "_recover_headline_facts", headline_net)
+    result = pipeline.evaluate("Acme Vision", None, tools, do_web=True, df=df,
+                               on_partial=lambda s, d: seen.append(("profile", d["deep_profile"]))
+                               if s == "profile" else None)
+    researched = [i for i, e in enumerate(seen) if isinstance(e, tuple) and e[1]]
+    assert seen.index("recall_nets") > researched[0]
+    # ...and the last emission is the finished profile the result stores.
+    assert seen[researched[-1]][1] == result["deep_profile"]
 
 
 def test_the_early_profile_only_ever_gains_fields_never_changes_them(offline):
@@ -134,8 +165,18 @@ def test_the_profile_partial_carries_what_the_overview_needs(offline):
     profile = captured["profile"]
     # All three keys together: the Overview reads the header profile, its provenance map and the
     # researched deep profile, and any one of them arriving alone renders a half-empty page.
-    assert set(profile) == {"profile", "profile_sources", "deep_profile"}
+    assert set(profile) == {"profile", "profile_sources", "deep_profile", "profile_researching"}
     assert profile["profile"]["company_name"] == "Acme Vision"
+
+
+def test_only_the_finished_profile_stops_saying_it_is_still_researching(offline):
+    """An empty founders list at 20s means "not found yet", at the end "not found". The page can
+    only tell the two apart if the partial says which it is."""
+    df, tools = offline
+    flags = []
+    result = _run(df, tools, on_partial=lambda s, d: flags.append(d["profile_researching"]) if s == "profile" else None)
+    assert flags == [True, True, False]
+    assert "profile_researching" not in result
 
 
 def test_every_partial_matches_the_final_result(offline):

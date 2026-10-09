@@ -47,7 +47,9 @@ export default function PillarMethod({ pillar, row, name, onOpenCriterion }) {
         </tbody>
       </table>
       <BandBar total={pillar.total} band={pillar.band} name={name} />
-      <p className="muted">Total {pillar.total}/9 · {row.bandLabel} · shown as {row.value}/100. Strong needs 7 or more
+      <p className="muted">Total {pillar.total}/9
+        {pillar.relationship_bonus ? `, including +1 for an existing Siemens relationship (criteria ${pillar.model_total}/9)` : ""}
+        {" "}· {row.bandLabel} · shown as {row.value}/100. Strong needs 7 or more
         with {THIRD_LABEL[name]} at least 2.</p>
       {(pillar.notes || []).map((n) => <p key={n} className="crit-note">{n}</p>)}
       {pillar.catalog?.checksum && <p className="muted method-version">Catalog {pillar.catalog.name} · version {pillar.catalog.checksum.slice(0, 12)}</p>}

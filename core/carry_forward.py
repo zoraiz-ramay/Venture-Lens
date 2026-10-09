@@ -49,6 +49,9 @@ _PROFILE_LISTS = (
     (("commercial", "investors"), ("name",)),
     (("commercial", "certifications"), ("name",)),
     (("employees_over_time",), ("date", "source_url")),
+    # Carried only with an http source, like every list: an application-only mention earns no bonus
+    # on the run that found it either.
+    (("siemens_engagements",), ("unit", "type", "product")),
 )
 _TREND_LISTS = (
     (("landscape", "competitors"), ("name",)),

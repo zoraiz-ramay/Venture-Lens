@@ -1,12 +1,23 @@
 """LLM-confirmed verification: check every self-reported claim against web evidence."""
 from __future__ import annotations
 
+import os
 import re
 
 import pandas as pd
 
 from .llm import LLMClient
 from .text import _split_list, _STOP
+
+# The same failure fit.py documents for its match call. Verification thinks (no reasoning="none":
+# it adjudicates claims, not transcribes them) over the whole evidence pool, and measured 18-25s on
+# Radical Dot cold — so under any extra load it crosses the 30s LLM_TIMEOUT, is killed and retried
+# from scratch, and three attempts later (96s, on the critical path: scoring waits for it) the run
+# falls back to heuristics, marked degraded. Lowering the reasoning would be a scoring change; a
+# timeout sized for the call is not. Two attempts, for fit's reason: gunicorn's 300s worker limit.
+VERIFY_TIMEOUT = float(os.getenv("VERIFY_TIMEOUT", "90"))
+# Past ~1.5x its usual 7-16s, a duplicate races the slow request (llm._hedged). 0 turns it off.
+VERIFY_HEDGE = float(os.getenv("VERIFY_HEDGE", "25"))
 
 
 def collect_evidence(enrichment: dict) -> list[dict]:
@@ -59,7 +70,9 @@ def verify_facts(row: pd.Series, enrichment: dict, llm: "LLMClient") -> dict:
             'Return ONLY JSON: {"claims":[{"field":"","value":"","status":"","evidence_url":"",'
             '"confidence":0.0,"note":""}], "red_flags":["..."]}'
         )
-        data = LLMClient.parse_json(llm.complete(prompt, system=_VERIFY_SYSTEM, max_tokens=1500))
+        data = LLMClient.parse_json(llm.complete(prompt, system=_VERIFY_SYSTEM, max_tokens=1500,
+                                                 timeout=VERIFY_TIMEOUT, max_attempts=2,
+                                                 hedge_after=VERIFY_HEDGE))
         if data and "claims" in data:
             data["method"] = "llm"
             return data

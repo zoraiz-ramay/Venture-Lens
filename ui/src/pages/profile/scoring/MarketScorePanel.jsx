@@ -1,8 +1,8 @@
 import React from "react";
-import { IxContentHeader } from "@siemens/ix-react";
 import { BandScale } from "../../../components/charts.jsx";
 import { ExtLink } from "../../../components/widgets.jsx";
 import Section from "../Section.jsx";
+import PanelHeader from "./PanelHeader.jsx";
 import StrengthRows from "./StrengthRows.jsx";
 import { MARKET_SCALES } from "./presentation.js";
 
@@ -38,25 +38,25 @@ function Segments({ c }) {
   );
 }
 
-export default function MarketScorePanel({ res, detailed = false }) {
+export default function MarketScorePanel({ res, detailed = false, inDialog = false }) {
   const m = res.market;
-  const header = <IxContentHeader headerTitle="Market"
-    headerSubtitle="Market size, market growth and strategic relevance, 0–5 each." />;
+  const header = <PanelHeader title="Market" inDialog={inDialog}
+    subtitle="Market size, market growth and strategic relevance, 0–5 each." />;
   if (!m) {
-    return <Section id="scoring-market">{header}<p className="muted" role="status">
+    return <Section id="scoring-market" bare={inDialog}>{header}<p className="muted" role="status">
       {res.streaming ? "Market is being assessed…"
         : res.department ? "Not scored with the market rubric on this run; the total uses the model's market number. Re-evaluate to score it."
           : "Not assessed on this run."}</p></Section>;
   }
   if (m.status !== "assessed") {
-    return <Section id="scoring-market">{header}
+    return <Section id="scoring-market" bare={inDialog}>{header}
       <p role="status"><span className="verdict unassessed">Not assessed</span> <span className="muted">{m.message}</span></p>
     </Section>;
   }
   const figures = m.figures || {};
   const relevance = m.criteria.find((c) => c.id === "strategic_relevance");
   return (
-    <Section id="scoring-market">
+    <Section id="scoring-market" bare={inDialog}>
       {header}
       <p className="section-score"><strong className="big-num">{m.points}</strong><span className="muted">/15</span>
         <span className="badge">{m.band}</span><span className="muted">counts as {m.score_0_100.toFixed(0)}/100 in the total</span></p>

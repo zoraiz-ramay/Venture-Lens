@@ -150,3 +150,29 @@ def test_old_gemini_index_is_not_reused_for_gateway_model(tmp_path, monkeypatch)
     np.save(tmp_path / "vectors.npy", np.asarray([[1.0, 0.0]], dtype="float16"))
     catalog = {"available": True, "checksum": "catalog"}
     assert tool_search.load_index(catalog, gateway_client().embedding_model(), 2) is None
+
+
+def test_gemini_and_gateway_indexes_live_side_by_side(tmp_path, monkeypatch):
+    """Production embeds through the gateway and local runs through Gemini: one checkout must
+    serve both, each loading the index built with its own model."""
+    monkeypatch.setattr(tool_search, "INDEX_DIR", tmp_path)
+    monkeypatch.setattr(tool_search, "_dims", lambda: 2)
+    tool_search._loaded.clear()
+    catalog = {"available": True, "checksum": "catalog", "entries": [{"name": "Tool"}]}
+
+    class Embedder:
+        def __init__(self, model, vector):
+            self.model, self.vector, self.last_error = model, vector, ""
+
+        def embedding_model(self):
+            return self.model
+
+        def embed(self, texts, dims=2, cache=True):
+            return [self.vector for _ in texts]
+
+    tool_search.build_index(catalog, Embedder("gemini-embedding-001", [1.0, 0.0]))
+    tool_search.build_index(catalog, Embedder("google/gemini-embedding-2", [0.0, 1.0]))
+    local = tool_search.load_index(catalog, "gemini-embedding-001", 2)
+    gateway = tool_search.load_index(catalog, "google/gemini-embedding-2", 2)
+    assert local.meta["model"] == "gemini-embedding-001" and local.vectors[0][0] == 1.0
+    assert gateway.meta["model"] == "google/gemini-embedding-2" and gateway.vectors[0][1] == 1.0

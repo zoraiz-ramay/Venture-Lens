@@ -127,3 +127,58 @@ def test_an_evaluation_for_all_departments_runs_collaborate_once_per_department(
     assert sorted(str(d) for p, d in calls if p == "Collaborate") == ["None", "mobility", "si"]
     assert sorted(p for p, _ in calls if p != "Collaborate") == ["Connect", "Empower"]   # once each
     assert [e["department"]["id"] for e in result["departments"]["ranked"]] == ["di", "si", "mobility"]
+
+
+# ----------------------------------------------------------------- scoring that starts before the trend
+
+def _facts(n):
+    return [{"key": f"k{i}", "value": "x" * 380, "source_url": f"https://e{i}.example"} for i in range(n)]
+
+
+def test_the_trend_cannot_change_evidence_whose_budget_ran_out_before_it():
+    run = {"company": "Acme", "summary": "Vision", "facts": _facts(60)}
+    assert pillar_match.evidence_settled_without(run, "trend") is True
+    # The trend would be read, and so would change the records, whenever the budget lasts that far —
+    # including when only the application (visited after the trend) exhausts it.
+    assert pillar_match.evidence_settled_without({"company": "Acme", "summary": "Vision"}, "trend") is False
+    late = {"company": "Acme", "application": {f"q{i}": "y" * 380 for i in range(60)}}
+    assert pillar_match.evidence_settled_without(late, "trend") is False
+
+
+def test_settled_evidence_is_the_same_records_with_or_without_the_trend():
+    run = {"company": "Acme", "summary": "Vision", "facts": _facts(60)}
+    with_trend = {**run, "trend": {"summary": "a niche growing fast", "momentum": 70}}
+    assert pillar_match._evidence(run) == pillar_match._evidence(with_trend)
+
+
+def test_team_and_pillars_start_before_the_trend_lands_and_conclude_the_same(offline, monkeypatch):
+    """The trend was the last research branch to land in every measured run, and Team, the pillar
+    concepts, Collaborate and Empower never read it once the evidence budget is spent before it."""
+    import json
+    import re
+    import threading
+    from core import pipeline, team_ecosystem
+    df, tools = offline
+    team_started, seen = threading.Event(), {}
+    real_team, real_trend = team_ecosystem.assess_team, pipeline.analyze_trend
+
+    def team(research, llm):
+        team_started.set()
+        return real_team(research, llm)
+
+    def trend(*a, **kw):
+        seen["team_first"] = team_started.wait(timeout=5)
+        return real_trend(*a, **kw)
+
+    monkeypatch.setattr(team_ecosystem, "assess_team", team)
+    monkeypatch.setattr(pipeline, "analyze_trend", trend)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, key: True)
+    early = _run(df, tools, departments=DEPS)
+    assert seen["team_first"] is True
+
+    monkeypatch.setattr(pipeline, "analyze_trend", real_trend)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, key: False)
+    late = _run(df, tools, departments=DEPS)
+    clock = re.compile(r'"retrieved_at": "[^"]*"')
+    assert clock.sub("", json.dumps(early, sort_keys=True, default=str)) == \
+           clock.sub("", json.dumps(late, sort_keys=True, default=str))

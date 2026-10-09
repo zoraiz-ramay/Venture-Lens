@@ -25,6 +25,16 @@ _TREND_LABELS = {
 }
 
 
+# The momentum call thinks hard (~4,700 reasoning tokens, ~23s, measured cold), so with twelve
+# evaluations at once it crossed the 30s LLM_TIMEOUT, was killed and retried from scratch three
+# times (96s) and the run lost its trend — and with it Market's figures. The same failure, and the
+# same fix, as fit's match call and verification: a timeout sized for the call, two attempts
+# (gunicorn's 300s worker limit). Lowering the reasoning would change the answer.
+MOMENTUM_TIMEOUT = float(os.getenv("TREND_MOMENTUM_TIMEOUT", "90"))
+# Past ~1.5x its usual 23-33s, a duplicate races the slow request (llm._hedged). 0 turns it off.
+MOMENTUM_HEDGE = float(os.getenv("TREND_MOMENTUM_HEDGE", "45"))
+
+
 def _trend_label(score: int):
     for (lo, hi), (label, color) in _TREND_LABELS.items():
         if lo <= score <= hi:
@@ -244,7 +254,9 @@ def analyze_trend(row: "pd.Series", summary: str, niche_terms: list[str],
             'Return ONLY JSON: {"niche": "...", "queries": ["...", "...", "...", "...", "..."], '
             '"markets": ["...", "..."]}'
         )
-        data = LLMClient.parse_json(llm.complete(q1_prompt, max_tokens=400))
+        # No thinking: it writes search queries, and every later step of trend waits for it
+        # (~1,000 thinking tokens, ~6s, measured).
+        data = LLMClient.parse_json(llm.complete(q1_prompt, max_tokens=400, reasoning="none"))
         if data:
             niche   = str(data.get("niche",   "")).strip()
             queries = [str(q).strip() for q in data.get("queries", []) if str(q).strip()]
@@ -360,7 +372,8 @@ def analyze_trend(row: "pd.Series", summary: str, niche_terms: list[str],
             return ex.submit(contextvars.copy_context().run, functools.partial(fn, *a))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-            f_momentum = _spawn(ex, lambda: llm.complete(q3_prompt, max_tokens=800))
+            f_momentum = _spawn(ex, lambda: llm.complete(q3_prompt, max_tokens=800, timeout=MOMENTUM_TIMEOUT,
+                                                       max_attempts=2, hedge_after=MOMENTUM_HEDGE))
             f_landscape = _spawn(ex, _market_landscape, niche, landscape_rows,
                                  landscape_text, llm, company, markets)
             try:

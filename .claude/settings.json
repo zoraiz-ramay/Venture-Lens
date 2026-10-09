@@ -14,7 +14,17 @@
   "permissions": {
     "deny": [
       "Write(contract/feature-inventory.md)",
-      "Edit(contract/feature-inventory.md)"
+      "Edit(contract/feature-inventory.md)",
+      "Read(ui/e2e/__screenshots__/**)",
+      "Read(data/applications_index/**)",
+      "Read(data/tool_index/**)",
+      "Read(data/xcelerator_index/**)",
+      "Read(data/needs_index/**)",
+      "Read(output/**)",
+      "Read(static/**)",
+      "Read(ui/dist/**)",
+      "Read(ui/node_modules/**)",
+      "Read(**/*.pyc)"
     ],
     "allow": [
       "Bash(bash scripts/gates.sh*)",

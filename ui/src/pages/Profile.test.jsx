@@ -152,6 +152,21 @@ describe("Profile", () => {
       .not.toBeInTheDocument();
   });
 
+  it("says in the header when the company already works with Siemens, and only with a source", async () => {
+    const { api } = await import("../api.js");
+    const pilot = { unit: "Siemens Mobility", type: "pilot", year: "2024", source_url: "https://news.example/a" };
+    api.run.mockResolvedValueOnce({ ...RUN, deep_profile: { ...RUN.deep_profile, siemens_engagements: [pilot] } });
+    const { unmount } = await renderProfile();
+    expect(await screen.findByText("Works with Siemens")).toHaveAttribute("title", "Siemens Mobility: pilot (2024)");
+    unmount();
+    api.run.mockResolvedValueOnce({ ...RUN, deep_profile: { ...RUN.deep_profile,
+      siemens_engagements: [{ ...pilot, source_url: "" }] } });
+    await renderProfile();
+    // The run's own header badge, so the absence below is asserted on a loaded header.
+    expect(await screen.findByText("Web-sourced · verify figures")).toBeInTheDocument();
+    expect(screen.queryByText("Works with Siemens")).not.toBeInTheDocument();
+  });
+
   it("shows no provenance badge on the Employees metric when no source was recorded (UI-06)", async () => {
     // RUN.profile_sources only carries founded_year — employees_count came straight from the DB
     // (or wasn't backfilled), so asserting a web source there would claim evidence that isn't there.
@@ -227,11 +242,29 @@ async function openScoringTab() {
 }
 
 describe("Evidence-based scoring views", () => {
+  it("returns to the Scoring & Fit page, not a popup, after visiting another view", async () => {
+    // The reported bug: exploring a route wrote ?pillar= into the address bar, and coming back to
+    // Scoring & Fit from Market & Risk read it as a shared link and reopened Siemens Fit.
+    const { api } = await import("../api.js");
+    api.run.mockResolvedValueOnce(SCORED_RUN);
+    await renderProfile(); await railLoaded(); await openScoringTab();
+    fireEvent.click(screen.getByRole("button", { name: "Open Siemens Fit details" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Connect:/ }));         // explores a route
+    fireEvent(document.querySelector("ix-modal"), new CustomEvent("dialogDismiss"));
+    expect(document.querySelector("ix-modal")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^market & risk$/i }));
+    await openScoringTab();
+    expect(await screen.findByRole("button", { name: "Open Siemens Fit details" })).toBeInTheDocument();
+    expect(document.querySelector("ix-modal")).toBeNull();
+  });
+
   it("compares the three routes as selectable controls in a fixed order", async () => {
     const { api } = await import("../api.js");
     api.run.mockResolvedValueOnce(SCORED_RUN);
     await renderProfile(); await railLoaded(); await openScoringTab();
     expect(screen.queryByText(/what-if weights/i)).toBeNull();
+    // The routes are in the Siemens Fit popup, which opens on request.
+    fireEvent.click(screen.getByRole("button", { name: "Open Siemens Fit details" }));
     const group = screen.getByRole("group", { name: "Compare and explore partnership routes" });
     const choices = within(group).getAllByRole("button");
     expect(choices.map((b) => b.id)).toEqual(["fit-choice-Empower", "fit-choice-Connect", "fit-choice-Collaborate"]);

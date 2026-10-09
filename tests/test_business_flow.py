@@ -69,3 +69,33 @@ def test_no_model_means_no_story():
 
 def test_a_reply_with_a_stray_trailing_brace_still_parses():
     assert LLMClient.parse_json('```json\n{"a":{"b":1}}}\n```') == {"a": {"b": 1}}
+
+
+def test_two_first_views_at_once_make_one_model_call(monkeypatch):
+    """Both used to miss the store and both paid for the model; the second now reads the first's."""
+    import threading
+    import time
+    from fastapi.testclient import TestClient
+    from api import main
+    saved, calls = [], []
+
+    def slow_flow(res, llm):
+        calls.append(1)
+        time.sleep(0.3)
+        return {"status": "ok", "steps": [], "version": B.VERSION}
+
+    monkeypatch.setattr("core.business_flow.business_flow", slow_flow)
+    monkeypatch.setattr(main, "_run_for", lambda run_id, user: {"company": "Flowlock GmbH"})
+    monkeypatch.setattr(main.store, "latest_enrichment", lambda company, kind, run_id=None: saved[-1] if saved else None)
+    monkeypatch.setattr(main.store, "save_enrichment", lambda company, kind, payload, **kw: saved.append(payload))
+    client = TestClient(main.app)
+    client.get("/api/auth/login", follow_redirects=False)
+    csrf = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
+    codes = []
+    threads = [threading.Thread(target=lambda: codes.append(
+        client.post("/api/runs/7302/business-flow", headers=csrf).status_code)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert codes == [200, 200] and len(calls) == 1 and len(saved) == 1

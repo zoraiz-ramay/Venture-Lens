@@ -37,7 +37,6 @@ export const PROFILE_VIEWS = [
       // and scoring-sfs inside the SFS section, as plain anchors — so links shared before the
       // redesign still land on the page (the model-score diagnostics they pointed at are gone).
       { id: "scoring-summary", label: "Recommendation" },
-      { id: "scoring-total", label: "Total score" },
       { id: "scoring-routes", label: "Siemens Fit" },
       { id: "scoring-traction", label: "Traction" },
       { id: "scoring-team", label: "Team & Ecosystem" },
@@ -54,7 +53,6 @@ export const PROFILE_VIEWS = [
       { id: "market-peers", label: "Funded peers" },
       { id: "market-size", label: "Market size" },
       { id: "market-signals", label: "Signals & risks" },
-      { id: "market-evidence", label: "Market evidence" },
     ],
   },
   {

@@ -27,13 +27,15 @@ export default function DepartmentRanking({ res, selected, onSelect }) {
   const shownId = selected || res.department?.id;
   return (
     <div className="fit-context dept-ranking" id="scoring-department">
-      <p className="dept-ranking-lead">
-        {block.recommended
-          ? <>Best fit for Collaborate: <strong>{res.departments.ranked[0].department.label}</strong>, the department whose stated needs this startup answers best.</>
-          : block.basis === "no_collaborate_match"
+      {/* The recommended department carries its own badge below, so a lead sentence naming it only
+          repeated it. Without a recommendation there is no badge, and the reason is said here. */}
+      {!block.recommended && (
+        <p className="dept-ranking-lead">
+          {block.basis === "no_collaborate_match"
             ? <>No department's stated needs matched this startup (0/9 for every department), so Collaborate is not recommended. Siemens Fit comes from Empower and Connect.</>
             : <>No department's needs could be assessed for Collaborate, so none is recommended. Empower and Connect are scored the same for every department.</>}
-      </p>
+        </p>
+      )}
       <ol className="dept-ranking-list" aria-label="Departments, best Collaborate fit first">
         {block.ranked.map((entry) => {
           const c = collaborateOf(entry);

@@ -19,8 +19,9 @@ def candidate(name="Alpha", **kwargs):
 @pytest.fixture
 def setup(monkeypatch):
     monkeypatch.setattr(solve, "save_challenge", lambda *a: None)
-    monkeypatch.setattr(solve, "_derive_keywords", lambda *a: ["industrial inspection"])
-    monkeypatch.setattr(solve, "_rank", lambda p, cs, llm: [{**c, "relevance": 80} for c in cs])
+    monkeypatch.setattr(solve, "interpret", lambda p, llm: {"restatement": "", "facets": [],
+                                                           "keywords": ["industrial inspection"], "method": "offline"})
+    monkeypatch.setattr(solve, "rank", lambda p, cs, llm: [{**c, "band": "good", "reason": "", "quote": ""} for c in cs])
     gd, web = Mock(return_value=[]), Mock(return_value=[])
     monkeypatch.setattr(solve, "_glassdollar_candidates", gd)
     monkeypatch.setattr(solve, "_web_candidates", web)
@@ -31,7 +32,7 @@ def test_complete_tracxn_skips_glassdollar_and_web(setup):
     gd, web = setup
     client = Mock(); client.search.return_value = [candidate(str(i)) for i in range(5)]
     result = solve.solve_problem("industrial inspection", tracxn=client)
-    assert len(result["candidates"]) == 5
+    assert len(result["market"]) == 5
     gd.assert_not_called(); web.assert_not_called()
 
 
@@ -46,7 +47,7 @@ def test_tracxn_miss_or_failure_falls_back_to_glassdollar(setup, response):
         client.search.return_value = response
     result = solve.solve_problem("industrial inspection", tracxn=client)
     gd.assert_called_once(); web.assert_not_called()
-    assert all(c["source"] == "glassdollar" for c in result["candidates"])
+    assert all(c["source"] == "glassdollar" for c in result["market"])
 
 
 def test_web_only_when_needed_and_enabled(setup):
@@ -57,18 +58,18 @@ def test_web_only_when_needed_and_enabled(setup):
     web.assert_called_once()
 
 
-def test_bad_llm_rank_indices_and_scores_do_not_crash_or_duplicate():
+def test_bad_llm_rank_indices_and_bands_do_not_crash_or_duplicate():
     llm = Mock(available=True)
-    llm.complete.return_value = json.dumps({"ranked": [{"index": -1, "relevance": 90},
-        {"index": 0, "relevance": "bad"}, {"index": 0, "relevance": 75},
-        {"index": 0, "relevance": 99}, {"index": 55, "relevance": 99}]})
-    assert [c["relevance"] for c in solve._rank("inspection", [candidate()], llm)] == [75]
+    llm.complete.return_value = json.dumps({"ranked": [{"index": -1, "band": "strong"},
+        {"index": 0, "band": "excellent"}, {"index": 0, "band": "good"},
+        {"index": 0, "band": "strong"}, {"index": 55, "band": "strong"}, "not a row"]})
+    assert [c["band"] for c in solve.rank("inspection", [candidate()], llm)] == ["good"]
 
 
 def test_valid_empty_llm_ranking_does_not_resurrect_irrelevant_candidates():
     llm = Mock(available=True)
     llm.complete.return_value = json.dumps({"ranked": []})
-    assert solve._rank("industrial inspection", [candidate()], llm) == []
+    assert solve.rank("industrial inspection", [candidate()], llm) == []
 
 
 def test_structured_and_json_text_mcp_records():

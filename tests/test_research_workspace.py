@@ -96,7 +96,7 @@ def test_provider_row_skips_glassdollar_resolution(monkeypatch):
     gd=Mock(side_effect=AssertionError("GlassDollar should be skipped")); monkeypatch.setattr(glassdollar_api,"search_as_df",gd)
     monkeypatch.setattr(pipeline,"load_siemens_tools",lambda _:[])
     # Stop at enrichment: identity resolution must already have emitted the Tracxn identity.
-    monkeypatch.setattr(pipeline,"enrich",Mock(side_effect=RuntimeError("stop after identity")))
+    monkeypatch.setattr(pipeline,"enrich_local",Mock(side_effect=RuntimeError("stop after identity")))
     events=[]
     with pytest.raises(RuntimeError,match="stop after identity"):
         pipeline.evaluate("Alpha",None,"",tracxn=client,on_partial=lambda s,d:events.append((s,d)))
@@ -121,13 +121,14 @@ def test_background_job_publishes_partial_and_complete_without_browser(monkeypat
     assert final["status"] == "complete" and final["result"]["run_id"] == -123
 
 
-def test_applicants_rank_above_higher_scoring_external_candidates(monkeypatch):
+def test_applicants_are_their_own_group_and_never_repeated_in_the_market(monkeypatch):
     from core import solve
     monkeypatch.setattr(solve,"save_challenge",lambda *a:None)
-    monkeypatch.setattr(solve,"_derive_keywords",lambda *a:["inspection"])
-    base={"description":"Inspection", "website":"", "name":"Applicant", "source":"applications"}
-    monkeypatch.setattr(solve,"_application_candidates",lambda *a:[base])
-    monkeypatch.setattr(solve,"_rank",lambda p,cs,llm:[{**c,"relevance":40 if c["source"]=="applications" else 95} for c in cs])
-    tracxn=Mock(); tracxn.search.return_value=[{**base,"name":"External","source":"tracxn"}]
+    monkeypatch.setattr(solve,"interpret",lambda p,llm:{"restatement":"","facets":[],"keywords":["inspection"],"method":"offline"})
+    applicant={"id":"app:1","description":"Inspection","website":"","name":"Applicant","source":"applications"}
+    monkeypatch.setattr(solve,"match_applications",lambda *a:([applicant],{"method":"words","reason":""}))
+    monkeypatch.setattr(solve,"rank",lambda p,cs,llm:[{**c,"band":"possible" if c["source"]=="applications" else "strong"} for c in cs])
+    tracxn=Mock(); tracxn.search.return_value=[{**applicant,"source":"tracxn"},{**applicant,"name":"External","source":"tracxn"}]
     result=solve.solve_problem("inspection",tracxn=tracxn,do_web=False)
-    assert [c["source"] for c in result["candidates"]] == ["applications","tracxn"]
+    assert [c["name"] for c in result["applicants"]] == ["Applicant"]
+    assert [c["name"] for c in result["market"]] == ["External"]

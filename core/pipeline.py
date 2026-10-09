@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import functools
 import logging
+import time
 
 import pandas as pd
 from opentelemetry import trace
@@ -14,7 +15,7 @@ from . import web
 from . import llm as llm_mod
 from .llm import LLMClient
 from .data import load_glassdollar, find_startup, web_profile_row, load_siemens_tools
-from .enrich import enrich
+from .enrich import enrich_local, search_web, fetch_site, combine
 from .verify import verify_facts
 from .summarize import summarize_offering
 from .fit import match_siemens_tools
@@ -37,10 +38,12 @@ def _traced(span_name: str, fn):
     @functools.wraps(fn)
     def run(*a, **kw):
         token = llm_mod.set_stage(stage)
+        started = time.time()
         try:
             with _tracer.start_as_current_span(span_name):
                 return fn(*a, **kw)
         finally:
+            web.mark("section", started, stage=stage)
             llm_mod.reset_stage(token)
     return run
 
@@ -215,15 +218,20 @@ def _run_records():
     """
     collecting, failures = llm_mod.collect_failures()
     counting, calls = llm_mod.collect_usage()
+    timing, timeline = web.collect_timeline()
 
     def attach(result: dict) -> dict:
         result = _with_degraded(result, failures)
         if calls and result.get("found", True):
-            result["token_usage"] = llm_mod.summarize_usage(list(calls))
+            # The timeline rides inside the token log: it is diagnostics about the same calls, and
+            # an offline run (no calls) stays exactly as it was.
+            result["token_usage"] = {**llm_mod.summarize_usage(list(calls)),
+                                     "timeline": list(timeline["events"])}
         return result
     try:
         yield attach
     finally:
+        web.stop_collecting_timeline(timing)
         llm_mod.stop_collecting_usage(counting)
         llm_mod.stop_collecting(collecting)
 
@@ -333,16 +341,21 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
 
     tools = load_siemens_tools(tools_path)
     _step("ENRICH", "running")
-    enrichment = _traced("pipeline.enrich", enrich)(row, do_web=do_web)
-    _step("ENRICH", "done")
+    # Only the free part of enrichment (the row's facts, the pitch deck) is waited for here. Its
+    # search wave and the site fetch run inside the pool below, because summary, fit, profile and
+    # trend need neither — they used to start ~20s into every run, when both had finished.
+    local = enrich_local(row)
     # The profile as the ROW already knows it — name, site, HQ, founded year, funding, stage —
     # before any research runs. Emitted because the deep-profile branch is the slowest thing in
     # the pipeline by a wide margin: measured on a real run it returned at 112s of 118s, so a page
     # that waits for it waits for essentially the whole evaluation and the progressive render buys
     # nothing. This is safe to show early precisely because `backfill_profile` only ever fills
     # BLANK fields — the richer version that replaces it adds values, it never changes one.
-    _emit("profile", dict(zip(("profile", "profile_sources", "deep_profile"),
-                              (*_header_profile(row, {}, source), {}))))
+    # `profile_researching` marks a profile the branch is still adding to, so the page can say
+    # "still researching" where it would otherwise render a section's empty state as a finding.
+    # Only partials carry it; the stored result never does.
+    _emit("profile", {**dict(zip(("profile", "profile_sources", "deep_profile"),
+                                 (*_header_profile(row, {}, source), {}))), "profile_researching": True})
 
     # verify / summarize / fit / trend are independent LLM steps — run them concurrently.
     _step("VERIFY", "running")
@@ -363,7 +376,7 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     # Only the model score and Empower read fit; Team & Ecosystem, Market, concept extraction,
     # Connect and Collaborate start the moment the other four branches land (pillar_match._evidence
     # never cites fit), and only Empower and the model score wait for fit itself.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
         # Pool threads start with an EMPTY context, so anything submitted plainly here loses
         # the cache-bypass ContextVar set by evaluate() and falls back to its default (True):
         # a forced refresh would keep replaying cached searches and completions for the whole
@@ -371,13 +384,36 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
         def _spawn(section, fn, *a):
             return _submit(ex, f"pipeline.{section}", fn, *a)
 
+        searched = _spawn("enrich", search_web, row) if do_web else None
+        site = _spawn("enrich", fetch_site, row) if do_web else None
+
+        def _enriched():
+            # Assembled exactly as enrich() returns it, so verification reads the same facts.
+            out = combine(local, searched.result() if searched else None, site.result() if site else None)
+            _step("ENRICH", "done")
+            return out
+        enriched = ex.submit(_enriched)
+
+        def _verify():
+            return verify_facts(row, enriched.result(), llm)
+
+        def _profile_progress(snapshot):
+            # The researched header before the recall nets finish, through the same carry-forward
+            # merge as the final one. Its own report dict: what was carried is counted once, below.
+            merged = carry_forward.merge_profile(snapshot, priors, now.isoformat(timespec="seconds"), {})
+            p, ps = _header_profile(row, merged["profile"], source)
+            _emit("profile", {"profile": p, "profile_sources": ps, "deep_profile": merged["profile"],
+                              "profile_researching": True})
+
         jobs = {
-            "verification": _spawn("verification", verify_facts, row, enrichment, llm),
-            "summary": _spawn("summary", summarize_offering, row, enrichment["pitch_pdf"], llm),
-            "fit": _spawn("fit", match_siemens_tools, row, enrichment["pitch_pdf"], tools, llm),
-            # deep structured profile: founders / advisors / programs / parent group / commercial
-            "profile": _spawn("profile", research_profile, row, llm, do_web, enrichment.get("site"),
-                              enrichment.get("web")),
+            "verification": _spawn("verification", _verify),
+            "summary": _spawn("summary", summarize_offering, row, local["pitch_pdf"], llm),
+            "fit": _spawn("fit", match_siemens_tools, row, local["pitch_pdf"], tools, llm),
+            # deep structured profile: founders / advisors / programs / parent group / commercial.
+            # Enrichment's site pages and search results go in as futures: the branch waits for
+            # each only where it first reads it (core/profile.research_profile).
+            "profile": _spawn("profile", research_profile, row, llm, do_web,
+                              _Pick(site, "site"), _Pick(searched, "web"), _profile_progress),
             # trend uses niche keywords derived inside analyze_trend (stage 1); we pass an empty
             # list here and it derives its own terms. Kicked off early so it runs in parallel.
             "trend": _spawn("trend", analyze_trend, row, "", [], llm, do_web),
@@ -390,6 +426,10 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
         done: dict = {}
         research = None
         early: dict = {}
+        # The research without the trend, once the trend provably cannot reach a scorer's evidence
+        # (False when it can). The trend was the last branch to land in every measured run.
+        trend_free = None
+        f_empower = None
         pending = {fut: section for section, fut in jobs.items()}
         for fut in concurrent.futures.as_completed(pending):
             section = pending[fut]
@@ -411,14 +451,34 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
                 deep_profile = done["profile"]["profile"]
                 profile, profile_sources = _header_profile(row, deep_profile, source)
                 _emit("profile", {"profile": profile, "profile_sources": profile_sources,
-                                  "deep_profile": deep_profile})
+                                  "deep_profile": deep_profile, "profile_researching": False})
             else:
                 _emit(section, done[section])
+            if (deps and trend_free is None and "trend" not in done
+                    and all(s in done for s in ("verification", "summary", "profile"))):
+                # Team & Ecosystem, the pillar concepts, Collaborate and Empower read the trend
+                # only through the evidence budget, which almost always runs out before reaching
+                # it. When it does, they start now on the same evidence they would read later;
+                # Market, Connect and the model score still wait, because they read the trend.
+                from .pillar_match import evidence_settled_without
+                facts = enriched.result()["facts"] + done["profile"]["facts"]
+                candidate = _research(name, row, facts, done, profile, trend=None)
+                trend_free = candidate if evidence_settled_without(candidate, "trend") else False
+                if trend_free:
+                    early = _start_fit_free_scoring(ex, trend_free, company, deps, llm, do_web,
+                                                    trend_free=True)
             if research is None and all(s in done for s in jobs if s != "fit"):
+                enrichment = enriched.result()
                 research, traction = _join_research(name, row, enrichment, done, profile,
                                                     profile_sources, traction_inputs, _emit)
                 if deps:
-                    early = _start_fit_free_scoring(ex, research, company, deps, llm, do_web)
+                    early = _start_fit_free_scoring(ex, research, company, deps, llm, do_web,
+                                                    started=early)
+            if deps and f_empower is None and "fit" in done and "prep" in early:
+                # Empower reads fit and the prepared concepts, never the trend: it starts on
+                # whichever research started the concepts, the moment fit lands.
+                f_empower = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"], "Empower",
+                                    {**(trend_free or research), "fit": done["fit"], "company": company}, llm)
         _step("REVIEW", "done")
 
         fit = done["fit"]
@@ -431,8 +491,6 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
         # Siemens Fit and the total are still pending.
         if deps:
             f_score = _submit(ex, "pipeline.score", score_research, research, llm)
-            f_empower = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"], "Empower",
-                                {**research, "company": company}, llm)
             sc = apply_traction(f_score.result(), traction)
             _step("SCORE", "done")
             _emit("score", sc)
@@ -513,6 +571,19 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     return result
 
 
+class _Pick:
+    """One key of a future's dict result, itself readable like a future; None stays None."""
+
+    def __new__(cls, future, key):
+        return None if future is None else super().__new__(cls)
+
+    def __init__(self, future, key):
+        self._future, self._key = future, key
+
+    def result(self):
+        return self._future.result()[self._key]
+
+
 def _join_research(name, row, enrichment, done, profile, profile_sources, traction_inputs, _emit):
     """The research every scorer reads, assembled once the four branches other than fit land."""
     from .traction import score_traction, gather_traction_inputs
@@ -526,30 +597,45 @@ def _join_research(name, row, enrichment, done, profile, profile_sources, tracti
         "profile": profile, "profile_sources": profile_sources, "deep_profile": deep_profile,
         "verification": done["verification"]}))
     _emit("traction", traction)
-    research = {"company": name, "application": row.to_dict(), "profile": profile,
-                "deep_profile": deep_profile, "summary": done["summary"], "fit": None,
-                "facts": [f.as_dict() for f in enrichment["facts"]],
-                "verification": done["verification"], "trend": done["trend"]}
-    return research, traction
+    return _research(name, row, enrichment["facts"], done, profile, done["trend"]), traction
 
 
-def _start_fit_free_scoring(ex, research, company, departments, llm, do_web) -> dict:
+def _research(name, row, facts, done, profile, trend) -> dict:
+    """The research dict every scorer reads. ``facts`` already include the profile's."""
+    return {"company": name, "application": row.to_dict(), "profile": profile,
+            "deep_profile": done["profile"]["profile"], "summary": done["summary"], "fit": None,
+            "facts": [f.as_dict() for f in facts],
+            "verification": done["verification"], "trend": trend}
+
+
+def _start_fit_free_scoring(ex, research, company, departments, llm, do_web,
+                            started: dict | None = None, trend_free: bool = False) -> dict:
     """Everything in scoring that never reads fit, started while fit may still be running.
 
     Concepts, Connect, Team & Ecosystem and Market are department-independent and run once;
     Collaborate runs once per department, in parallel.
+
+    ``trend_free`` starts only what never reads the trend (``research`` has none yet); a later
+    call with ``started`` adds Market and Connect and keeps every job already running.
     """
     from .team_ecosystem import assess_team
     from .market import assess_market
     from .pillar_match import prepare_pillars
     run = {**research, "company": company}
-    early = {"team": _submit(ex, "pipeline.team_ecosystem", assess_team, research, llm),
-             "market": _submit(ex, "pipeline.market", assess_market, research, llm),
-             "prep": _submit(ex, "pipeline.pillars", prepare_pillars, run, departments[0], llm, do_web)}
-    early["Connect"] = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"], "Connect", run, llm)
+    early = dict(started or {})
+
+    def start(key, span, fn, *a):
+        if key not in early:
+            early[key] = _submit(ex, span, fn, *a)
+
+    start("team", "pipeline.team_ecosystem", assess_team, research, llm)
+    start("prep", "pipeline.pillars", prepare_pillars, run, departments[0], llm, do_web)
     for i, d in enumerate(departments):
-        early[("Collaborate", d["id"])] = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"],
-                                                  "Collaborate", run, llm, None if i == 0 else d)
+        start(("Collaborate", d["id"]), "pipeline.pillars", _pillar_after, early["prep"],
+              "Collaborate", run, llm, None if i == 0 else d)
+    if not trend_free:
+        start("market", "pipeline.market", assess_market, research, llm)
+        start("Connect", "pipeline.pillars", _pillar_after, early["prep"], "Connect", run, llm)
     return early
 
 

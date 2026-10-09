@@ -81,14 +81,19 @@ test("a department run reads as a recommendation, three routes and a total, and 
   await expect(page.getByRole("img", { name: "Total score 72.2 out of 100" })).toBeVisible();
   await expect(page.getByRole("img", { name: "Siemens Fit 89 out of 100" })).toBeVisible();
   await expect(page.locator("ix-message-bar")).toContainText("Collaborate is provisional.");
+  await page.getByRole("button", { name: "Open Siemens Fit details" }).click();
   await page.getByRole("button", { name: /^Collaborate: 0 out of 100/ }).click();
   await expect(page.getByRole("heading", { name: "No supported link to the current needs" })).toBeVisible();
   await expect(page).toHaveURL(/pillar=Collaborate/);
 
-  // Detailed view adds the scoring method; summary keeps it out.
+  // Detailed view adds the scoring method; summary keeps it out. The view switch is on the page,
+  // behind the popup, so the popup is closed first.
   await expect(page.getByText("Scoring method")).toHaveCount(0);
+  await page.getByRole("button", { name: "Close modal" }).click();
   await page.locator("ix-toggle-button", { hasText: "Detailed" }).click();
+  await page.getByRole("button", { name: "Open Siemens Fit details" }).click();
   await expect(page.getByText("Scoring method").first()).toBeVisible();
+  await page.getByRole("button", { name: "Close modal" }).click();
 
   // A department with no run is offered an assessment, which opens the new run.
   await page.locator("#scoring-department ix-select").click();
@@ -107,8 +112,8 @@ test("a department run reads as a recommendation, three routes and a total, and 
   await expect(page.getByRole("row").filter({ hasText: "Smart Industries" })).toContainText("pending");
 });
 
-/* Visual record of the department-run page: hero rings, score tiles, route cards and the total
-   chart. Desktop and laptop only — the scoring page is a desktop tool. */
+/* Visual record of the department-run page: hero rings, score tiles, the five score blocks closed,
+   and Siemens Fit opened with a criterion. Desktop and laptop only — the scoring page is a desktop tool. */
 test("X-05: Scoring & Fit charts hold their shape for a department run", async ({ page }, testInfo) => {
   test.skip(!["desktop", "laptop"].includes(testInfo.project.name), "Scoring & Fit is desktop-only.");
   await page.route("**/api/**", async (route) => {
@@ -127,16 +132,18 @@ test("X-05: Scoring & Fit charts hold their shape for a department run", async (
   await expect(page.getByRole("img", { name: "Total score 72.2 out of 100" })).toBeVisible();
   await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
   await expect(page.locator("#scoring-summary")).toHaveScreenshot(`scoring-summary-dept-${testInfo.project.name}.png`);
-  await expect(page.locator("#scoring-routes")).toHaveScreenshot(`scoring-routes-dept-${testInfo.project.name}.png`);
-  await expect(page.locator("#scoring-total")).toHaveScreenshot(`scoring-total-dept-${testInfo.project.name}.png`);
-  await expect(page.locator("#scoring-team")).toHaveScreenshot(`scoring-team-dept-${testInfo.project.name}.png`);
+  await expect(page.locator(".score-grid")).toHaveScreenshot(`scoring-blocks-dept-${testInfo.project.name}.png`);
+  await page.getByRole("button", { name: "Open Siemens Fit details" }).click();
+  const popup = page.locator("ix-modal-content");
+  await expect(popup.locator(".route-card").first()).toBeVisible();
+  await expect(popup).toHaveScreenshot(`scoring-routes-dept-${testInfo.project.name}.png`);
   // An opened criterion: the panel under the cards, pointing at the cell it belongs to.
   await page.getByRole("button", { name: /^Benefit fit: 3 of 3/ }).click();
   await expect(page.getByRole("region", { name: "Empower · criterion 2 of 3: Benefit fit" })).toBeVisible();
-  await expect(page.locator("#scoring-routes")).toHaveScreenshot(`scoring-criterion-dept-${testInfo.project.name}.png`);
+  await expect(popup).toHaveScreenshot(`scoring-criterion-dept-${testInfo.project.name}.png`);
 });
 
-test("a criterion cell opens its detail, a second press closes it, and the total sits above Siemens Fit", async ({ page }, testInfo) => {
+test("a criterion cell opens its detail, a second press closes it, and each block is reachable from the rail", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "Scoring & Fit is desktop-only.");
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -149,9 +156,10 @@ test("a criterion cell opens its detail, a second press closes it, and the total
     await route.fulfill({ json: body });
   });
   await page.goto("/startup/21?tab=Scoring+%26+Fit");
-  await expect(page.locator("#scoring-routes .route-card").first()).toBeVisible();
-  const order =await page.locator("section.profile-section").evaluateAll((els) => els.map((e) => e.id));
-  expect(order.indexOf("scoring-total")).toBeLessThan(order.indexOf("scoring-routes"));
+  await page.getByRole("button", { name: "Open Siemens Fit details" }).click();
+  await expect(page.locator("ix-modal .route-card").first()).toBeVisible();
+  const order = await page.locator("section.profile-section").evaluateAll((els) => els.map((e) => e.id));
+  expect(order.indexOf("scoring-summary")).toBeLessThan(order.indexOf("scoring-routes"));
   const tool = page.getByRole("button", { name: /^Tool fit: 3 of 3/ });
   await tool.click();
   await expect(page.getByRole("region", { name: "Empower · criterion 1 of 3: Tool fit" })).toBeVisible();
@@ -159,15 +167,25 @@ test("a criterion cell opens its detail, a second press closes it, and the total
   await expect(page.getByRole("region", { name: /Tool fit/ })).toHaveCount(0);
   await page.getByRole("button", { name: /^Benefit fit: 3 of 3/ }).click();
   await expect(page.getByRole("region", { name: /criterion/ })).toHaveCount(0);
+  // One popup at a time: close Siemens Fit with iX's own close button before opening the next.
+  await page.getByRole("button", { name: "Close modal" }).click();
+  await expect(page.locator("ix-modal")).toHaveCount(0);
+  await page.getByRole("button", { name: "Open Team & Ecosystem details" }).click();
   await page.getByRole("button", { name: /^External validation: 3 of 5/ }).click();
   await expect(page.getByRole("region", { name: "Team & Ecosystem: External validation" })).toBeVisible();
-  // Traction follows Siemens Fit, and each part of the total leads to its own section — Market,
-  // near the end of the page, included, which the page cannot scroll to the top.
+  await page.getByRole("button", { name: "Close modal" }).click();
+  // Traction follows Siemens Fit, and a rail entry goes to its block and opens it — Market, near
+  // the end of the page, included, which the page cannot scroll to the top.
   expect(order.indexOf("scoring-traction")).toBe(order.indexOf("scoring-routes") + 1);
+  const rail = page.getByRole("navigation", { name: "Profile navigation" });
   for (const [name, id] of [["Market", "scoring-market"], ["Traction", "scoring-traction"]]) {
-    await page.locator("#scoring-total").scrollIntoViewIfNeeded();
-    await page.getByRole("link", { name: new RegExp(`^${name}: .*Go to ${name}$`) }).click();
+    await rail.getByRole("link", { name, exact: true }).click();
+    await expect(page.locator("ix-modal-header")).toContainText(name);   // its close icon adds text
     await expect(page).toHaveURL(new RegExp(`#${id}$`));
+    await page.getByRole("button", { name: "Close modal" }).click();
+    // Closing takes the popup out of the address bar, or coming back to Scoring & Fit from
+    // another view would reopen it; the rail still marks where the reader is.
+    await expect(page).not.toHaveURL(new RegExp(`#${id}$`));
     await expect(page.locator('[aria-current="location"]')).toHaveText(name);
   }
 });

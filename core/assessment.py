@@ -124,7 +124,13 @@ def _collaborate_rank(entry: dict, order: int) -> tuple:
     needs = {e.get("id") for cr in c.get("criteria") or [] for e in cr.get("catalog") or []
              if str(e.get("id", "")).startswith("need:")}
     assessed = c.get("status") == "assessed"
-    return (0 if assessed else 1, -(c.get("total") or 0) if assessed else 0, -len(needs), order)
+    # A Siemens relationship adds the same point to every department, so on its own it cannot pick
+    # one; when the totals tie, the department whose unit the startup already works with leads.
+    dep_id = (entry.get("department") or {}).get("id")
+    works_with = any(e.get("department") and e.get("department") == dep_id
+                     for e in c.get("siemens_relationship") or [])
+    return (0 if assessed else 1, -(c.get("total") or 0) if assessed else 0, -len(needs),
+            0 if works_with else 1, order)
 
 
 def build_all(result: dict, departments: list, pillar_results: dict, team: dict,

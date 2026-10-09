@@ -10,6 +10,7 @@ import DegradedNotice from "../components/DegradedNotice.jsx";
 import ProfileLayout from "./profile/ProfileLayout.jsx";
 import OverviewTab from "./profile/OverviewTab.jsx";
 import ScoringTab from "./profile/scoring/ScoringTab.jsx";
+import { engagementText, sourcedEngagements } from "./profile/scoring/SiemensRelationship.jsx";
 import MarketTab from "./profile/MarketTab.jsx";
 import EvidenceTab from "./profile/EvidenceTab.jsx";
 import { DEFAULT_VIEW } from "./profile/sections.js";
@@ -207,6 +208,10 @@ export default function Profile() {
               {res.source === "tracxn" && <span className="badge">Tracxn</span>}
               {res.source === "web" && <span className="badge">Web-sourced · verify figures</span>}
               {rt.sfs_relevant && <span className="badge">SFS relevant</span>}
+              {/* Run-level: the relationship is the company's, whichever department is in view. */}
+              {sourcedEngagements(res).length > 0 && (
+                <span className="badge" title={sourcedEngagements(res).map(engagementText).join("; ")}>Works with Siemens</span>
+              )}
             </div>
           </div>
           <div className="ph-actions">

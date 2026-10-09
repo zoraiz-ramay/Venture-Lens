@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { Loading } from "./widgets.jsx";
+import { Loading, duration } from "./widgets.jsx";
 
 /* Admin: what each evaluation cost in model tokens, and where it went.
 
@@ -11,6 +11,8 @@ import { Loading } from "./widgets.jsx";
    the cache answered. Runs saved before the log existed are counted but have no log. */
 
 const n = (v) => (v || 0).toLocaleString("en-GB");
+// Newest runs first; the full list of up to 100 pushed the rest of the admin page out of reach.
+const PREVIEW = 5;
 const secs = (ms) => `${((ms || 0) / 1000).toFixed(1)}s`;
 const STAGE = {
   input: "Company lookup", enrich: "Enrichment", verification: "Fact verification", summary: "Summary",
@@ -57,6 +59,7 @@ function CallLog({ runId }) {
 export default function TokenUsage() {
   const [state, setState] = useState({ loading: true });
   const [open, setOpen] = useState(null);
+  const [showAll, setShowAll] = useState(false);
   useEffect(() => {
     let live = true;
     Promise.resolve().then(() => api.adminTokenUsage())
@@ -69,7 +72,9 @@ export default function TokenUsage() {
     <div className="panel" aria-labelledby="token-usage">
       <h3 id="token-usage">Token usage per evaluation{data ? ` (${data.runs.length})` : ""}</h3>
       <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
-        Model tokens each research run used, newest first. Open a run for its call log.
+        Model tokens each research run used, newest first. Open a run for its call log. Total time is
+        how long the reviewer waited; model time adds up every call, and calls run side by side, so it
+        is usually the larger number.
         {data?.unlogged_runs > 0 && ` ${data.unlogged_runs} older runs were saved before token logging and have no log.`}
       </p>
       {state.loading && <Loading text="Loading token usage…" />}
@@ -82,11 +87,11 @@ export default function TokenUsage() {
             ({n(data.totals.input_tokens)} input · {n(data.totals.output_tokens)} output · {n(data.totals.reasoning_tokens)} reasoning)
           </p>
           <div style={{ overflowX: "auto" }}>
-            <table className="dtable dense" aria-label="Token usage per evaluation">
+            <table id="token-usage-runs" className="dtable dense" aria-label="Token usage per evaluation">
               <thead><tr><th>Company</th><th>When</th><th>Requested by</th><th>Calls</th><th>Input</th><th>Output</th>
-                <th>Reasoning</th><th>Total</th><th>Model time</th><th></th></tr></thead>
+                <th>Reasoning</th><th>Total</th><th>Total time</th><th>Model time</th><th></th></tr></thead>
               <tbody>
-                {data.runs.map((r) => (
+                {(showAll ? data.runs : data.runs.slice(0, PREVIEW)).map((r) => (
                   <React.Fragment key={r.run_id}>
                     <tr style={{ cursor: "default" }}>
                       <td><strong>{r.company}</strong><div className="muted" style={{ fontSize: 11 }}>{r.scope}</div></td>
@@ -97,6 +102,7 @@ export default function TokenUsage() {
                       <td>{n(r.output_tokens)}</td>
                       <td>{n(r.reasoning_tokens)}</td>
                       <td><strong>{n(r.total_tokens)}</strong></td>
+                      <td>{duration(r.wall_ms)}</td>
                       <td>{secs(r.duration_ms)}</td>
                       <td>
                         <button type="button" className="link-btn" aria-expanded={open === r.run_id}
@@ -108,7 +114,7 @@ export default function TokenUsage() {
                     </tr>
                     {open === r.run_id && (
                       <tr id={`token-log-${r.run_id}`} style={{ cursor: "default" }}>
-                        <td colSpan={10}><CallLog runId={r.run_id} /></td>
+                        <td colSpan={11}><CallLog runId={r.run_id} /></td>
                       </tr>
                     )}
                   </React.Fragment>
@@ -116,6 +122,12 @@ export default function TokenUsage() {
               </tbody>
             </table>
           </div>
+          {data.runs.length > PREVIEW && (
+            <button type="button" className="link-btn" aria-expanded={showAll} aria-controls="token-usage-runs"
+              onClick={() => setShowAll(!showAll)}>
+              {showAll ? "Show fewer" : `Show all ${data.runs.length} evaluations`}
+            </button>
+          )}
         </>
       )}
     </div>

@@ -15,6 +15,11 @@ CRITERIA = {"strategic": "Relevant Siemens use case", "complement": "Relevant Si
 _NOT_RESEARCH = frozenset({"retrieved_at", "freshness_days", "last_confirmed_at"})
 
 
+# The order evidence_for visits a run in. A budget cut drops the tail, so this order is also what
+# decides which keys can still change a budgeted prompt (pillar_match.evidence_settled_without).
+EVIDENCE_KEYS = ("company", "summary", "profile", "deep_profile", "facts", "verification", "trend", "application")
+
+
 def evidence_for(run):
     """Include all collected research, excluding previous scores and routing judgments."""
     records = []
@@ -34,7 +39,7 @@ def evidence_for(run):
             for i, child in enumerate(value): visit(child, f"{path}[{i}]", url)
         elif value is not None and str(value).strip() and str(value).lower() != "nan":
             records.append({"id": f"E{len(records)}", "source": path, "text": str(value), "url": url})
-    for key in ("company", "summary", "profile", "deep_profile", "facts", "verification", "trend", "application"):
+    for key in EVIDENCE_KEYS:
         visit(run.get(key), key)
     visit({k: v for k, v in (run.get("fit") or {}).items() if k not in ("rubric", "challenge_match")}, "portfolio_analysis")
     return records

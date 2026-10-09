@@ -162,7 +162,7 @@ def test_the_api_runs_the_pipeline_once_and_files_the_second_search_as_shared(ba
     runs, searches = [], []
     started = threading.Event()
 
-    def fake_fresh(name, body, principal, on_partial, user, department, tracxn):
+    def fake_fresh(name, body, principal, on_partial, user, department, tracxn, began=None):
         runs.append(name)
         started.set()
         time.sleep(0.2)

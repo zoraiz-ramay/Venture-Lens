@@ -23,6 +23,15 @@ const FLOW = { version: "business-flow-v1", status: "ok", message: "", steps: [
 beforeEach(() => vi.clearAllMocks());
 
 describe("BusinessFlow", () => {
+  it("sends one request for a run however many times it mounts while that request is pending", async () => {
+    let resolve;
+    api.runBusinessFlow.mockReturnValue(new Promise((r) => { resolve = r; }));
+    render(<><BusinessFlow res={{ run_id: 7301 }} /><BusinessFlow res={{ run_id: 7301 }} /></>);
+    resolve(FLOW);
+    await waitFor(() => expect(screen.getAllByText("Mixed plastic waste cannot be recycled today.")).toHaveLength(2));
+    expect(api.runBusinessFlow).toHaveBeenCalledTimes(1);
+  });
+
   it("tells the business as plain steps, with the sources as numbered footnotes rather than labels", async () => {
     api.runBusinessFlow.mockResolvedValue(FLOW);
     render(<BusinessFlow res={{ run_id: 601, company: "Radical Dot" }} />);

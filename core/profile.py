@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
+import copy
 import functools
 import os
 import re
@@ -25,6 +26,7 @@ from .provenance import Fact
 from .web import _ddg_many
 from .llm import LLMClient
 from .config import KNOWN_PROGRAM_TIERS
+from . import programs as programs_mod
 from .text import _clean_source_url, _norm, dedupe_people, founders_first, has_funding_signal, is_named_org
 # Known startup programs for offline detection (matched case-insensitively).
 KNOWN_PROGRAMS = {
@@ -107,6 +109,9 @@ EMPTY_PROFILE = {
     "customer_classes": [],
     # {level: 1|2|3, quote, source_url} — how much a generically stated customer base says.
     "customer_segment_grade": {},
+    # An existing relationship with Siemens, as the evidence states it — see _siemens_relationship:
+    # [{unit, department, type, product, tool_id, year, quote, source_url, claimed}].
+    "siemens_engagements": [],
     # Commercial posture — what the Siemens pillar gates and the SFS financeability gate read.
     # None of this was collected anywhere, so "can this be listed on the Xcelerator Marketplace"
     # and "is there anything here for SFS to underwrite" were both being answered from the pitch
@@ -240,6 +245,11 @@ def _site_hint(row: pd.Series) -> str:
 
 
 def _queries(company: str, row: pd.Series, llm: LLMClient) -> dict:
+    """The profile's whole wave: the fixed queries, then up to two the model suggests."""
+    return {**_base_queries(company, row), **_suggested_queries(company, row, llm)}
+
+
+def _base_queries(company: str, row: pd.Series) -> dict:
     # Only the identity-sensitive queries take the domain hint. The founder/advisor/customer
     # searches already resolve well on the name alone, and the wave is budget-sensitive: see
     # _ddg_many, where an oversized wave gets throttled into silently empty results.
@@ -264,6 +274,16 @@ def _queries(company: str, row: pd.Series, llm: LLMClient) -> dict:
         "funding": f"{q} funding round raised investors pre-seed seed series",
         "customers": f"{company} customer case study deployment client announcement",
     }
+    return base
+
+
+def _suggested_queries(company: str, row: pd.Series, llm: LLMClient) -> dict:
+    """Up to two extra queries from the model, keyed llm_0 / llm_1.
+
+    Separate from the fixed set so research_profile can start searching those while this call is
+    still being answered; waiting for it put a whole completion in front of the profile's first
+    search."""
+    extra: dict = {}
     if llm.available:
         known = " ".join(str(row.get(c, "")) for c in ("short_description", "Your pitch"))[:600]
         prompt = (f"We research the startup '{company}' ({known}). Suggest up to 4 additional web "
@@ -276,8 +296,8 @@ def _queries(company: str, row: pd.Series, llm: LLMClient) -> dict:
             # silently empties the program/advisor queries
             for i, q in enumerate(data["queries"][:2]):
                 if str(q).strip():
-                    base[f"llm_{i}"] = str(q).strip()
-    return base
+                    extra[f"llm_{i}"] = str(q).strip()
+    return extra
 
 
 def _startup_text(row: pd.Series) -> str:
@@ -783,6 +803,10 @@ def _profile_facts(prof: dict, from_db: set | None = None,
     for inv in commercial.get("investors", []):
         if isinstance(inv, dict) and inv.get("name"):
             add("investor", inv["name"], inv.get("source_url", ""))
+    for e in prof.get("siemens_engagements") or []:
+        if isinstance(e, dict):
+            add("siemens_relationship", programs_mod.engagement_label(e)
+                + (" — company-claimed" if e.get("claimed") else ""), e.get("source_url", ""))
     return facts
 
 
@@ -1290,8 +1314,48 @@ def _clean_employee_series(points: list) -> list[dict]:
     return series if len(series) >= 2 else []
 
 
+def _too_young(row: pd.Series) -> bool:
+    """A company that started this calendar year cannot produce the two distinct annual points
+    _clean_employee_series requires, so the headcount wave can only ever return []. Skipping is
+    not a heuristic about what is "probably" worth trying — it is the same arithmetic the gate
+    downstream applies. It also returns three searches and a model call to the shared budget,
+    which is what the companies that CAN answer are being starved of."""
+    import datetime
+    try:
+        founded = int(str(row.get("founded_year", "") or "")[:4])
+    except (TypeError, ValueError):
+        founded = 0
+    return bool(founded) and datetime.date.today().year - founded < 1
+
+
+def _history_wave(company: str, row: pd.Series, llm: LLMClient):
+    """The headcount search wave alone, as (hits, stats), or None when it would not run.
+
+    Separate from the extraction because it needs nothing but the company's name: research_profile
+    starts it beside the base wave instead of after the main extraction, where it used to queue.
+    No overall_timeout override. This used to pass 18s — under half _ddg_many's default — for
+    queries issued in the recovery block, after the main wave, while four other pipeline stages
+    are also searching. That is the most throttled moment of a run, and web.py's own docstring
+    warns that too tight a deadline turns throttling into a silently empty result. Run alone the
+    same queries return a clean four-point series for Uber; inside a full run they returned nothing.
+    """
+    if not llm.available or _too_young(row):
+        return None
+    queries = {
+        "h1": f"{company} number of employees 2021 2022 2023 2024 headcount growth",
+        "h2": f"{company} linkedin employees company size over time",
+        "h3": f"{company} crunchbase employee count history",
+    }
+    stats: dict = {}
+    try:
+        extra = _ddg_many(queries, max_results=5, stats=stats)
+    except Exception:
+        extra = {}
+    return extra, stats
+
+
 def _employee_history(company: str, row: pd.Series, results: dict,
-                      llm: LLMClient) -> list[dict]:
+                      llm: LLMClient, wave=None) -> list[dict]:
     """Best-effort headcount-over-time series, every point backed by a source URL.
 
     Runs a small dedicated wave of historical-headcount queries, then asks the LLM to pull
@@ -1299,41 +1363,17 @@ def _employee_history(company: str, row: pd.Series, results: dict,
     passed through _clean_employee_series, so anything uncited or implausible is discarded and
     a series with <2 cited points collapses to []. Never raises.
 
+    ``wave`` is that search wave already started (a future of _history_wave's result); without
+    it the wave runs here.
+
     Returns (series, status); see EMPTY_PROFILE for what the statuses mean. An empty list on
     its own cannot distinguish "this company has no history to find" from "we never managed to
     look", and the second was being reported to reviewers as the first."""
-    import datetime
     if not llm.available:
         return [], "unavailable"
-
-    # A company that started this calendar year cannot produce the two distinct annual points
-    # _clean_employee_series requires, so the wave can only ever return []. Skipping is not a
-    # heuristic about what is "probably" worth trying — it is the same arithmetic the gate
-    # downstream applies. It also returns three searches and a model call to the shared budget,
-    # which is what the companies that CAN answer are being starved of.
-    try:
-        founded = int(str(row.get("founded_year", "") or "")[:4])
-    except (TypeError, ValueError):
-        founded = 0
-    if founded and datetime.date.today().year - founded < 1:
+    if _too_young(row):
         return [], "too_young"
-
-    queries = {
-        "h1": f"{company} number of employees 2021 2022 2023 2024 headcount growth",
-        "h2": f"{company} linkedin employees company size over time",
-        "h3": f"{company} crunchbase employee count history",
-    }
-    # No overall_timeout override. This used to pass 18s — under half _ddg_many's default —
-    # for queries issued in the recovery block, after the main wave, while four other pipeline
-    # stages are also searching. That is the most throttled moment of a run, and web.py's own
-    # docstring warns that too tight a deadline turns throttling into a silently empty result.
-    # Run alone the same queries return a clean four-point series for Uber; inside a full run
-    # they returned nothing.
-    stats: dict = {}
-    try:
-        extra = _ddg_many(queries, max_results=5, stats=stats)
-    except Exception:
-        extra = {}
+    extra, stats = (_ready(wave) if wave is not None else None) or _history_wave(company, row, llm) or ({}, {})
     combined = dict(results or {})
     combined.update(extra)
     corpus = _corpus(combined)
@@ -1527,8 +1567,182 @@ def _recall_links_offline(prof: dict, company: str, row: pd.Series, llm: LLMClie
             prof[f"{key}_origin"] = "llm"
 
 
+# ------------------------------------------------------------- an existing Siemens relationship
+# A startup that already works with Siemens — or builds on Siemens products — is a stronger
+# Collaborate case (core/pillars.with_relationship_bonus). Detection is transcription, like the rest
+# of this module, and deterministic: no model reads these passages. The bar is _rel_grounded's —
+# Siemens, the company and an engagement phrase together in ONE result — plus two vetoes for the
+# false positives "Siemens" attracts in startup coverage: a founder's CV ("previously at Siemens")
+# and a comparison ("an alternative to Siemens' ...").
+_SIEMENS_TYPES = (           # first match wins, most specific first
+    ("investment", re.compile(r"invest|backed by|funding from|funded by|led by next47|portfolio compan", re.I)),
+    ("pilot", re.compile(r"\bpilot|proof[- ]of[- ]concept|\bpoc\b", re.I)),
+    ("joint_project", re.compile(r"joint (?:project|development|research)|co-?develop|collaborat|research project", re.I)),
+    ("programme", re.compile(r"xcelerator|accelerator|incubator|cohort|startup program|selected for|challenge winner", re.I)),
+    ("supplier", re.compile(r"supplier|supplies|supplying", re.I)),
+    ("partner", re.compile(r"partner|alliance|reseller|distribut", re.I)),
+    ("customer", re.compile(r"customer|client|deployed|deployment|rolled out|\buses\b|\busing\b|works? with|"
+                            r"working with|contract|trusted by|chose|selected", re.I)),
+)
+_PRODUCT_USE = re.compile(r"built on|integrat|\buses\b|\busing\b|runs on|compatible with|certified|"
+                          r"connector|plug-?in|app for|add-?on|extension for|interfaces? with|powered by", re.I)
+_NOT_ENGAGEMENT = re.compile(r"former|previously|\bex-|worked (?:at|for)|career|years at|joined from|"
+                             r"competitor|competes|alternative|\bvs\.?(?!\w)|versus|compared (?:to|with)|rival", re.I)
+_SIEMENS_ANCHOR_WINDOW = 60  # the vetoes read only around the Siemens mention, not the whole passage
+# Siemens and the company as two items of one list — "alongside SAP, Siemens, Wandelbots" — say they
+# were named together, not that they work together. A comma is what marks the list: "Acme and Siemens
+# announce a partnership" is two parties and stays in.
+_LISTED_TOGETHER = re.compile(r"^[\s,;/&]*(?:(?:and\s+)?[\w.\-]+[\s,;/&]+){0,4}(?:and\s+)?$")
+# A founding year is not the engagement's year ("since its foundation in 2017, ... Next47").
+_FOUNDED_YEAR = re.compile(r"(?:found(?:ed|ation)|established|since|incorporated)\D{0,25}$", re.I)
+_SIEMENS_QUERIES = {
+    "sr_engage": "{c} Siemens partnership OR pilot OR customer OR collaboration",
+    "sr_invest": '{c} next47 OR "Siemens Financial Services" OR "Siemens Xcelerator"',
+    "sr_units": '{c} "Siemens Mobility" OR "Smart Infrastructure" OR "Digital Industries" OR Healthineers',
+    "sr_products": '{c} Siemens integration Teamcenter OR Simcenter OR SIMATIC OR "Insights Hub" OR Mendix',
+}
+
+
+@functools.lru_cache(maxsize=2)
+def _siemens_products(_catalog_checksum: str) -> tuple:
+    """(compiled product-name matcher, {name lower: (display name, tool id)}) from the tool catalog."""
+    from .catalogs import tools_catalog
+    names: dict = {}
+    for e in tools_catalog().get("entries") or []:
+        name = str(e.get("name", "")).strip()
+        if len(name) >= 2:
+            names.setdefault(name.lower(), (name, str(e.get("id", ""))))
+    for brand in programs_mod.SIEMENS_BRANDS:
+        names.setdefault(brand, (brand.title(), ""))
+    alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.I), names
+
+
+def _product_matcher() -> tuple:
+    try:
+        from .catalogs import tools_catalog
+        return _siemens_products(str(tools_catalog().get("checksum", "")))
+    except Exception:                          # no catalog: the curated brands still count
+        names = {b: (b.title(), "") for b in programs_mod.SIEMENS_BRANDS}
+        return re.compile(rf"(?<!\w)(?:{'|'.join(map(re.escape, names))})(?!\w)", re.I), names
+
+
+_SIEMENS_ANCHOR = re.compile(r"siemens|healthineers|next47|"
+                             + "|".join(re.escape(b) for b in programs_mod.SIEMENS_BRANDS))
+
+
+def _listed_together(passage: str, anchor: "re.Match", company: str) -> bool:
+    """True when the company mention nearest to this Siemens mention is just another list item."""
+    starts = [k.start() for k in re.finditer(re.escape(company), passage)]
+    if not starts:
+        return False
+    j = min(starts, key=lambda k: abs(k - anchor.start()))
+    gap = passage[j + len(company): anchor.start()] if j < anchor.start() else passage[anchor.end(): j]
+    return "," in gap and len(gap) <= 60 and bool(_LISTED_TOGETHER.match(gap))
+
+
+def _siemens_in(passage: str, original: str, company: str, own_site: bool, url: str) -> list[dict]:
+    """Engagements one lower-cased passage states between the company and Siemens."""
+    matcher, products = _product_matcher()
+    out = []
+    for m in _SIEMENS_ANCHOR.finditer(passage):
+        i = m.start()
+        seg = passage[max(0, i - _REL_WINDOW): i + _REL_WINDOW]
+        if company not in seg:
+            continue
+        if _NOT_ENGAGEMENT.search(passage[max(0, i - _SIEMENS_ANCHOR_WINDOW): i + _SIEMENS_ANCHOR_WINDOW]):
+            continue
+        if _listed_together(passage, m, company):
+            continue
+        unit = programs_mod.siemens_unit(seg)
+        product = None
+        for pm in matcher.finditer(seg):
+            key = pm.group(0).lower()
+            if key in programs_mod.SIEMENS_BRANDS or "siemens" in seg:
+                product = products.get(key)
+                break
+        if product and _PRODUCT_USE.search(seg):
+            kind = "uses_product"
+        else:
+            kind = next((k for k, rx in _SIEMENS_TYPES if rx.search(seg)), "")
+            product = None
+        if not kind or (unit is None and product is None):
+            continue
+        unit = unit or ("Siemens", "")
+        near_lo = max(0, i - _SIEMENS_ANCHOR_WINDOW)
+        year = next((y for y in re.finditer(r"(?<!\d)20[0-3]\d(?!\d)", passage[near_lo: i + _SIEMENS_ANCHOR_WINDOW])
+                     if not _FOUNDED_YEAR.search(passage[max(0, near_lo + y.start() - 40): near_lo + y.start()])),
+                    None)
+        start = max(0, i - _REL_WINDOW)
+        out.append({"unit": unit[0], "department": unit[1], "type": kind,
+                    "product": product[0] if product else "", "tool_id": product[1] if product else "",
+                    "year": year.group(0) if year else "",
+                    "quote": re.sub(r"\s+", " ", original[start: i + _REL_WINDOW]).strip()[:280],
+                    "source_url": url if str(url).startswith("http") else "", "claimed": own_site})
+    return out
+
+
+def _siemens_relationship(prof: dict, company: str, row: pd.Series, *result_maps) -> list[dict]:
+    """Every engagement between the company and Siemens the run's evidence states, deduplicated.
+
+    Reads each search result (and the company's own pages, which arrive as ``__site__*`` pseudo-
+    results and count as ``claimed``), the grounded investors and programmes, and the application
+    text. An application-only mention has no link, so it is listed but cannot earn the Collaborate
+    bonus — every engagement that does carries the URL a reviewer can open.
+    """
+    name = company.strip().lower()
+    if not name:
+        return []
+    own_host = _site_hint(row)
+    found: list[dict] = []
+    for results in result_maps:
+        for key, hits in (results or {}).items():
+            for h in hits or []:
+                if not isinstance(h, dict):
+                    continue
+                href = str(h.get("href", ""))
+                own = str(key).startswith("__site__") or bool(own_host and own_host in href.lower())
+                text = f"{h.get('title', '')} {h.get('body', '')}"
+                found += _siemens_in(text.lower(), text, name, own, href)
+    for inv in (prof.get("commercial") or {}).get("investors") or []:
+        unit = programs_mod.siemens_unit(str(inv.get("name", "")).lower()) if isinstance(inv, dict) else None
+        if unit and str(inv.get("source_url", "")).startswith("http"):
+            found.append({"unit": unit[0], "department": unit[1], "type": "investment", "product": "",
+                          "tool_id": "", "year": "", "quote": f"Investor: {inv.get('name')}",
+                          "source_url": inv["source_url"],
+                          "claimed": bool(own_host and own_host in inv["source_url"].lower())})
+    for prog in prof.get("programs") or []:
+        unit = programs_mod.siemens_unit(str(prog.get("name", "")).lower()) if isinstance(prog, dict) else None
+        if unit and str(prog.get("source_url", "")).startswith("http"):
+            found.append({"unit": unit[0], "department": unit[1], "type": "programme", "product": "",
+                          "tool_id": "", "year": "", "quote": f"Programme: {prog.get('name')}",
+                          "source_url": prog["source_url"],
+                          "claimed": str(prog.get("confidence", "")).lower() == "self_asserted"})
+    app = _startup_text(row)
+    found += _siemens_in(app.lower(), app, name, True, "")
+    # One entry per (unit, type, product): a linked, independent source first, then a linked claim.
+    found.sort(key=lambda e: (not e["source_url"], e["claimed"]))
+    out, seen = [], set()
+    for e in found:
+        k = (e["unit"], e["type"], e["product"])
+        if k not in seen:
+            seen.add(k)
+            out.append(e)
+    return out
+
+
+def _search_siemens(company: str) -> dict:
+    """The relationship wave: four queries, run beside the recall nets."""
+    return _ddg_many({k: q.format(c=company) for k, q in _SIEMENS_QUERIES.items()}, max_results=5)
+
+
+def _ready(value):
+    """A value the caller may still be computing: a future is waited for, anything else is used as is."""
+    return value.result() if hasattr(value, "result") else value
+
+
 def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
-                     site: dict | None = None, web: dict | None = None) -> dict:
+                     site=None, web=None, on_progress=None) -> dict:
     """Return {'profile': {...}, 'facts': [Fact...]}; never raises.
 
     ``site`` is the optional {path: text} map of the company's OWN pages already fetched
@@ -1539,7 +1753,16 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
     ``web`` is enrichment's {query_key: hits} map. It is passed in rather than re-searched
     because enrich already asks the commercial-posture questions in its single wave, so the
     evidence exists by the time this runs; re-issuing those queries here would double the
-    searches to fetch results already in memory."""
+    searches to fetch results already in memory.
+
+    Either may be a future. The pipeline starts this branch the moment the company is resolved,
+    while enrichment is still fetching both, and each is waited for only where it is first read:
+    ``site`` before extraction, ``web`` after it. Waiting for them at the start put enrichment's
+    whole search wave and site fetch in front of the profile's own.
+
+    ``on_progress(snapshot)`` receives a copy, shaped like the return value, once the main extraction is grounded and seeded
+    from the database, before the recall nets run: the header facts are usually all there by
+    then, and the nets take as long again. It is a snapshot; the returned profile only adds to it."""
     company = str(row.get("company_name", "")).strip()
     if not company:
         return {"profile": dict(EMPTY_PROFILE), "facts": []}
@@ -1549,10 +1772,33 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         # 5 results, not 4: the aggregator pages that actually carry headcount and founding
         # year (LinkedIn's "Company size 2-10 employees", CB Insights) routinely rank fifth
         # behind the company's own pages, so a 4-result window cut them off.
-        results = _ddg_many(_queries(company, row, llm), max_results=5) if do_web else {}
-        # Fold the company's own site text in as pseudo-results so the grounding gate
-        # (name + company must co-occur in one result) can see facts published only there.
-        results = _merge_site_results(results, company, row, site)
+        # The fixed queries go out at once; the model's suggestions are searched when it answers.
+        # Same queries, same results and the same key order as one wave of both, so the evidence
+        # (and every prompt built from it) is unchanged — only the wait in front of it is gone.
+        results = {}
+        # Started with the base wave, not after the main extraction where they used to queue: the
+        # headcount and Siemens waves read nothing but the company's name, and the headcount
+        # extraction reads only the merged results. Same queries, same results, same prompts.
+        early = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        history_wave = siemens = history = None
+        try:
+            if do_web:
+                history_wave = early.submit(contextvars.copy_context().run, _history_wave, company, row, llm)
+                siemens = early.submit(contextvars.copy_context().run, _search_siemens, company)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    extra = ex.submit(contextvars.copy_context().run, lambda: _ddg_many(
+                        _suggested_queries(company, row, llm), max_results=5))
+                    results = _ddg_many(_base_queries(company, row), max_results=5)
+                    results.update(extra.result())
+            site = _ready(site)
+            # Fold the company's own site text in as pseudo-results so the grounding gate
+            # (name + company must co-occur in one result) can see facts published only there.
+            results = _merge_site_results(results, company, row, site)
+            if do_web:
+                history = early.submit(contextvars.copy_context().run, _employee_history,
+                                       company, row, results, llm, history_wave)
+        finally:
+            early.shutdown(wait=False)
         prof = None
         if llm.available:
             prof = _llm_extract(company, row, results, llm)
@@ -1576,10 +1822,23 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
             prof["reference_customers"] = _clean_customers(re.split(r"[,\n;·|]+", raw))
         # Public identifiers, read off the results both waves already returned. Free, so it runs
         # before the recall nets decide what still needs a search of its own.
+        web = _ready(web)
         prof.update(_extract_links(company, row, results, web))
         # GlassDollar first: seed the headline facts it already holds so the recall net below
         # skips them. This is what makes an API-sourced evaluation faster than a web-only one.
         seeded = _seed_from_database(prof, row)
+        # A row carrying a glassdollar_id came from the live REST API; one without it came
+        # from the shipped application export. Both are GlassDollar, but only one of them is
+        # the startup writing about itself, and provenance.py grades them differently.
+        db_method = ("tracxn_mcp" if str(row.get("tracxn_id", "")).strip() else "glassdollar_api" if str(row.get("glassdollar_id", "")).strip()
+                     not in ("", "nan") else "glassdollar_db")
+        if on_progress is not None:
+            # A copy: the recall nets below keep writing into `prof` while the caller reads this.
+            try:
+                snapshot = copy.deepcopy(prof)
+                on_progress({"profile": snapshot, "facts": _profile_facts(snapshot, seeded, db_method)})
+            except Exception:
+                pass
         # ---- second-pass recall nets ------------------------------------------------------
         # Four independent passes, each firing its own search wave plus one extraction call:
         # the headline facts (founded_year / employees), founder recovery, the program recheck,
@@ -1588,8 +1847,9 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         # safely and the wall time collapses to the slowest one. Each decides for itself
         # whether it is needed (all no-op when their field is already populated), and each is
         # individually best-effort: one failure must never cost the profile.
+        siemens_hits: dict = {}
         if do_web:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
                 # Pool threads start with an empty context, so each job runs inside a copy of
                 # this one — that is what carries core.web's cache-bypass flag into the search
                 # calls these passes make.
@@ -1600,23 +1860,28 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
                     "headline": _spawn(_recover_headline_facts, prof, company, row, llm),
                     "founders": _spawn(_recover_founders, prof, company, llm),
                     "programs": _spawn(_recheck_programs, prof, row, company, results, llm),
-                    "history": _spawn(_employee_history, company, row, results, llm),
+                    "history": history,
                     # Costs one completion and no searches, so it rides along in the pool it does
                     # not lengthen. It reads `prof['funding']`, which _llm_extract has already set
                     # and _seed_from_database has already overridden — but not what the headline
                     # net may still find, so the stage is re-derived after the pool joins.
                     "commercial": _spawn(_extract_commercial_posture, prof, company, row,
                                          site, web, llm),
+                    # Searches only, started above; read after the pool, once programmes and
+                    # investors are final.
+                    "siemens": siemens,
                 }
                 for name, fut in jobs.items():
                     try:
-                        out = fut.result()
+                        out = fut.result() if fut is not None else None
                     except Exception:
                         out = None
                     if name == "history":
                         series, status = out if isinstance(out, tuple) else ([], "unavailable")
                         prof["employees_over_time"] = series
                         prof["employees_history_status"] = status
+                    elif name == "siemens":
+                        siemens_hits = out or {}
         # Re-derive the stage from whatever funding string finally survived. The headline recall
         # net runs in the same pool as the commercial extraction, so a round it recovers lands
         # after that extraction has already read the field. Deterministic and free, so it simply
@@ -1625,33 +1890,32 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         prof.setdefault("commercial", {k: (v.copy() if isinstance(v, (list, dict)) else v)
                                        for k, v in EMPTY_PROFILE["commercial"].items()})
         prof["commercial"]["funding_stage"] = parse_funding_stage(prof.get("funding", ""))
-        # Grade the surviving (grounded) memberships by prestige tier so the ecosystem score
-        # can weight a top-tier accelerator above a generic one. Must follow the program
-        # recheck — it grades whatever that found. In place; never adds or removes a program.
+        # The last four passes all follow the recall nets and none follows another. Each writes
+        # its own fields — programme tiers, founder backgrounds, headquarters, the two profile
+        # URLs — and reads none the others write, so they run together; one after another they
+        # were four round trips at the end of the slowest branch.
+        #   - Grading must follow the program recheck: it grades whatever that found. In place;
+        #     it never adds or removes a program.
+        #   - The founder deep-dive fills thin backgrounds, so it must follow founder recovery.
+        #   - The two model-recall exceptions run only if the database and every web pass left
+        #     their field blank, and stamp *_origin='llm' so nothing downstream can mistake the
+        #     value for evidence. A completion apiece, and only on a run that would otherwise
+        #     show a blank row.
         try:
-            _grade_programs(prof.get("programs", []), company, llm)
+            prof["siemens_engagements"] = _siemens_relationship(prof, company, row, results, web, siemens_hits)
         except Exception:
-            pass
-        # Founder deep-dive fills thin backgrounds, so it must follow the recovery pass above.
+            prof["siemens_engagements"] = []
+        tail = [functools.partial(_grade_programs, prof.get("programs", []), company, llm),
+                functools.partial(_recall_hq_offline, prof, company, row, llm),
+                functools.partial(_recall_links_offline, prof, company, row, llm)]
         if do_web:
-            try:
-                _deepen_founders(prof, company, llm)
-            except Exception:
-                pass
-        # The two model-recall exceptions, last of all: each runs only if the database and every
-        # web pass left its field blank, and each stamps *_origin='llm' so nothing downstream can
-        # mistake the value for evidence. Costs one completion apiece and only on a run that
-        # would otherwise show a blank row.
-        for recall in (_recall_hq_offline, _recall_links_offline):
-            try:
-                recall(prof, company, row, llm)
-            except Exception:
-                pass
-        # A row carrying a glassdollar_id came from the live REST API; one without it came
-        # from the shipped application export. Both are GlassDollar, but only one of them is
-        # the startup writing about itself, and provenance.py grades them differently.
-        db_method = ("tracxn_mcp" if str(row.get("tracxn_id", "")).strip() else "glassdollar_api" if str(row.get("glassdollar_id", "")).strip()
-                     not in ("", "nan") else "glassdollar_db")
+            tail.append(functools.partial(_deepen_founders, prof, company, llm))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(tail)) as ex:
+            for fut in [ex.submit(contextvars.copy_context().run, fn) for fn in tail]:
+                try:
+                    fut.result()
+                except Exception:
+                    pass
         return {"profile": prof, "facts": _profile_facts(prof, seeded, db_method)}
     except Exception:
         return {"profile": dict(EMPTY_PROFILE), "facts": []}

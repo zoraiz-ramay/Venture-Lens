@@ -42,8 +42,11 @@ function hostOf(url, fallback) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return fallback || url; }
 }
 
-function Answer({ m }) {
-  const p = PROVIDER[m.provider] || { label: m.source || "Assistant", tone: "ok" };
+// Exported for Solve a Problem's shortlist follow-ups, which answer through the same path. There a
+// "run" answer comes from the shortlist, not an evaluation, and the server's own label says so.
+export function Answer({ m }) {
+  const p = m.provider === "run" && m.source ? { label: m.source, tone: "ok" }
+    : PROVIDER[m.provider] || { label: m.source || "Assistant", tone: "ok" };
   return (
     <div className="dock-msg assistant">
       <span className={`dock-src ${p.tone}`}>{p.label}</span>
@@ -77,6 +80,24 @@ export default function AssistantDock() {
   const [tracxn, setTracxn] = useState(null);
   const bodyRef = useRef(null);
   const inputRef = useRef(null);
+  const runId = dockCtx?.runId ?? null;
+  const threadRef = useRef(runId);
+  threadRef.current = runId;
+  const seqRef = useRef(0);          // numbers every message added here, to tell them from stored ones
+
+  // The conversation is the reviewer's, stored per company (api /my/chat): a reload resumes it, and
+  // so does coming back to a company after another. The server adds each answered turn itself, so
+  // the stored copy cannot yet hold anything asked after this load began; those are kept from here.
+  useEffect(() => {
+    if (!dockOpen) return undefined;
+    let live = true;
+    const since = seqRef.current;
+    Promise.resolve().then(() => api.chat(runId))
+      .then((r) => { if (live) setMsgs((cur) => [...(r?.messages || []).map((m) => ({ ...m, thread: runId })),
+        ...cur.filter((m) => m.thread === runId && m.seq > since)]); })
+      .catch(() => { if (live) setMsgs((cur) => cur.filter((m) => m.thread === runId)); });
+    return () => { live = false; };
+  }, [dockOpen, runId]);
 
   useEffect(() => {
     if (!dockOpen) return undefined;
@@ -106,13 +127,18 @@ export default function AssistantDock() {
       .slice(-HISTORY_TURNS).map((m) => ({ role: m.role, text: m.text }));
     setQ("");
     setBusy(true);
-    setMsgs((m) => [...m, { role: "user", text: question }]);
+    const sentFor = runId;
+    // An answer for a company the reviewer has since left belongs to that company's thread (the
+    // server stored it there), not on the screen they are now reading.
+    const settle = (reply) => { if (threadRef.current === sentFor) {
+      setMsgs((m) => [...m, { ...reply, thread: sentFor, seq: ++seqRef.current }]);
+    } };
+    setMsgs((m) => [...m, { role: "user", text: question, thread: sentFor, seq: ++seqRef.current }]);
     try {
-      const r = await api.ask(question, dockCtx?.runId ?? null, history);
-      setMsgs((m) => [...m, { role: "assistant", text: r.answer, source: r.source, provider: r.provider,
-        note: r.note, evidence: r.evidence }]);
+      const r = await api.ask(question, sentFor, history);
+      settle({ role: "assistant", text: r.answer, source: r.source, provider: r.provider, note: r.note, evidence: r.evidence });
     } catch (e) {
-      setMsgs((m) => [...m, { role: "assistant", text: `Request failed: ${e.message}`, provider: "none" }]);
+      settle({ role: "assistant", text: `Request failed: ${e.message}`, provider: "none" });
     } finally {
       setBusy(false);
       requestAnimationFrame(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; });
@@ -179,7 +205,8 @@ export default function AssistantDock() {
             <IxIconButton icon={iconSendRight} variant="primary" disabled={busy || !q.trim()} aria-label="Send"
               onClick={() => send()} />
             {msgs.length > 0 && <IxIconButton icon={iconTrashcan} variant="subtle-tertiary" disabled={busy}
-              aria-label="Clear conversation" onClick={() => setMsgs([])} />}
+              aria-label="Clear conversation"
+              onClick={() => { setMsgs([]); api.clearChat(runId).catch(() => { /* cleared on screen; the next load says otherwise */ }); }} />}
           </div>
         </div>
       </div>

@@ -148,20 +148,6 @@ export default function MarketTab({ res }) {
           : <Empty>No discrete signals extracted.</Empty>}
         {(rt.risks || []).map((r, i) => <div key={i} className="risk">{r}</div>)}
       </Section>
-
-      {(t.evidence || []).length > 0 && (
-        <Section id="market-evidence">
-          <h3>Market evidence</h3>
-          {t.evidence.slice(0, 12).map((e, i) => (
-            <div key={i} className="list-row" style={{ fontSize: 12.5 }}>
-              <div className="list-main">
-                <ExtLink href={e.url || e.href}>{e.title || e.url || e.href}</ExtLink>
-                <div className="muted">{(e.snippet || e.body || "").slice(0, 140)}</div>
-              </div>
-            </div>
-          ))}
-        </Section>
-      )}
     </>
   );
 }

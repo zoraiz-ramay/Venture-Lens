@@ -174,3 +174,30 @@ describe("Admin — sign-in metrics", () => {
     expect(cells[4]).toContain("2026-08-14");
   });
 });
+
+describe("Admin — how long a search took", () => {
+  const tile = (label) => [...document.querySelectorAll("ix-kpi")].find((el) => el.label === label);
+
+  it("shows the typical evaluation time for the window", async () => {
+    api.adminOverview.mockResolvedValue({ ...OVERVIEW, evaluation_time: { timed: 3, median_ms: 68_600, longest_ms: 200_000 } });
+    renderAdmin();
+    await waitFor(() => expect(tile("Typical evaluation time (30d)")).toBeTruthy());
+    expect(await findShadowText(tile("Typical evaluation time (30d)"), "1m 09s")).toBeInTheDocument();
+  });
+
+  it("times each search, and leaves an untimed one blank rather than instant", async () => {
+    api.adminSearches.mockResolvedValue({ searches: [
+      { id: 2, user_upn: "a@siemens.com", query: "wandelbots", company: "Wandelbots", served_from: "fresh",
+        created_at: "2026-10-07T09:00:00+00:00", duration_ms: 72_400 },
+      { id: 1, user_upn: "a@siemens.com", query: "phena", company: "Phena", served_from: "cache",
+        created_at: "2026-10-06T09:00:00+00:00", duration_ms: null },
+    ] });
+    renderAdmin();
+    const took = async (query) => {
+      const cells = within((await screen.findByText(query)).closest("tr")).getAllByRole("cell");
+      return cells[cells.length - 1].textContent;
+    };
+    expect(await took("wandelbots")).toBe("1m 12s");
+    expect(await took("phena")).toBe("—");
+  });
+});

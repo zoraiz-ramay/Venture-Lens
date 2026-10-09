@@ -11,6 +11,8 @@ import pytest
 from core import pillar_match as pm
 from core import tool_check as T
 
+_REAL_CACHED, _REAL_STORE = T.web._cached, T.web._store    # before the fixture stubs them
+
 
 @pytest.fixture(autouse=True)
 def no_cache(monkeypatch):
@@ -67,3 +69,49 @@ def test_a_tool_that_could_not_be_checked_is_kept(monkeypatch):
     monkeypatch.setattr(pm, "deep_match", lambda *a: pytest.fail("no re-match without evidence the tool is missing"))
     out = pm._with_real_tools(pillar([t]), [t], {}, [], searcher({"Opcenter": None}), None, {})
     assert pm._cited_tools(out) == [t] and out["tool_checks"][0]["status"] == "unchecked"
+
+
+def test_a_refresh_reuses_tool_checks_because_they_are_not_company_evidence(monkeypatch):
+    """Refresh renews what is known about a startup. Whether a Siemens tool exists is not part of
+    it, and re-searching every cited tool on every refresh was 5-10 gateway web searches a run."""
+    from core import web
+    store = {}
+    monkeypatch.setattr(web, "_cached", _REAL_CACHED)
+    monkeypatch.setattr(web, "_store", _REAL_STORE)
+    monkeypatch.setattr(web, "_cache_entry", None)
+    monkeypatch.setattr(web, "_cache_get", lambda kind, key: store.get((kind, key)))
+    monkeypatch.setattr(web, "_cache_put", lambda kind, key, payload: store.__setitem__((kind, key), payload))
+    llm = searcher({"Simcenter X": True})
+    entry = {"id": "tool:x", "name": "Simcenter X"}
+    token = web.set_cache_enabled(False)                    # a reviewer's Refresh
+    private = web.set_cache_private(True)                   # ...on a private (Tracxn) run
+    try:
+        assert T.verify_tool(entry, llm)["status"] == "verified"
+        assert T.verify_tool(entry, llm)["status"] == "verified"
+    finally:
+        web.reset_cache_private(private)
+        web.reset_cache_enabled(token)
+    assert llm.web_answer.call_count == 1
+
+
+def test_a_tool_already_found_missing_never_reaches_the_match(monkeypatch):
+    ghost, real = tool("ghost", "Ghost Suite"), tool("real", "Simcenter Amesim")
+    monkeypatch.setattr(T, "_stored", lambda e: {"status": "not_found"} if e["id"] == "tool:ghost" else None)
+    assert T.known_missing([ghost, real]) == {"tool:ghost"}
+
+
+def test_a_tool_check_outlives_the_weekly_evidence_cache():
+    """Search results about a startup expire in a week; whether a catalog tool exists does not."""
+    from datetime import datetime, timedelta, timezone
+    from api import store
+    month_old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+    store.cache_put("tool_check", "k-tool", {"status": "verified"})
+    store.cache_put("ddg", "k-search", [{"title": "t"}])
+    with store._cache_conn() as con:
+        con.execute("UPDATE web_cache SET created_at=? WHERE key IN ('k-tool','k-search')", (month_old,))
+    assert store.cache_get("tool_check", "k-tool") == {"status": "verified"}
+    assert store.cache_get("ddg", "k-search") is None
+    store.cache_purge_expired()
+    with store._cache_conn() as con:
+        kept = {k for (k,) in con.execute("SELECT key FROM web_cache WHERE key IN ('k-tool','k-search')")}
+    assert kept == {"k-tool"}

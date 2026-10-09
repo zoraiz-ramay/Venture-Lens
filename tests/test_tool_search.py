@@ -126,7 +126,7 @@ class SellerEmbedder(FakeEmbedder):
 def test_the_xcelerator_index_is_its_own_index_and_finds_the_nearest_seller(index_dir, monkeypatch):
     monkeypatch.setattr(tool_search, "XCELERATOR_INDEX_DIR", index_dir / "xcelerator_index")
     tool_search.build_index(XCEL, SellerEmbedder())
-    assert (index_dir / "xcelerator_index" / "meta.json").exists()
+    assert list((index_dir / "xcelerator_index").glob("meta.*.json"))
     assert not (index_dir / "tool_index").exists()                       # the tools index is untouched
     ranked, why = tool_search.semantic_ranking("car paint defect detection", XCEL, SellerEmbedder())
     assert why == "" and ranked[0] == "Vision QC"
@@ -242,3 +242,13 @@ def test_sfs_reads_only_the_first_three_fit_matches():
     text = _startup_text(pd.Series(dtype=str), {}, fit)
     assert all(f"reason-{i}" in text for i in range(3))
     assert "reason-3" not in text and "reason-4" not in text
+
+
+def test_the_tools_checksum_is_the_same_on_windows_and_linux(tmp_path):
+    """git checks siemens_tools.csv out with CRLF on Windows and LF on Linux. A byte checksum made
+    the Windows-built index unloadable in the Linux production image."""
+    from core import catalogs
+    crlf, lf = tmp_path / "crlf.csv", tmp_path / "lf.csv"
+    crlf.write_bytes(b"name,description\r\nNX,CAD\r\n")
+    lf.write_bytes(b"name,description\nNX,CAD\n")
+    assert catalogs._sha256_text(str(crlf)) == catalogs._sha256_text(str(lf))

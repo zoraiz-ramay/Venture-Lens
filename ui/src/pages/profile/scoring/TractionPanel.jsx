@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { IxContentHeader } from "@siemens/ix-react";
 import { ExtLink, Loading } from "../../../components/widgets.jsx";
 import Section from "../Section.jsx";
+import PanelHeader from "./PanelHeader.jsx";
 import { MiniBar, RingGauge } from "../../../components/charts.jsx";
 import TractionDetail, { barId, flagsOf, pts } from "./TractionDetail.jsx";
 import { divisionDisplay } from "./presentation.js";
@@ -56,19 +56,19 @@ function DivisionBars({ divisions, open, onToggle }) {
   );
 }
 
-export default function TractionPanel({ res, runId = null, detailed = false }) {
+export default function TractionPanel({ res, runId = null, detailed = false, inDialog = false }) {
   const [open, setOpen] = useState(null);
   const t = res.traction;
-  const header = <IxContentHeader headerTitle="Traction"
-    headerSubtitle="Points rubric from sourced facts: Funding 30 · Customers 30 · Revenue 30 · Employees 10. Select a division to see how it was scored." />;
+  const header = <PanelHeader title="Traction" inDialog={inDialog}
+    subtitle="Points rubric from sourced facts: Funding 30 · Customers 30 · Revenue 30 · Employees 10. Select a division to see how it was scored." />;
   if (!t) {
-    return <Section id="scoring-traction">{header}
+    return <Section id="scoring-traction" bare={inDialog}>{header}
       {res.streaming ? <Loading text="Computing traction…" />
         : <p className="muted" role="status">Traction was not computed for this run. Re-evaluate to score it.</p>}
     </Section>;
   }
   if (t.version !== VERSION || !Array.isArray(t.divisions)) {
-    return <Section id="scoring-traction">{header}
+    return <Section id="scoring-traction" bare={inDialog}>{header}
       <p role="alert">This traction breakdown was produced by a version this page cannot read.</p>
     </Section>;
   }
@@ -76,7 +76,7 @@ export default function TractionPanel({ res, runId = null, detailed = false }) {
   const opened = t.divisions.find((d) => d.id === open);
   const close = () => { const back = open; setOpen(null); document.getElementById(barId(back))?.focus(); };
   return (
-    <Section id="scoring-traction">
+    <Section id="scoring-traction" bare={inDialog}>
       {header}
       <div className="traction-overview">
         <div className="traction-rings">

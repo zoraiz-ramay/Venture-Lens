@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * model's memory, which must never read like a searched answer.
  */
 vi.mock("../api.js", () => ({
-  api: { ask: vi.fn(), tracxnStatus: vi.fn(), tracxnConnect: vi.fn() },
+  api: { ask: vi.fn(), tracxnStatus: vi.fn(), tracxnConnect: vi.fn(), chat: vi.fn(), clearChat: vi.fn() },
 }));
 vi.mock("../state.jsx", () => ({
   useApp: () => ({ dockOpen: true, setDockOpen: vi.fn(), dockCtx: { runId: 44, company: "Radical Dot" } }),
@@ -22,9 +22,35 @@ const say = (text) => { fireEvent.change(field(), { target: { value: text } }); 
 beforeEach(() => {
   vi.clearAllMocks();
   api.tracxnStatus.mockResolvedValue({ connected: false, configured: true });
+  api.chat.mockResolvedValue({ messages: [] });
+  api.clearChat.mockResolvedValue({ cleared: true });
 });
 
 describe("AssistantDock", () => {
+  it("resumes this company's stored conversation and carries it into the next question", async () => {
+    api.chat.mockResolvedValue({ messages: [{ role: "user", text: "Who funds it?" },
+      { role: "assistant", text: "UVC Partners.", provider: "run", source: "This evaluation", note: "", evidence: [] }] });
+    render(<AssistantDock />);
+    expect(await screen.findByText("UVC Partners.")).toBeInTheDocument();
+    expect(api.chat).toHaveBeenCalledWith(44);
+    api.ask.mockResolvedValue({ answer: "Seed.", provider: "run", source: "This evaluation", note: "", evidence: [] });
+    say("Which round?");
+    await waitFor(() => expect(api.ask).toHaveBeenCalledWith("Which round?", 44,
+      [{ role: "user", text: "Who funds it?" }, { role: "assistant", text: "UVC Partners." }]));
+  });
+
+  it("keeps a question asked before the stored conversation arrived", async () => {
+    let resolve;
+    api.chat.mockReturnValue(new Promise((r) => { resolve = r; }));
+    api.ask.mockReturnValue(new Promise(() => {}));                         // still waiting for its answer
+    render(<AssistantDock />);
+    say("Market size?");
+    resolve({ messages: [{ role: "user", text: "Earlier question" }] });
+    expect(await screen.findByText("Earlier question")).toBeInTheDocument();
+    const texts = [...document.querySelectorAll(".dock-msg.user")].map((el) => el.textContent);
+    expect(texts).toEqual(["Earlier question", "Market size?"]);
+  });
+
   it("says which source answers before the first question", async () => {
     api.tracxnStatus.mockResolvedValue({ connected: true });
     render(<AssistantDock />);
@@ -109,6 +135,7 @@ describe("AssistantDock", () => {
     const [send, clear] = document.querySelectorAll(".dock-actions ix-icon-button");
     expect(send.classList.contains("disabled")).toBe(true);                  // nothing typed
     fireEvent.click(clear);
+    expect(api.clearChat).toHaveBeenCalledWith(44);                          // gone on the server too
     expect(screen.queryByText("Hello.")).toBeNull();
     expect(screen.getByText("Who are its closest competitors?")).toBeInTheDocument();
   });

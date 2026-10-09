@@ -8,7 +8,7 @@
     },
     {
       "path": "/workspace",
-      "component": "Home"
+      "component": "SolvePage"
     },
     {
       "path": "/explore",
@@ -115,9 +115,20 @@
       "args": []
     },
     {
-      "method": "solve",
+      "method": "solveRefine",
       "args": [
-        "problem"
+        "jobId",
+        "answers",
+        "note = \"\""
+      ]
+    },
+    {
+      "method": "solveAsk",
+      "args": [
+        "jobId",
+        "question",
+        "history = []",
+        "ids = []"
       ]
     },
     {
@@ -228,6 +239,18 @@
       ]
     },
     {
+      "method": "chat",
+      "args": [
+        "runId = null"
+      ]
+    },
+    {
+      "method": "clearChat",
+      "args": [
+        "runId = null"
+      ]
+    },
+    {
       "method": "audit",
       "args": [
         "runId"
@@ -328,7 +351,7 @@
   "files": [
     {
       "path": "ui/src/App.jsx",
-      "lines": 307,
+      "lines": 306,
       "exports": [
         "App"
       ],
@@ -373,8 +396,9 @@
     },
     {
       "path": "ui/src/components/AssistantDock.jsx",
-      "lines": 189,
+      "lines": 216,
       "exports": [
+        "Answer",
         "AssistantDock"
       ],
       "css_classes": [
@@ -401,7 +425,7 @@
     },
     {
       "path": "ui/src/components/AssistantDock.test.jsx",
-      "lines": 116,
+      "lines": 143,
       "exports": [],
       "css_classes": []
     },
@@ -526,40 +550,6 @@
       "css_classes": []
     },
     {
-      "path": "ui/src/components/ProblemSolver.jsx",
-      "lines": 167,
-      "exports": [
-        "ProblemSolver"
-      ],
-      "css_classes": [
-        "badge",
-        "muted",
-        "panel",
-        "problem-brief",
-        "problem-examples",
-        "problem-eyebrow",
-        "problem-layout",
-        "problem-progress",
-        "problem-results",
-        "problem-results-head",
-        "problem-solver",
-        "problem-source-status",
-        "problem-sources",
-        "problem-submit",
-        "solution-actions",
-        "solution-card",
-        "solution-grid",
-        "solution-heading",
-        "solution-reason"
-      ]
-    },
-    {
-      "path": "ui/src/components/ProblemSolver.test.jsx",
-      "lines": 47,
-      "exports": [],
-      "css_classes": []
-    },
-    {
       "path": "ui/src/components/ProfileSectionNav.jsx",
       "lines": 72,
       "exports": [
@@ -584,7 +574,7 @@
     },
     {
       "path": "ui/src/components/TokenUsage.jsx",
-      "lines": 124,
+      "lines": 136,
       "exports": [
         "TokenUsage"
       ],
@@ -600,7 +590,7 @@
     },
     {
       "path": "ui/src/components/TokenUsage.test.jsx",
-      "lines": 66,
+      "lines": 91,
       "exports": [],
       "css_classes": []
     },
@@ -636,7 +626,7 @@
     },
     {
       "path": "ui/src/components/widgets.jsx",
-      "lines": 178,
+      "lines": 188,
       "exports": [
         "ExtLink",
         "Loading",
@@ -645,6 +635,7 @@
         "Radar",
         "ScoreBar",
         "Spec",
+        "duration",
         "toHref"
       ],
       "css_classes": [
@@ -671,7 +662,7 @@
     },
     {
       "path": "ui/src/pages/Admin.jsx",
-      "lines": 361,
+      "lines": 366,
       "exports": [
         "Admin"
       ],
@@ -693,7 +684,7 @@
     },
     {
       "path": "ui/src/pages/Admin.test.jsx",
-      "lines": 177,
+      "lines": 204,
       "exports": [],
       "css_classes": []
     },
@@ -799,31 +790,8 @@
       ]
     },
     {
-      "path": "ui/src/pages/Home.jsx",
-      "lines": 159,
-      "exports": [
-        "Home"
-      ],
-      "css_classes": [
-        "crumb",
-        "grid2",
-        "muted",
-        "num",
-        "page-head",
-        "page-meta",
-        "page-title",
-        "panel",
-        "problem-workspace-history",
-        "run-cell",
-        "run-desc",
-        "run-name",
-        "run-row",
-        "stats-strip"
-      ]
-    },
-    {
       "path": "ui/src/pages/profile/BusinessFlow.jsx",
-      "lines": 81,
+      "lines": 92,
       "exports": [
         "BusinessFlow"
       ],
@@ -842,7 +810,7 @@
     },
     {
       "path": "ui/src/pages/profile/BusinessFlow.test.jsx",
-      "lines": 86,
+      "lines": 95,
       "exports": [],
       "css_classes": []
     },
@@ -891,7 +859,7 @@
     },
     {
       "path": "ui/src/pages/profile/MarketTab.jsx",
-      "lines": 168,
+      "lines": 154,
       "exports": [
         "MarketTab"
       ],
@@ -912,7 +880,7 @@
     },
     {
       "path": "ui/src/pages/profile/OverviewTab.jsx",
-      "lines": 234,
+      "lines": 243,
       "exports": [
         "OverviewTab"
       ],
@@ -928,6 +896,12 @@
         "unverified",
         "v"
       ]
+    },
+    {
+      "path": "ui/src/pages/profile/OverviewTab.test.jsx",
+      "lines": 32,
+      "exports": [],
+      "css_classes": []
     },
     {
       "path": "ui/src/pages/profile/people.test.jsx",
@@ -1014,7 +988,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/DepartmentRanking.jsx",
-      "lines": 60,
+      "lines": 62,
       "exports": [
         "DepartmentRanking",
         "viewAs"
@@ -1032,7 +1006,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/DepartmentRanking.test.jsx",
-      "lines": 67,
+      "lines": 68,
       "exports": [],
       "css_classes": []
     },
@@ -1077,7 +1051,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/FitSummary.jsx",
-      "lines": 120,
+      "lines": 154,
       "exports": [
         "FitSummary"
       ],
@@ -1090,16 +1064,21 @@
         "fit-hero",
         "fit-hero-rings",
         "fit-hero-route",
+        "fit-hero-strength",
         "fit-hero-text",
         "fit-next",
         "fit-opportunity",
+        "fit-opportunity-more",
         "key",
         "kpi-label",
         "kpi-strip",
         "kpi-tile",
         "kpi-value",
         "muted",
-        "next-step-box"
+        "next-step-box",
+        "route-chip",
+        "route-chip-dot",
+        "route-chips"
       ]
     },
     {
@@ -1122,7 +1101,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/OpportunityDetail.jsx",
-      "lines": 171,
+      "lines": 173,
       "exports": [
         "OpportunityDetail",
         "RecommendedTools"
@@ -1165,8 +1144,19 @@
       ]
     },
     {
+      "path": "ui/src/pages/profile/scoring/PanelHeader.jsx",
+      "lines": 10,
+      "exports": [
+        "PanelHeader"
+      ],
+      "css_classes": [
+        "dialog-sub",
+        "muted"
+      ]
+    },
+    {
       "path": "ui/src/pages/profile/scoring/PillarMethod.jsx",
-      "lines": 57,
+      "lines": 59,
       "exports": [
         "PillarMethod"
       ],
@@ -1192,8 +1182,49 @@
       "css_classes": []
     },
     {
+      "path": "ui/src/pages/profile/scoring/ScoreCards.jsx",
+      "lines": 118,
+      "exports": [
+        "FitCard",
+        "MarketCard",
+        "SfsCard",
+        "TeamCard",
+        "TractionCard"
+      ],
+      "css_classes": [
+        "anchor-alias",
+        "center",
+        "muted",
+        "score-card-bars",
+        "score-card-body",
+        "score-card-chart",
+        "score-card-head",
+        "score-card-open",
+        "unassessed",
+        "verdict"
+      ]
+    },
+    {
+      "path": "ui/src/pages/profile/scoring/ScoreGrid.jsx",
+      "lines": 85,
+      "exports": [
+        "ScoreGrid"
+      ],
+      "css_classes": [
+        "score-cell",
+        "score-dialog",
+        "score-grid"
+      ]
+    },
+    {
+      "path": "ui/src/pages/profile/scoring/ScoreGrid.test.jsx",
+      "lines": 123,
+      "exports": [],
+      "css_classes": []
+    },
+    {
       "path": "ui/src/pages/profile/scoring/ScoringTab.jsx",
-      "lines": 74,
+      "lines": 66,
       "exports": [
         "ScoringTab",
         "VIEW_KEY"
@@ -1206,13 +1237,13 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/ScoringTab.test.jsx",
-      "lines": 79,
+      "lines": 80,
       "exports": [],
       "css_classes": []
     },
     {
       "path": "ui/src/pages/profile/scoring/SfsPanel.jsx",
-      "lines": 45,
+      "lines": 53,
       "exports": [
         "SfsPanel"
       ],
@@ -1245,13 +1276,36 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/SiemensContacts.test.jsx",
-      "lines": 43,
+      "lines": 60,
       "exports": [],
       "css_classes": []
     },
     {
       "path": "ui/src/pages/profile/scoring/SiemensFit.test.jsx",
-      "lines": 371,
+      "lines": 363,
+      "exports": [],
+      "css_classes": []
+    },
+    {
+      "path": "ui/src/pages/profile/scoring/SiemensRelationship.jsx",
+      "lines": 47,
+      "exports": [
+        "SiemensRelationship",
+        "engagementText",
+        "sourcedEngagements"
+      ],
+      "css_classes": [
+        "kind-tag",
+        "muted",
+        "opp-other",
+        "tool-card",
+        "tool-card-head",
+        "tool-cards"
+      ]
+    },
+    {
+      "path": "ui/src/pages/profile/scoring/SiemensRelationship.test.jsx",
+      "lines": 54,
       "exports": [],
       "css_classes": []
     },
@@ -1269,16 +1323,6 @@
         "strength-meter",
         "strength-row",
         "strength-rows"
-      ]
-    },
-    {
-      "path": "ui/src/pages/profile/scoring/Supplementary.jsx",
-      "lines": 22,
-      "exports": [
-        "Supplementary"
-      ],
-      "css_classes": [
-        "anchor-alias"
       ]
     },
     {
@@ -1342,31 +1386,6 @@
         "team-chart",
         "unassessed",
         "verdict"
-      ]
-    },
-    {
-      "path": "ui/src/pages/profile/scoring/TotalContribution.jsx",
-      "lines": 72,
-      "exports": [
-        "TotalContribution"
-      ],
-      "css_classes": [
-        "blind",
-        "blind-body",
-        "contrib-foot",
-        "contrib-go",
-        "contrib-head",
-        "contrib-legend",
-        "contrib-link",
-        "contrib-pending",
-        "contrib-total",
-        "dtable",
-        "key",
-        "legend-name",
-        "muted",
-        "num",
-        "static",
-        "table-scroll"
       ]
     },
     {
@@ -1469,11 +1488,13 @@
     },
     {
       "path": "ui/src/pages/profile/Section.jsx",
-      "lines": 22,
+      "lines": 25,
       "exports": [
         "Section"
       ],
-      "css_classes": []
+      "css_classes": [
+        "dialog-panel"
+      ]
     },
     {
       "path": "ui/src/pages/profile/useScrollSpy.test.jsx",
@@ -1483,7 +1504,7 @@
     },
     {
       "path": "ui/src/pages/Profile.jsx",
-      "lines": 256,
+      "lines": 261,
       "exports": [
         "Profile"
       ],
@@ -1516,13 +1537,13 @@
     },
     {
       "path": "ui/src/pages/Profile.test.jsx",
-      "lines": 424,
+      "lines": 457,
       "exports": [],
       "css_classes": []
     },
     {
       "path": "ui/src/pages/ProgrammeCriteria.test.jsx",
-      "lines": 194,
+      "lines": 195,
       "exports": [],
       "css_classes": []
     },
@@ -1612,6 +1633,122 @@
       "css_classes": []
     },
     {
+      "path": "ui/src/pages/solve/CandidateList.jsx",
+      "lines": 82,
+      "exports": [
+        "CandidateList"
+      ],
+      "css_classes": [
+        "badge",
+        "muted",
+        "pending",
+        "solve-band",
+        "solve-details",
+        "solve-empty",
+        "solve-facts",
+        "solve-group",
+        "solve-group-head",
+        "solve-list",
+        "solve-name",
+        "solve-pick",
+        "solve-quote",
+        "solve-reason",
+        "solve-row",
+        "solve-row-actions",
+        "solve-row-head",
+        "solve-row-main",
+        "solve-source"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/CompareTable.jsx",
+      "lines": 67,
+      "exports": [
+        "CompareTable"
+      ],
+      "css_classes": [
+        "muted",
+        "solve-cell-empty",
+        "solve-compare",
+        "solve-compare-scroll",
+        "solve-compare-table",
+        "solve-group-head",
+        "solve-quote-inline",
+        "sr-only"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/Interpretation.jsx",
+      "lines": 68,
+      "exports": [
+        "Interpretation"
+      ],
+      "css_classes": [
+        "muted",
+        "solve-ai",
+        "solve-facet",
+        "solve-facet-label",
+        "solve-facets",
+        "solve-problem",
+        "solve-read",
+        "solve-read-head",
+        "solve-refined",
+        "solve-restatement"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/ProblemInput.jsx",
+      "lines": 46,
+      "exports": [
+        "ProblemInput"
+      ],
+      "css_classes": [
+        "muted",
+        "solve-examples",
+        "solve-start",
+        "solve-start-submit"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/ShortlistAsk.jsx",
+      "lines": 69,
+      "exports": [
+        "ShortlistAsk"
+      ],
+      "css_classes": [
+        "dock-msg",
+        "input",
+        "muted",
+        "solve-ask",
+        "solve-ask-form",
+        "solve-ask-thread",
+        "solve-examples",
+        "user"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/SolvePage.jsx",
+      "lines": 121,
+      "exports": [
+        "SolvePage"
+      ],
+      "css_classes": [
+        "muted",
+        "page-head",
+        "page-title",
+        "solve-dev-notice",
+        "solve-failed",
+        "solve-page",
+        "solve-selection"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/SolvePage.test.jsx",
+      "lines": 172,
+      "exports": [],
+      "css_classes": []
+    },
+    {
       "path": "ui/src/research.jsx",
       "lines": 50,
       "exports": [
@@ -1634,9 +1771,9 @@
   ],
   "totals": {
     "routes": 9,
-    "api_methods": 38,
+    "api_methods": 41,
     "design_tokens": 70,
-    "jsx_files": 90,
-    "jsx_lines": 9715
+    "jsx_files": 99,
+    "jsx_lines": 10582
   }
 }

@@ -21,6 +21,10 @@ The same machinery indexes the Xcelerator sellers (data/xcelerator_index/), for 
 requirements workbook (data/needs_index/), so Collaborate puts the needs a startup actually answers
 in front of the model first — Mobility states 33, and word overlap picked the 15 it was shown.
 A catalog is told apart by its ``name``; one without a name is the tools catalog.
+
+The applications workbook is indexed too (data/applications_index/), for Solve a Problem: "which
+of the startups that applied to Siemens could solve this?" Two shared keywords used to be the bar,
+so "predict failures" missed a pitch that said "anomaly detection on machine data".
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import threading
 
 from .config import BASE_DIR
@@ -37,6 +42,8 @@ log = logging.getLogger(__name__)
 INDEX_DIR = pathlib.Path(os.getenv("TOOL_INDEX_DIR", str(pathlib.Path(BASE_DIR) / "tool_index")))
 XCELERATOR_INDEX_DIR = pathlib.Path(os.getenv("XCELERATOR_INDEX_DIR", str(pathlib.Path(BASE_DIR) / "xcelerator_index")))
 NEEDS_INDEX_DIR = pathlib.Path(os.getenv("NEEDS_INDEX_DIR", str(pathlib.Path(BASE_DIR) / "needs_index")))
+APPLICATIONS_INDEX_DIR = pathlib.Path(os.getenv("APPLICATIONS_INDEX_DIR",
+                                                str(pathlib.Path(BASE_DIR) / "applications_index")))
 SEMANTIC_DEPTH = 200          # how far down the semantic ranking fusion looks
 RRF_K = 60                    # the usual reciprocal-rank-fusion constant: dampens the very top ranks
 # Only the top of each ranking takes part in fusion. Fused over full depth, a generic tool high on
@@ -69,18 +76,33 @@ def need_text(entry: dict) -> str:
     return " | ".join(str(p).strip() for p in parts if str(p or "").strip())
 
 
+def application_text(entry: dict) -> str:
+    """What is embedded for one application: who it is, what it does, whom it would serve."""
+    facts = entry.get("facts") or {}
+    parts = [entry.get("company"), entry.get("short_description"), entry.get("pitch"),
+             entry.get("differentiation"), (facts.get("siemens_functions") or {}).get("value"),
+             (facts.get("reference_customers") or {}).get("value")]
+    # Capped: a few pitches run to pages, and the embedding only needs what the offering is.
+    return " | ".join(str(p).strip() for p in parts if str(p or "").strip())[:6000]
+
+
+_KINDS = ("xcelerator", "department_needs_index", "applications")
+
+
 def _kind(catalog: dict) -> str:
     name = catalog.get("name")
-    return name if name in ("xcelerator", "department_needs_index") else "siemens_tools"
+    return name if name in _KINDS else "siemens_tools"
 
 
 def _text_for(catalog: dict):
-    return {"xcelerator": seller_text, "department_needs_index": need_text}.get(_kind(catalog), tool_text)
+    return {"xcelerator": seller_text, "department_needs_index": need_text,
+            "applications": application_text}.get(_kind(catalog), tool_text)
 
 
 def _missing_reason(catalog: dict) -> str:
     return {"xcelerator": "no Xcelerator index for this workbook — run scripts/build_tool_index.py --catalog xcelerator",
             "department_needs_index": "no needs index for this workbook — run scripts/build_tool_index.py --catalog needs",
+            "applications": "no applications index for this file — run scripts/build_tool_index.py --catalog applications",
             }.get(_kind(catalog), "no tool index for this catalog — run scripts/build_tool_index.py")
 
 
@@ -100,12 +122,17 @@ class Index:
 
 
 def _dir(catalog: dict) -> pathlib.Path:
-    return {"xcelerator": XCELERATOR_INDEX_DIR, "department_needs_index": NEEDS_INDEX_DIR}.get(_kind(catalog), INDEX_DIR)
+    return {"xcelerator": XCELERATOR_INDEX_DIR, "department_needs_index": NEEDS_INDEX_DIR,
+            "applications": APPLICATIONS_INDEX_DIR}.get(_kind(catalog), INDEX_DIR)
 
 
-def _paths(catalog: dict):
+def _paths(catalog: dict, model: str):
+    """One file pair per embedding model. Production embeds through the Siemens gateway and local
+    runs through Gemini directly; their vectors are not comparable, and one shared file meant one
+    environment always fell back to word matching. Both ship, and each loads its own."""
     d = _dir(catalog)
-    return d / "vectors.npy", d / "meta.json"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", model)
+    return d / f"vectors.{slug}.npy", d / f"meta.{slug}.json"
 
 
 def load_index(catalog: dict, model: str, dims: int) -> Index | None:
@@ -116,7 +143,7 @@ def load_index(catalog: dict, model: str, dims: int) -> Index | None:
     with _lock:
         if (_kind(catalog), *key) in _loaded:
             return _loaded[(_kind(catalog), *key)]
-        vec_path, meta_path = _paths(catalog)
+        vec_path, meta_path = _paths(catalog, model)
         if not vec_path.exists() or not meta_path.exists():
             return None
         try:
@@ -150,7 +177,7 @@ def build_index(catalog: dict, llm, batch: int = 100) -> Index:
         log.info("[tool_search] embedded %d/%d", min(start + batch, len(entries)), len(entries))
     matrix = _normalise(np.asarray(rows, dtype="float32"))
     _dir(catalog).mkdir(parents=True, exist_ok=True)
-    vec_path, meta_path = _paths(catalog)
+    vec_path, meta_path = _paths(catalog, model)
     np.save(vec_path, matrix.astype("float16"))
     meta = {"model": model, "dims": dims, "checksum": catalog["checksum"], "count": len(entries),
             "names": [e["name"] for e in entries]}

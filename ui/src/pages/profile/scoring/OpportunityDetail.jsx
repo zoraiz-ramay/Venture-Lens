@@ -4,6 +4,7 @@ import ExpandableList from "../../../components/ExpandableList.jsx";
 import Icon from "../../../components/Icon.jsx";
 import { ExtLink } from "../../../components/widgets.jsx";
 import PillarMethod from "./PillarMethod.jsx";
+import SiemensRelationship from "./SiemensRelationship.jsx";
 import { opportunity } from "./presentation.js";
 
 const MAX_ITEMS = 3;
@@ -159,6 +160,7 @@ export default function OpportunityDetail({ res, name, row, detailed = false, on
         <Node key={`${name}-3`} node={opp.nodes[2]} step={3} detailed={detailed} />
       </div>
       {name === "Empower" && <RecommendedTools pillar={pillar} />}
+      {name === "Collaborate" && <SiemensRelationship res={res} pillar={pillar} />}
       {/* The recommended route's next step is already the hero's; repeating it here adds nothing. */}
       {opp.nextStep && name !== res.routing?.pillar && <p className="fit-next"><span className="eyebrow">{opp.gap ? "Review action" : "Next step"}</span>{opp.nextStep}</p>}
       {detailed && <>

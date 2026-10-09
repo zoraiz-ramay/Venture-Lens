@@ -40,9 +40,10 @@ test("a batch continues across pages and restores after reload", async ({ page }
   await page.getByRole("link",{name:"Open research"}).first().click();
   await expect(page.getByRole("heading",{name:/Startup 1/})).toBeVisible();
   await page.getByRole("button",{name:"Scoring & Fit",exact:true}).click();
+  await page.getByRole("button",{name:"Open Siemens Fit details"}).click();
   await expect(page.getByRole("button",{name:/^Empower:/})).toBeVisible();
   await page.getByRole("button",{name:/^Collaborate:/}).click();
   await expect(page).toHaveURL(/pillar=Collaborate/);
   await expect(page.getByText(/What-if weights/)).toHaveCount(0);
-  await page.locator("#scoring-routes").screenshot({path:testInfo.outputPath("collaborate-route.png")});
+  await page.locator("ix-modal-content").screenshot({path:testInfo.outputPath("collaborate-route.png")});
 });

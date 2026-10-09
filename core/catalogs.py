@@ -18,7 +18,7 @@ import json
 import os
 import re
 
-from .config import DEFAULT_TOOLS_CSV, BASE_DIR
+from .config import DEFAULT_GLASSDOLLAR, DEFAULT_TOOLS_CSV, BASE_DIR
 
 XCELERATOR_XLSX = os.getenv("XCELERATOR_XLSX", str(BASE_DIR / "siemens_xcelerator_data.xlsx"))
 _SELLER_COLUMNS = ("Seller", "Region", "Industry", "Topic", "Motion", "Description", "URL")
@@ -30,6 +30,17 @@ def _sha256(path: str) -> str:
         for chunk in iter(lambda: fh.read(1 << 16), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _sha256_text(path: str) -> str:
+    """The checksum of a text file whatever its line endings.
+
+    git stores siemens_tools.csv with LF and a Windows checkout writes it with CRLF, so the byte
+    checksum differed by platform: the tools index, built on Windows, never matched the Linux
+    production image, and Empower and fit fell back to word matching there without anyone seeing
+    why. The workbooks are binary and git leaves them alone, so only this file needs it."""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _split(value) -> list[str]:
@@ -65,7 +76,7 @@ def _tools(path: str, mtime: float) -> dict:
                         "division": str(rec.get("division", "")),
                         "description": str(rec.get("description", "")),
                         "url": str(rec.get("url", "")) if str(rec.get("url", "")).startswith("http") else ""})
-    return {"name": "siemens_tools", "available": bool(entries), "checksum": _sha256(path),
+    return {"name": "siemens_tools", "available": bool(entries), "checksum": _sha256_text(path),
             "path": os.path.basename(path), "entries": entries,
             "reason": "" if entries else "tools catalog is empty"}
 
@@ -169,6 +180,107 @@ def needs_index_catalog() -> dict:
                for d in reqs.values() for n in d["needs"]]
     return {"name": "department_needs_index", "available": bool(entries), "checksum": _sha256(str(_XLSX_PATH)),
             "entries": entries, "reason": "" if entries else "the requirements workbook states no needs"}
+
+
+# Which columns of the applications workbook a problem search may read, and under which label.
+# The pitch-form answers are the startup's own words; the profile columns were filled from
+# GlassDollar when the file was exported. `status`, `contact_*` and `Referral` are deliberately
+# absent: an application's internal status and its contact person are not for a problem search,
+# and leaving them out here is what keeps them out of every result built from an entry.
+APPLICATION_SOURCE = "application"
+GLASSDOLLAR_PROFILE_SOURCE = "glassdollar_profile"
+_APPLICATION_FACTS = (
+    ("stage", "Development stage of your solution", APPLICATION_SOURCE),
+    ("business_model", "Business model", APPLICATION_SOURCE),
+    ("reference_customers", "Reference customers", APPLICATION_SOURCE),
+    ("siemens_functions", "Which Siemens function will profit from your solution?", APPLICATION_SOURCE),
+    ("partnership", "What type of partnership are you seeking for?", APPLICATION_SOURCE),
+    ("hq", "hq", GLASSDOLLAR_PROFILE_SOURCE),
+    ("founded", "founded_year", GLASSDOLLAR_PROFILE_SOURCE),
+    ("employees", "employees_count", GLASSDOLLAR_PROFILE_SOURCE),
+    ("funding", "funding", GLASSDOLLAR_PROFILE_SOURCE),
+    ("customers", "customers", GLASSDOLLAR_PROFILE_SOURCE),
+)
+
+
+def _cell_text(value) -> str:
+    s = str(value if value is not None else "").strip()
+    return "" if s.lower() in ("nan", "none", "null") else s
+
+
+def _application_fact(key: str, value) -> str:
+    from .text import format_funding
+    s = _cell_text(value)
+    if key == "hq":                                  # the export writes "null, null" for an unknown HQ
+        parts = [p.strip() for p in s.split(",") if p.strip() and p.strip().lower() not in ("null", "none")]
+        return ", ".join(parts)
+    if key in ("founded", "employees"):
+        try:
+            return str(int(float(s))) if s else ""
+        except ValueError:
+            return s
+    if key == "funding":
+        return format_funding(s) if s not in ("0", "0.0") else ""
+    return s
+
+
+def applications_catalog_from_df(df) -> dict:
+    """Every application in the workbook as a searchable entry, for the problem search.
+
+    An entry's ``name`` is the application's ``startup_id`` — company names repeat across pitches,
+    and a ranking hands back names. The checksum covers exactly what is embedded and shown, so it
+    is the same whether the frame came from the file or a test, and it changes only when that does.
+    """
+    if df is None or not len(df):
+        return _unavailable("applications", "no applications file")
+    name_col = "company_name" if "company_name" in df.columns else None
+    entries, seen = [], set()
+    for i, rec in enumerate(df.to_dict("records")):
+        company = _cell_text(rec.get(name_col)) if name_col else ""
+        if not company:
+            continue
+        key = _cell_text(rec.get("startup_id")) or f"row-{i}"
+        try:
+            key = str(int(float(key)))
+        except ValueError:
+            pass
+        if key in seen:
+            key = f"{key}-{i}"
+        seen.add(key)
+        website = _cell_text(rec.get("website"))
+        facts = {}
+        for fact, column, source in _APPLICATION_FACTS:
+            value = _application_fact(fact, rec.get(column))
+            if value:
+                facts[fact] = {"value": value, "source": source}
+        entries.append({
+            "name": key, "company": company,
+            "website": website if website.startswith(("http://", "https://")) else "",
+            "short_description": _cell_text(rec.get("short_description")),
+            "pitch": _cell_text(rec.get("Your pitch")),
+            "differentiation": _cell_text(rec.get("Differentiation")),
+            "facts": facts,
+        })
+    checksum = hashlib.sha256(json.dumps(entries, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return {"name": "applications", "available": bool(entries), "checksum": checksum, "entries": entries,
+            "reason": "" if entries else "the applications file names no company"}
+
+
+@functools.lru_cache(maxsize=2)
+def _applications(path: str, mtime: float) -> dict:
+    import pandas as pd
+    try:
+        df = pd.read_excel(path).fillna("")
+    except Exception as exc:
+        return _unavailable("applications", f"applications file unreadable: {type(exc).__name__}")
+    df.columns = [str(c).strip() for c in df.columns]
+    return applications_catalog_from_df(df)
+
+
+def applications_catalog(path: str = DEFAULT_GLASSDOLLAR) -> dict:
+    if not path or not os.path.exists(path):
+        return _unavailable("applications", "applications file not found")
+    return _applications(path, os.path.getmtime(path))
 
 
 def department_catalog(department: dict | None) -> dict:

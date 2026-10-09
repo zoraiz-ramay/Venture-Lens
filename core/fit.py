@@ -26,6 +26,8 @@ FIT_SHORTLIST_SIZE = int(os.getenv("FIT_SHORTLIST_SIZE", "80"))
 # effort instead is faster (6s at "low", 2s at "none") but changed the answer — it dropped the
 # substitute finding and compressed confidence to 88-95 — which is a scoring change, not a fix.
 FIT_MATCH_TIMEOUT = float(os.getenv("FIT_MATCH_TIMEOUT", "90"))
+# Past ~1.5x its usual 25s, a duplicate races the slow request (llm._hedged). 0 turns it off.
+FIT_MATCH_HEDGE = float(os.getenv("FIT_MATCH_HEDGE", "40"))
 
 
 def _derive_fit_keywords(startup_text: str, llm: LLMClient) -> list[str]:
@@ -149,15 +151,20 @@ def match_siemens_tools(row: pd.Series, pitch_pdf: str, tools: list[dict], llm: 
             )
             # Two attempts, not three: at 90s each, a third would push a hung provider past
             # gunicorn's 300s worker timeout once the rest of the pipeline is added.
-            data = LLMClient.parse_json(llm.complete(prompt, max_tokens=900,
-                                                     timeout=FIT_MATCH_TIMEOUT, max_attempts=2))
+            data = LLMClient.parse_json(llm.complete(prompt, max_tokens=900, timeout=FIT_MATCH_TIMEOUT,
+                                                     max_attempts=2, hedge_after=FIT_MATCH_HEDGE))
             if isinstance(data, dict) and isinstance(data.get("matches"), list):
                 allowed = {t["product"].casefold(): t for t in shortlist}
                 clean, seen = [], set()
                 for match in data["matches"]:
                     if not isinstance(match, dict):
                         continue
-                    tool = allowed.get(str(match.get("tool", "")).casefold())
+                    # Gemini 3.5 Flash Lite often returns the whole catalogue line ("Simcenter
+                    # Amesim | System simulation (1D) | Digital Industries Software") as the tool,
+                    # and the exact-name check dropped every such match — 0 kept of 4 on Daedalus.
+                    # The product is the line's first field; it still has to be shortlisted.
+                    named = str(match.get("tool", ""))
+                    tool = allowed.get(named.casefold()) or allowed.get(named.split(" | ")[0].strip().casefold())
                     if not tool or tool["product"] in seen or match.get("relation") not in ("complement", "integration", "substitute", "adjacent"):
                         continue
                     try:

@@ -155,8 +155,12 @@ export const api = {
   tracxnStatus: () => request("/api/integrations/tracxn"),
   tracxnConnect: (returnTo = "workspace") => request(`/api/integrations/tracxn/connect?return_to=${encodeURIComponent(returnTo)}`, { method: "POST" }),
   tracxnDisconnect: () => request("/api/integrations/tracxn", { method: "DELETE" }),
-  solve: (problem) =>
-    request("/api/solve", { method: "POST", body: { problem }, timeoutMs: 180000 }),
+  // Solve a Problem's follow-ups on a finished search job: re-rank with chosen facets (no new
+  // search), and questions answered from the shortlist first.
+  solveRefine: (jobId, answers, note = "") =>
+    request(`/api/solve/${encodeURIComponent(jobId)}/refine`, { method: "POST", body: { answers, note }, timeoutMs: 90000 }),
+  solveAsk: (jobId, question, history = [], ids = []) =>
+    request(`/api/solve/${encodeURIComponent(jobId)}/ask`, { method: "POST", body: { question, history, ids }, timeoutMs: 120000 }),
   // The reviewer's own list. `runs` is the same row shape but spans everyone, so it is
   // admin-only — a non-admin calling it gets a 403, by design.
   myRuns: () => request("/api/my/searches"),
@@ -187,10 +191,13 @@ export const api = {
   // (rounds and investor profiles) or "headcount" (sourced employee figures).
   runLookup: (runId, kind, refresh = false) =>
     request(`/api/runs/${encodeURIComponent(runId)}/lookup/${kind}${refresh ? "?refresh=true" : ""}`, { method: "POST", timeoutMs: 120000 }),
-  // `history` is the chat so far ({role, text}), so a follow-up keeps its subject; the server
-  // holds no conversation state.
+  // `history` is the chat so far ({role, text}), so a follow-up keeps its subject. The server also
+  // stores each turn in the reviewer's thread for that company, which chat() reads back.
   ask: (question, runId = null, history = []) =>
     request("/api/ask", { method: "POST", body: { question, run_id: runId, history }, timeoutMs: 120000 }),
+  chat: (runId = null) => request(`/api/my/chat${runId != null ? `?run_id=${encodeURIComponent(runId)}` : ""}`),
+  clearChat: (runId = null) =>
+    request(`/api/my/chat${runId != null ? `?run_id=${encodeURIComponent(runId)}` : ""}`, { method: "DELETE" }),
   audit: (runId) => request(`/api/runs/${encodeURIComponent(runId)}/audit`),
   setChallengeStatus: (index, status) =>
     request(`/api/challenges/${encodeURIComponent(index)}`, {

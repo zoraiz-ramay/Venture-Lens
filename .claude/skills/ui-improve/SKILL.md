@@ -54,6 +54,8 @@ Launch `pr-author` for a branch + PR with gate results and before/after screensh
 - Never re-baseline `ix_lint` to silence a new violation — the baseline only ratchets down.
 - If a cycle ends with nothing merged, that is fine. Reporting "no worthwhile finding" beats
   manufacturing work to look busy.
+- Every subagent starts cold and pays for its whole context again. Keep the auditor separate (it
+  has no write access on purpose); a small step like `pr-author` can run inline.
 
 ## Running unattended
 

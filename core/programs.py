@@ -635,3 +635,63 @@ def assess_sfs(row: pd.Series, profile: dict, fit: dict = None) -> dict:
             "lines": lines, "blockers": blockers,
             "rationale": lines[0]["rationale"] if lines else blockers[0],
             "line": lines[0]["line"] if lines else ""}
+
+
+# --------------------------------------------------------------------- an existing Siemens relationship
+# Who "Siemens" is in a sentence about a startup: the unit, and the department it maps to where one
+# of the configured departments is that unit (ids as in core/department_needs._DEPARTMENT_IDS). The
+# Collaborate bonus is the same for every unit; the department only breaks a ranking tie.
+# A bare unit name ("digital industries", "smart infrastructure") is also an ordinary phrase, so it
+# names Siemens only when the same passage says "Siemens" too (`needs_siemens`).
+SIEMENS_UNITS = (
+    # (alias, unit, department, needs_siemens)
+    ("siemens digital industries software", "Siemens Digital Industries Software", "di", False),
+    ("digital industries software", "Siemens Digital Industries Software", "di", True),
+    ("siemens digital industries", "Siemens Digital Industries", "di", False),
+    ("digital industries", "Siemens Digital Industries", "di", True),
+    ("siemens smart infrastructure", "Siemens Smart Infrastructure", "si", False),
+    ("smart infrastructure", "Siemens Smart Infrastructure", "si", True),
+    ("siemens mobility", "Siemens Mobility", "mobility", False),
+    ("siemens healthineers", "Siemens Healthineers", "", False),
+    ("healthineers", "Siemens Healthineers", "", False),
+    ("siemens energy", "Siemens Energy", "", False),
+    ("siemens gamesa", "Siemens Gamesa", "", False),
+    ("siemens financial services", "Siemens Financial Services", "", False),
+    ("next47", "next47 (Siemens' venture firm)", "", False),
+    ("siemens xcelerator", "Siemens Xcelerator", "", False),
+    ("siemens technology", "Siemens Technology", "", False),
+    ("siemens advanta", "Siemens Advanta", "", False),
+    ("siemens", "Siemens", "", False),
+)
+
+# Product names that say Siemens on their own. Any other catalog tool name ("NX", "Capital",
+# "Process Simulate") is an ordinary word or a generic phrase too, so it counts only beside "Siemens".
+SIEMENS_BRANDS = ("teamcenter", "simcenter", "opcenter", "tecnomatix", "polarion", "mendix", "mindsphere",
+                  "insights hub", "simatic", "sinumerik", "sinamics", "desigo", "solid edge")
+
+
+def siemens_unit(passage: str) -> tuple[str, str] | None:
+    """(unit, department id) for the most specific Siemens unit a lower-cased passage names, or None."""
+    says_siemens = "siemens" in passage
+    for alias, unit, department, needs_siemens in SIEMENS_UNITS:     # most specific first
+        if (says_siemens or not needs_siemens) and re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", passage):
+            return unit, department
+    return None
+
+
+_ENGAGEMENT_LABELS = {"investment": "investment", "pilot": "pilot", "joint_project": "joint project",
+                      "programme": "programme", "supplier": "supplier", "partner": "partner",
+                      "customer": "customer", "uses_product": "uses"}
+
+
+def engagement_label(e: dict) -> str:
+    """"Siemens Mobility: pilot (2024)", "Siemens: uses Teamcenter" — one line per engagement."""
+    kind = _ENGAGEMENT_LABELS.get(e.get("type", ""), e.get("type", ""))
+    what = f"{kind} {e['product']}" if e.get("type") == "uses_product" and e.get("product") else kind
+    year = f" ({e['year']})" if e.get("year") else ""
+    return f"{e.get('unit') or 'Siemens'}: {what}{year}"
+
+
+def sourced_engagements(engagements) -> list[dict]:
+    """The engagements a reviewer can open a source for — the only ones that earn the bonus."""
+    return [e for e in engagements or [] if isinstance(e, dict) and str(e.get("source_url", "")).startswith("http")]

@@ -190,6 +190,42 @@ def test_a_reviewer_who_never_searched_still_appears_in_the_table(db):
     assert rows["oid-lurker"]["last_sign_in"]
 
 
+def test_a_search_records_how_long_the_reviewer_waited(db):
+    """Timed from when the evaluation began, so a run that sat in the queue shows that wait."""
+    import time
+
+    from api import main
+    alice = {"oid": "oid-alice", "upn": "alice@siemens.com"}
+    logged = {**_result("Aeroview"), "token_usage": {"log": [{"stage": "fit", "duration_ms": 30_000}]}}
+    main._saved(logged, "aeroview", main.EvaluateBody(name="aeroview"), alice,
+                started=time.monotonic() - 68.6)
+    store.record_search(alice, "old", company_name="Old")              # logged before timing existed
+
+    took = {s["query"]: s["duration_ms"] for s in store.list_searches()}
+    assert took["aeroview"] >= 68_600
+    assert took["old"] is None                                        # unknown, not instant
+    # The token table shows the run's own wait beside its summed model time.
+    (run,) = store.token_usage_runs()["runs"]
+    assert run["wall_ms"] == took["aeroview"] and run["duration_ms"] == 30_000
+
+
+def test_typical_evaluation_time_is_the_median_of_fresh_runs_only(db):
+    """A database answer takes milliseconds; counting those would report the pipeline as instant."""
+    alice = {"oid": "oid-alice", "upn": "alice@siemens.com"}
+    for ms in (60_000, 70_000, 200_000):
+        store.record_search(alice, "x", company_name="X", served_from="fresh", duration_ms=ms)
+    for _ in range(5):
+        store.record_search(alice, "x", company_name="X", served_from="cache", duration_ms=40)
+    store.record_search(alice, "x", company_name="X", served_from="fresh")   # untimed: left out
+
+    assert store.admin_overview()["evaluation_time"] == {"timed": 3, "median_ms": 70_000,
+                                                         "longest_ms": 200_000}
+
+
+def test_typical_evaluation_time_is_blank_before_anything_was_timed(db):
+    assert store.admin_overview()["evaluation_time"]["median_ms"] is None
+
+
 def test_searchers_are_ordered_ahead_of_sign_in_only_reviewers(db):
     store.record_session({"oid": "oid-lurker", "upn": "lurker@siemens.com"})
     store.record_session({"oid": "oid-lurker", "upn": "lurker@siemens.com"})

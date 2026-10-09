@@ -9,7 +9,11 @@ the model's own web search, and the answer is one of three:
 - `unchecked` — no search could be made (no web search on this model, or it timed out). That is
   NOT a finding about the tool, so it neither removes the recommendation nor flags the catalog.
 
-Checks are cached by tool id, so each catalog row is searched once, not on every run.
+Checks are cached by tool id, so each catalog row is searched once, not on every run. The cache
+is shared (`web._cached(shared=True)`): a reviewer's Refresh renews the evidence about a startup,
+and whether Teamcenter exists is not part of it. Conclusive checks are kept 180 days
+(api/store._KIND_TTL_DAYS), and a tool already found missing is taken out of Empower's shortlist
+before the match (`known_missing`), so it never costs a re-match.
 """
 from __future__ import annotations
 
@@ -31,13 +35,28 @@ def _host(url: str) -> str:
         return ""
 
 
+def _key(entry: dict) -> str:
+    return web._cache_key(VERSION, entry.get("id", "") or str(entry.get("name", "")).lower())
+
+
+def _stored(entry: dict) -> dict | None:
+    """The conclusive check already on record for this tool, or None."""
+    cached = web._cached("tool_check", _key(entry), shared=True)
+    return cached if isinstance(cached, dict) and cached.get("status") in ("verified", "not_found") else None
+
+
+def known_missing(entries: list[dict]) -> set:
+    """Ids of the entries a stored check has already found not to exist. Reads only; no search."""
+    return {e["id"] for e in entries if e.get("id") and (_stored(e) or {}).get("status") == "not_found"}
+
+
 def verify_tool(entry: dict, llm) -> dict:
     """{'id', 'name', 'status', 'url', 'note', 'checked_at'} for one catalog tool entry."""
     base = {"id": entry.get("id", ""), "name": entry.get("name", ""), "category": entry.get("category", ""),
             "division": entry.get("division", ""), "url": "", "note": ""}
-    key = web._cache_key(VERSION, base["id"] or base["name"].lower())
-    cached = web._cached("tool_check", key)
-    if isinstance(cached, dict) and cached.get("status") in ("verified", "not_found"):
+    key = _key(base)
+    cached = _stored(base)
+    if cached:
         return cached
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     if not (llm and getattr(llm, "available", False) and callable(getattr(llm, "web_answer", None))):
@@ -63,7 +82,7 @@ def verify_tool(entry: dict, llm) -> dict:
     out = {**base, "status": status, "url": (siemens or (sources[0] if sources else {})).get("url", ""),
            "note": re.sub(r"\s+", " ", str(answer["text"]).split("\n", 1)[-1]).strip()[:300], "checked_at": now}
     if status != "unchecked":
-        web._store("tool_check", key, out)
+        web._store("tool_check", key, out, shared=True)
     return out
 
 

@@ -12,6 +12,8 @@ import importlib.util
 import os
 import sys
 
+import pytest
+
 _WEB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "web.py"))
 _spec = importlib.util.spec_from_file_location("core_web_cache_standalone", _WEB_PATH)
 web = importlib.util.module_from_spec(_spec)
@@ -62,7 +64,50 @@ def test_reasoning_effort_only_reaches_reasoning_providers(monkeypatch):
 
     r2 = _Recorder()
     _client("openai", r2).complete("hi", reasoning="none")
-    assert "reasoning_effort" not in r2.seen      # the Siemens gateway never sees it
+    assert "reasoning_effort" not in r2.seen      # a non-reasoning gateway model never sees it
+
+
+def test_gateway_reasoning_model_gets_effort_headroom_and_valid_temperature(monkeypatch):
+    """gpt-5.x bills reasoning against the cap and rejects temperature 0 unless reasoning is off."""
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    monkeypatch.setattr(llm_mod, "LLM_REASONING_EFFORT", "")
+    r = _Recorder()
+    c = _client("openai", r)
+    c.model = "gpt-5.4"
+    c.complete("hi", max_tokens=900, reasoning="none")
+    assert r.seen["reasoning_effort"] == "none"
+    assert r.seen["temperature"] == 0
+    assert r.seen["max_completion_tokens"] == 1024 + llm_mod.LLM_THINKING_HEADROOM
+
+    r2 = _Recorder()
+    c._client = type("C", (), {"chat": type("Ch", (), {"completions": r2})()})()
+    c.complete("hi", max_tokens=900)
+    assert "reasoning_effort" not in r2.seen
+    assert "temperature" not in r2.seen
+
+
+@pytest.mark.parametrize("provider, model", [("gemini", "gemini-3.5-flash-lite"),
+                                              ("openai", "google/gemini-3.5-flash-lite")])
+def test_gemini_3_gets_minimal_thinking_where_a_call_asks_for_none(monkeypatch, provider, model):
+    """Gemini 3 rejects reasoning_effort "none" with a 400 naming no parameter, so it was never
+    dropped and retried: every evidence-to-JSON call failed. Its floor is "minimal"."""
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    r = _Recorder()
+    c = _client(provider, r)
+    c.model = model
+    c.complete("hi", max_tokens=900, reasoning="none")
+    assert r.seen["reasoning_effort"] == "minimal"
+    assert r.seen["temperature"] == 0                      # only the gateway's gpt-5.x rejects it
+    assert r.seen["max_completion_tokens"] == 1024 + llm_mod.LLM_THINKING_HEADROOM
+
+
+def test_gemini_2_5_still_switches_thinking_off(monkeypatch):
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    r = _Recorder()
+    c = _client("gemini", r)
+    c.model = "gemini-2.5-flash"
+    c.complete("hi", reasoning="none")
+    assert r.seen["reasoning_effort"] == "none"
 
 
 def test_headroom_applies_even_with_reasoning_off(monkeypatch):
@@ -270,55 +315,202 @@ def test_site_fetch_cache_preserves_the_resolved_url(monkeypatch):
         _uninstall_cache()
 
 
-class _Reply:
-    """A chat completion whose first replies stop at the token ceiling."""
+# ----------------------------------------------------------------- one search limit per process
 
-    def __init__(self, cut_offs=1):
-        self.seen, self.cut_offs = [], cut_offs
+def _slow_search(state, delay):
+    import threading
+    import time
+    lock = threading.Lock()
+
+    def search(query, max_results=5, meta=None):
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(delay)
+        with lock:
+            state["now"] -= 1
+        return [{"title": query, "href": "https://x.example", "body": query}]
+    return search
+
+
+def test_overlapping_waves_share_one_limit_on_searches_in_flight(monkeypatch):
+    """Enrichment, profile and trend now search at the same time, and so do several reviewers'
+    runs. Each wave capping only itself let those add up to bursts the engines answer with 429s."""
+    import threading
+    state = {"now": 0, "peak": 0}
+    monkeypatch.setattr(web, "_ddg_slots", threading.BoundedSemaphore(3))
+    monkeypatch.setattr(web, "ddg_search", _slow_search(state, 0.05))
+    results = []
+    waves = [threading.Thread(target=lambda i=i: results.append(
+        web._ddg_many({f"q{i}_{j}": f"wave {i} query {j}" for j in range(4)}, overall_timeout=10)))
+        for i in range(3)]
+    for t in waves:
+        t.start()
+    for t in waves:
+        t.join()
+    assert state["peak"] == 3
+    assert all(all(hits for hits in r.values()) for r in results)   # nothing abandoned
+
+
+def test_time_queued_behind_another_wave_is_not_charged_to_the_deadline(monkeypatch):
+    """A wave's deadline exists to cut off throttled searches. A search still waiting for a slot
+    has not been throttled — it has not run — so abandoning it would invent a missing field."""
+    import threading
+    import time
+    monkeypatch.setattr(web, "_ddg_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(web, "ddg_search", _slow_search({"now": 0, "peak": 0}, 0.01))
+    web._ddg_slots.acquire()                       # another wave's search holds the only slot
+    threading.Timer(0.3, web._ddg_slots.release).start()
+    stats: dict = {}
+    started = time.time()
+    out = web._ddg_many({"a": "only query"}, overall_timeout=0.2, stats=stats)
+    assert out["a"] and stats["timed_out"] == 0
+    assert time.time() - started >= 0.3
+
+
+# ----------------------------------------------------------------- rate limits and spending caps
+
+class _Limited:
+    """create() raises a provider 429 with the given message, counting calls."""
+
+    def __init__(self, message):
+        self.calls, self.message = 0, message
 
     def create(self, **kwargs):
-        self.seen.append(dict(kwargs))
-        cut = len(self.seen) <= self.cut_offs
-        msg = type("M", (), {"content": '{"founders": [' if cut else '{"founders": []}'})()
-        choice = type("Ch", (), {"message": msg, "finish_reason": "length" if cut else "stop"})()
-        return type("R", (), {"choices": [choice], "usage": None})()
+        self.calls += 1
+        err = RuntimeError(f"Error code: 429 - {self.message}")
+        err.status_code = 429
+        raise err
 
 
-def test_truncated_reply_is_reasked_with_room_and_not_cached(monkeypatch):
-    """A reply cut at its ceiling is half a JSON object; parse_json rejects it and the profile
-    silently fell back to keyword-only. It must be re-asked larger, and the cut copy never cached."""
-    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
-    stored = []
-    monkeypatch.setattr(llm_mod._web, "_store", lambda *a: stored.append(a))
-    monkeypatch.setattr(llm_mod._web, "_cached", lambda *a: None)
-    r = _Reply()
-    out = _client("openai", r).complete("hi", max_tokens=1200, reasoning="none")
-    assert llm_mod.LLMClient.parse_json(out) == {"founders": []}
-    assert r.seen[1]["max_completion_tokens"] > r.seen[0]["max_completion_tokens"]
-    assert len(stored) == 1
-
-    stored.clear()
-    r = _Reply(cut_offs=99)
-    _client("openai", r).complete("hi", reasoning="none")
-    assert r.seen[-1]["max_completion_tokens"] == llm_mod.LLM_MAX_BUDGET
-    assert stored == []
+def test_a_spending_cap_fails_at_once_instead_of_spending_the_run_on_retries(monkeypatch):
+    """A monthly cap does not lift inside a run; three attempts were ~13s per call, every call."""
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda s: None)
+    r = _Limited("Your project has exceeded its monthly spending cap. RESOURCE_EXHAUSTED")
+    assert _client("gemini", r).complete("hi") == ""
+    assert r.calls == 1
 
 
-def test_gateway_reasons_unless_the_call_opts_out(monkeypatch):
-    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
-    monkeypatch.setattr(llm_mod, "LLM_REASONING_EFFORT", "high")
-    r = _Recorder()
-    _client("openai", r).complete("hi")
-    assert r.seen["reasoning_effort"] == "high"
-    assert "temperature" not in r.seen            # gpt-5.x rejects temperature 0 while reasoning
-    assert r.seen["timeout"] >= llm_mod.LLM_REASONING_TIMEOUT
-
-    r2 = _Recorder()
-    _client("openai", r2).complete("hi", reasoning="none")
-    assert "reasoning_effort" not in r2.seen and r2.seen["temperature"] == 0
+def test_a_per_minute_limit_is_waited_out_across_a_quota_window(monkeypatch):
+    waits = []
+    monkeypatch.setattr(llm_mod.time, "sleep", waits.append)
+    r = _Limited("Rate limit reached for requests per minute. RESOURCE_EXHAUSTED")
+    assert _client("gemini", r).complete("hi") == ""
+    assert r.calls == llm_mod.RATE_LIMIT_ATTEMPTS > llm_mod.MAX_RETRIES
+    assert sum(waits) >= 30                                  # long enough for a minute window to turn
 
 
-# ----------------------------------------------------------------- truncation and reasoning
+def test_a_caller_that_asked_for_one_attempt_still_gets_one(monkeypatch):
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda s: None)
+    r = _Limited("Rate limit reached for requests per minute.")
+    _client("gemini", r).complete("hi", max_attempts=1)
+    assert r.calls == 1
+
+
+# ----------------------------------------------------------------- run timeline
+
+def test_a_search_wave_is_recorded_on_the_run_timeline(monkeypatch):
+    """Search waves are most of the profile branch's time and were invisible: the token log only
+    holds model calls. Each wave now leaves one timeline event with its size and its losses."""
+    monkeypatch.setattr(web, "ddg_search", lambda q, n, meta=None: [{"href": "https://a.example", "body": q}])
+    token, timeline = web.collect_timeline()
+    try:
+        web._ddg_many({"a": "first", "b": "second"}, stats={})
+    finally:
+        web.stop_collecting_timeline(token)
+    (wave,) = timeline["events"]
+    assert wave["kind"] == "search_wave"
+    assert (wave["queries"], wave["timed_out"], wave["cached"]) == (2, 0, 0)
+    assert wave["start_ms"] >= 0 and wave["duration_ms"] >= 0 and wave["queued_ms"] >= 0
+
+
+def test_no_timeline_is_kept_outside_a_run(monkeypatch):
+    monkeypatch.setattr(web, "ddg_search", lambda q, n, meta=None: [])
+    web._ddg_many({"a": "query"})                  # must not raise, and has nowhere to record
+    assert web.run_offset_ms(0.0) is None
+
+
+# ----------------------------------------------------------------- hedged thinking calls
+
+class _Raced:
+    """Answers each create() with the next (delay, text-or-exception) in turn."""
+
+    def __init__(self, *script):
+        import threading
+        self.script, self.calls, self._lock = list(script), 0, threading.Lock()
+
+    def create(self, **kwargs):
+        import time
+        with self._lock:
+            delay, out = self.script[self.calls]
+            self.calls += 1
+        time.sleep(delay)
+        if isinstance(out, Exception):
+            raise out
+        usage = type("U", (), {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                               "completion_tokens_details": None})()
+        return type("R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": out})()})()],
+                              "usage": usage})()
+
+
+def _logged(monkeypatch):
+    monkeypatch.setattr(llm_mod, "LLM_CACHE", False)
+    token, log = llm_mod.collect_usage()
+    return token, log
+
+
+def test_a_slow_thinking_call_is_raced_by_a_duplicate_and_the_first_answer_wins(monkeypatch):
+    """Waiting out a slow request and then retrying from scratch threw away the whole wait. A
+    duplicate sent at hedge_after races it, and both are logged because both are billed."""
+    import time
+    token, log = _logged(monkeypatch)
+    try:
+        r = _Raced((0.6, "slow"), (0.0, "fast"))
+        started = time.time()
+        assert _client("gemini", r).complete("p", hedge_after=0.05) == "fast"
+        assert time.time() - started < 0.5
+        time.sleep(0.7)                              # the loser lands and is logged
+    finally:
+        llm_mod.stop_collecting_usage(token)
+    assert r.calls == 2
+    winner, loser = log
+    assert winner.get("hedged") is True and winner["ok"] and winner["total_tokens"] == 15
+    assert loser["reason"] == "hedge_loser" and loser["total_tokens"] == 15
+
+
+def test_no_duplicate_is_sent_when_the_first_answer_arrives_in_time(monkeypatch):
+    token, log = _logged(monkeypatch)
+    try:
+        r = _Raced((0.0, "quick"))
+        assert _client("gemini", r).complete("p", hedge_after=1.0) == "quick"
+    finally:
+        llm_mod.stop_collecting_usage(token)
+    assert r.calls == 1 and "hedged" not in log[0]
+
+
+def test_a_request_that_fails_fast_takes_the_retry_path_not_the_hedge(monkeypatch):
+    """A request's own timeout is an error to retry, not a slow answer to race."""
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda s: None)
+    token, log = _logged(monkeypatch)
+    try:
+        r = _Raced((0.0, TimeoutError("Request timed out.")), (0.0, "second attempt"))
+        assert _client("gemini", r).complete("p", hedge_after=1.0, max_attempts=2) == "second attempt"
+    finally:
+        llm_mod.stop_collecting_usage(token)
+    assert r.calls == 2 and log[-1]["attempts"] == 2 and "hedged" not in log[-1]
+
+
+def test_when_both_racers_fail_the_call_fails_like_a_single_request(monkeypatch):
+    token, log = _logged(monkeypatch)
+    try:
+        r = _Raced((0.2, RuntimeError("boom")), (0.0, RuntimeError("boom")))
+        assert _client("gemini", r).complete("p", hedge_after=0.05, max_attempts=1) == ""
+    finally:
+        llm_mod.stop_collecting_usage(token)
+    assert r.calls == 2 and log[-1]["ok"] is False
+
+
+# ----------------------------------------------------------------- truncation
 
 class _Answers:
     """Answers each create() from ``replies`` (finish_reason, text) in turn, recording the kwargs."""
@@ -336,6 +528,7 @@ class _Answers:
 def test_a_reply_cut_off_at_its_ceiling_is_asked_again_with_room_and_not_cached(monkeypatch):
     """gpt-5.4 stopped the profile extraction mid-JSON at its ceiling; parse_json rejected the
     half object and the profile fell back to keyword-only — no founders, team or customers."""
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
     stored = []
     monkeypatch.setattr(llm_mod._web, "_cached", lambda *a, **k: None)
     monkeypatch.setattr(llm_mod._web, "_store", lambda *a, **k: stored.append(a))
@@ -350,17 +543,3 @@ def test_a_reply_cut_off_at_its_ceiling_is_asked_again_with_room_and_not_cached(
     _client("openai", a).complete("hi", reasoning="none")
     assert a.seen[-1]["max_completion_tokens"] == llm_mod.LLM_MAX_BUDGET
     assert stored == []                           # a reply still cut off is never cached
-
-
-def test_the_gateway_reasons_unless_a_call_opts_out(monkeypatch):
-    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
-    monkeypatch.setattr(llm_mod, "LLM_REASONING_EFFORT", "high")
-    r = _Recorder()
-    _client("openai", r).complete("hi")
-    assert r.seen["reasoning_effort"] == "high"
-    assert "temperature" not in r.seen            # gpt-5.x rejects temperature 0 while reasoning
-    assert r.seen["timeout"] >= llm_mod.LLM_REASONING_TIMEOUT
-
-    r2 = _Recorder()
-    _client("openai", r2).complete("hi", reasoning="none")
-    assert "reasoning_effort" not in r2.seen and r2.seen["temperature"] == 0

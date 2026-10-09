@@ -29,7 +29,17 @@ def _verify_claim(claim: str, company: str) -> Optional[Fact]:
 
 
 def enrich(row: pd.Series, do_web: bool = True) -> dict:
-    """Collect facts (with provenance) from the DB row and, optionally, the web."""
+    """Collect facts (with provenance) from the DB row and, optionally, the web.
+
+    The three parts run one after another here. The pipeline runs them itself instead
+    (core/pipeline.py), concurrently and each as soon as its inputs exist, because the summary,
+    fit, profile and trend branches need only the first and used to wait for all three."""
+    local = enrich_local(row)
+    return combine(local, search_web(row) if do_web else None, fetch_site(row) if do_web else None)
+
+
+def enrich_local(row: pd.Series) -> dict:
+    """The free part: the database row's own facts and the pitch deck's text. No network."""
     facts: list[Fact] = []
     company = str(row.get("company_name", "")).strip()
 
@@ -55,10 +65,16 @@ def enrich(row: pd.Series, do_web: bool = True) -> dict:
             facts.append(Fact(key="pitch_deck", value=f"{len(pitch_pdf)} chars extracted",
                               method="pitch_pdf", source_url=str(row.get("pdf_filename", "")),
                               confidence=0.6, verified=True))
+    return {"company": company, "facts": facts, "pitch_pdf": pitch_pdf}
 
+
+def search_web(row: pd.Series) -> dict:
+    """Enrichment's DuckDuckGo wave: {"web": {query key: hits}, "facts", "search_stats"}."""
+    facts: list[Fact] = []
+    company = str(row.get("company_name", "")).strip()
     web = {}
     search_stats: dict = {}
-    if do_web and company:
+    if company:
         domain = str(row.get("domain", "")).strip()
         hq = str(row.get("hq", "")).strip()
         country = hq.split(",")[-1].strip() if hq else ""
@@ -137,12 +153,18 @@ def enrich(row: pd.Series, do_web: bool = True) -> dict:
             else:
                 facts.append(Fact(key=f"verify:{c}", value="no corroboration found",
                                   method="ddg_search", confidence=0.3, verified=False))
+    return {"web": web, "facts": facts, "search_stats": search_stats}
 
+
+def fetch_site(row: pd.Series) -> dict:
+    """The company's own pages: {"site": {path: text}, "facts"}. Needs only the row's website."""
+    facts: list[Fact] = []
+    company = str(row.get("company_name", "")).strip()
     # Direct fetch of the company's OWN site (about/partners/ecosystem/...). DuckDuckGo
     # misses a lot of a startup's own pages, so ecosystem/partnership facts that live only
     # on the site (the phena.tech case) never surface via search alone. SSRF-guarded in web.py.
     site: dict = {}
-    if do_web and company:
+    if company:
         site_src = str(row.get("website", "") or row.get("domain", "")).strip()
         if site_src:
             try:
@@ -155,5 +177,14 @@ def enrich(row: pd.Series, do_web: bool = True) -> dict:
                                       source_url=site_src, method="site_fetch",
                                       confidence=0.6, verified=True))
 
-    return {"company": company, "facts": facts, "pitch_pdf": pitch_pdf,
-            "web": web, "site": site, "search_stats": search_stats}
+    return {"site": site, "facts": facts}
+
+
+def combine(local: dict, searched: dict | None, site: dict | None) -> dict:
+    """The enrichment dict as `enrich` has always returned it, facts in the same order (row, web,
+    site): verification's prompt is built from them, so a different order is a different prompt."""
+    searched, site = searched or {}, site or {}
+    return {"company": local["company"],
+            "facts": local["facts"] + searched.get("facts", []) + site.get("facts", []),
+            "pitch_pdf": local["pitch_pdf"], "web": searched.get("web", {}),
+            "site": site.get("site", {}), "search_stats": searched.get("search_stats", {})}

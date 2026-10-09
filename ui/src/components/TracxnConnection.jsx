@@ -4,7 +4,7 @@ import { iconLogIn, iconDisconnected } from "@siemens/ix-icons/icons";
 import { api } from "../api.js";
 import ErrorBox from "./ErrorBox.jsx";
 
-export default function TracxnConnection({ compact = false }) {
+export default function TracxnConnection({ compact = false, returnTo = "home" }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -13,7 +13,7 @@ export default function TracxnConnection({ compact = false }) {
     setBusy(true); setError("");
     try {
       if (state?.connected) setState(await api.tracxnDisconnect());
-      else window.location.assign((await api.tracxnConnect("home")).url);
+      else window.location.assign((await api.tracxnConnect(returnTo)).url);
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };

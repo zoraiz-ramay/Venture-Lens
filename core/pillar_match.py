@@ -15,17 +15,26 @@ import concurrent.futures
 import contextvars
 import json
 import logging
+import os
+import re
 
 from . import catalogs as cat
 from . import config
 from .judgment import evidence_for
 from .llm import LLMClient
-from .pillars import PILLARS, ORDER, VERSION, unassessed, validate_match, siemens_fit, recommend
+from .pillars import (PILLARS, ORDER, VERSION, unassessed, validate_match, siemens_fit, recommend,
+                      with_relationship_bonus)
 from .text import _norm
 
 log = logging.getLogger(__name__)
 
 CONCEPT_GROUPS = ("technologies", "capabilities", "needs_gaps", "use_cases", "industries", "topics")
+# Reasoning for the per-pillar match. Gemini 2.5 Flash judged it without thinking; Gemini 3.5 Flash
+# Lite without thinking scored Connect well under Flash on identical research (Daedalus 3 vs 7,
+# Tridiagonal 3 vs 1), and at "medium" came back within Flash's own run-to-run range on all three
+# benchmark companies. "low" fixed the fit total but left Daedalus' Connect at 2-3. "none" restores
+# the old behaviour.
+PILLAR_REASONING = os.getenv("PILLAR_REASONING", "medium").strip().lower()
 _EVIDENCE_CHARS = 14000
 _SHORTLIST = 20
 _NEEDS_SHORTLIST = 15          # department needs sent to the Collaborate match, most relevant first
@@ -59,6 +68,28 @@ def _evidence(run: dict) -> list[dict]:
     evidence_for walks company → summary → profile → deep profile → facts, which is also the order
     of how directly each describes the startup, so a budget cut drops the least specific first.
     """
+    return _evidence_cut(run)[0]
+
+
+def evidence_settled_without(run: dict, key: str) -> bool:
+    """True when ``_evidence(run)`` cannot change whatever ``run[key]`` turns out to hold.
+
+    The budget is spent in evidence_for's fixed order, so once it runs out on a record that comes
+    before ``key``'s, nothing ``key`` holds is ever read, and record ids are numbered in that same
+    order. That is what lets Team & Ecosystem, the pillar concepts and Collaborate start while the
+    trend stage — measured as the last research branch to finish — is still running, without a
+    single prompt changing. On 80 stored runs the budget ran out before the trend in 71.
+    """
+    from .judgment import EVIDENCE_KEYS
+    cut = _evidence_cut({**run, key: None})[1]
+    if cut is None:
+        return False            # the budget never ran out: key's records would be read
+    root = re.split(r"[.\[]", str(cut.get("source", "")), maxsplit=1)[0]
+    return root in EVIDENCE_KEYS[:EVIDENCE_KEYS.index(key)]
+
+
+def _evidence_cut(run: dict) -> tuple[list[dict], dict | None]:
+    """(records, the record the budget ran out on — None if it never did)."""
     out, used = [], 0
     for e in evidence_for(run):
         # The fit stage's tool matches are the model's inference, not research about the startup,
@@ -74,9 +105,9 @@ def _evidence(run: dict) -> list[dict]:
         rec = {**e, "text": text[:400]}
         used += len(rec["text"]) + len(e["source"]) + 12
         if used > _EVIDENCE_CHARS:
-            break
+            return out, e
         out.append(rec)
-    return out
+    return out, None
 
 
 def _prompt_evidence(records: list[dict]) -> str:
@@ -356,7 +387,7 @@ def deep_match(pillar: str, concepts: dict, entries: list[dict], records: list[d
         + neighbours_shape + '}')
     # Connect labels 30 sellers, so its answer runs to roughly twice the others'.
     data = LLMClient.parse_json(llm.complete(prompt, max_tokens=2600 if pillar == "Connect" else 1100,
-                                             reasoning="none"))
+                                             reasoning=PILLAR_REASONING or "none"))
     by_id = {r["id"]: {"id": r["id"], "source": r["source"], "quote": r["text"], "url": r.get("url", "")}
              for r in list(records) + market}
     return validate_match(pillar, data, by_id, {e["id"]: e for e in entries})
@@ -464,7 +495,19 @@ def for_department(state: dict, department: dict) -> dict:
 
 
 def assess_pillar(p: str, state: dict, run: dict, llm: LLMClient) -> dict:
-    """One pillar's match. ``run`` must carry ``fit`` for Empower; the other two never read it."""
+    """One pillar's match. ``run`` must carry ``fit`` for Empower; the other two never read it.
+
+    Every Collaborate passes here — fresh runs, re-assessed research, one department or all — so
+    this is where an existing Siemens relationship is added, after the model and after the
+    deterministic 0/9, and before packaging computes Siemens Fit and the route from the total.
+    """
+    result = _assess_pillar(p, state, run, llm)
+    if p == "Collaborate":
+        result = with_relationship_bonus(result, (run.get("deep_profile") or {}).get("siemens_engagements"))
+    return result
+
+
+def _assess_pillar(p: str, state: dict, run: dict, llm: LLMClient) -> dict:
     concepts, records, department = state["concepts"], state["records"], state["department"]
     catalog = state["catalogs"][PILLARS[p]["catalog"]]
     if not catalog["available"]:
@@ -481,6 +524,12 @@ def assess_pillar(p: str, state: dict, run: dict, llm: LLMClient) -> dict:
         semantic, why = tool_search.semantic_ranking(query, catalog, llm)
         retrieval = {"method": "hybrid" if semantic else "words", "reason": why}
     entries = shortlist(p, concepts, catalog, run, semantic=semantic)
+    if p == "Empower":
+        # A tool a stored check already found missing leaves the shortlist before the match rather
+        # than after it: afterwards it costs a whole re-match (_with_real_tools), every run.
+        from .tool_check import known_missing
+        missing = known_missing(entries)
+        entries = [e for e in entries if e["id"] not in missing]
     if not entries:
         return _with_retrieval(_zero(p, "No catalog entry shares a concept with the startup's cited research."), retrieval)
     try:

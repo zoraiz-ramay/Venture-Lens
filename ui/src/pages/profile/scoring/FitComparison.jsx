@@ -1,9 +1,9 @@
 import React, { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { IxContentHeader } from "@siemens/ix-react";
 import Section from "../Section.jsx";
 import CriterionDetail from "./CriterionDetail.jsx";
 import OpportunityDetail from "./OpportunityDetail.jsx";
+import PanelHeader from "./PanelHeader.jsx";
 import SiemensContacts from "./SiemensContacts.jsx";
 import { HeatStrip, RingGauge } from "../../../components/charts.jsx";
 import { CRITERION_QUESTIONS, PILLAR_ORDER, criterionNotes, pillarRows, scaleHelp } from "./presentation.js";
@@ -47,7 +47,7 @@ function RouteCard({ r, pillar, selected, onSelect, onKey, openId, onCell }) {
   );
 }
 
-export default function FitComparison({ res, runId = null, detailed = false }) {
+export default function FitComparison({ res, runId = null, detailed = false, inDialog = false }) {
   const [params, setParams] = useSearchParams();
   const [open, setOpen] = useState(null);                       // { pillar, id } of the opened criterion
   const rows = pillarRows(res);
@@ -76,9 +76,9 @@ export default function FitComparison({ res, runId = null, detailed = false }) {
   const index = criteria.findIndex((c) => c.id === open?.id);
   const fit = res.assessment?.siemens_fit;
   return (
-    <Section id="scoring-routes">
-      <IxContentHeader headerTitle="Siemens Fit"
-        headerSubtitle={`${fit?.score != null ? `${fit.score}/100 from ${fit.winner}${fit.partial ? " · partial: not every pillar could be assessed" : ""}. `
+    <Section id="scoring-routes" bare={inDialog}>
+      <PanelHeader title="Siemens Fit" inDialog={inDialog}
+        subtitle={`${fit?.score != null ? `${fit.score}/100 from ${fit.winner}${fit.partial ? " · partial: not every pillar could be assessed" : ""}. `
           : "Empower, Connect and Collaborate on one 0–100 scale. "}Choose a route to explore it, or a criterion score to see how it was scored.`} />
       {/* Escape closes an opened criterion from its cell too, where focus stays while reading it. */}
       <div className="route-cards" role="group" aria-label="Compare and explore partnership routes"

@@ -65,3 +65,6 @@ this**, as part of accepting the feature.
 - No agent approves its own work at any stage.
 - If a proposal cannot clear the rubric honestly, it does not get built. Do not lower the score to
   fit an idea you like.
+- Every subagent starts cold and pays for its whole context again. Keep the scout separate (it has
+  no write access on purpose) and keep backend and UI apart; a small step like `pr-author` can run
+  inline.

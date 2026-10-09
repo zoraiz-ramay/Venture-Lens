@@ -149,6 +149,16 @@ export function toHref(value) {
   return _BARE_DOMAIN.test(s) && !_FILE_EXT.test(s) ? `https://${s}` : "";
 }
 
+/* A wall-clock duration for people, not a number of milliseconds: "0.2s", "48.3s", "1m 09s".
+   null is "—" — an untimed row (logged before searches were timed) is unknown, not instant. */
+export function duration(ms) {
+  if (ms == null) return "—";
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const whole = Math.round(s);
+  return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, "0")}s`;
+}
+
 export function ExtLink({ href, children }) {
   const url = toHref(href);
   if (!url) return children || null;

@@ -14,7 +14,7 @@ import TokenUsage from "./TokenUsage.jsx";
 
 const RUN = { run_id: 41, company: "Wandelbots", created_at: "2026-10-03T12:46:21+00:00", scope: "all departments",
   requested_by: "e2e.reviewer@siemens.com", calls: 3, cached_calls: 1, failed_calls: 1, input_tokens: 21000,
-  output_tokens: 1500, reasoning_tokens: 9000, total_tokens: 31500, duration_ms: 64200 };
+  output_tokens: 1500, reasoning_tokens: 9000, total_tokens: 31500, duration_ms: 64200, wall_ms: 41300 };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -38,6 +38,8 @@ describe("TokenUsage", () => {
     expect(row).toHaveTextContent("3 (1 cached) · 1 failed");
     expect(row).toHaveTextContent("31,500");
     expect(row).toHaveTextContent("64.2s");
+    // The reviewer's wait, beside the summed model time it is shorter than (calls overlap).
+    expect(row).toHaveTextContent("41.3s");
     expect(screen.getByText(/52 older runs were saved before token logging/)).toBeInTheDocument();
   });
 
@@ -55,6 +57,29 @@ describe("TokenUsage", () => {
     expect(api.adminTokenUsageRun).toHaveBeenCalledWith(41);
     fireEvent.click(screen.getByRole("button", { name: /Hide log for Wandelbots/ }));
     expect(screen.queryByRole("table", { name: "Model calls of run 41" })).toBeNull();
+  });
+
+  it("shows the five newest runs and the rest only when asked", async () => {
+    const runs = Array.from({ length: 7 }, (_, i) => ({ ...RUN, run_id: 50 - i, company: `Startup ${i + 1}` }));
+    api.adminTokenUsage.mockResolvedValue({ runs, unlogged_runs: 0, totals: { runs: 7, ...RUN } });
+    render(<TokenUsage />);
+    await screen.findByText("Startup 1");
+    const table = screen.getByRole("table", { name: "Token usage per evaluation" });
+    const rows = () => within(table).getAllByRole("row").slice(1);
+    expect(rows()).toHaveLength(5);
+    expect(screen.queryByText("Startup 6")).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: "Show all 7 evaluations" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(rows()).toHaveLength(7);
+    expect(screen.getByRole("button", { name: "Show fewer" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("offers no toggle when every run already fits", async () => {
+    render(<TokenUsage />);
+    await screen.findByText("Wandelbots");
+    expect(screen.queryByRole("button", { name: /Show all|Show fewer/ })).toBeNull();
   });
 
   it("says when nothing has been logged, rather than showing an empty table", async () => {

@@ -19,6 +19,31 @@ const THIRD = { Empower: "actionability", Collaborate: "actionability", Connect:
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+const ID = String.raw`(?:need|tool|seller|industry|topic):[\w-]+(?:\.[\w-]+)*`;
+
+/** A pillar statement as a reader should see it.
+ *
+ * The model cites catalog entries by id inside its prose ("Predictive Maintenance (need:si-02-3)"),
+ * which means nothing on screen. An id in brackets after its own name is dropped; a bare id becomes
+ * the entry's name when the pillar cited that entry, and is dropped otherwise. */
+export function readableStatement(text, pillar) {
+  const names = {};
+  for (const c of pillar?.criteria || []) for (const e of c.catalog || []) if (e?.id) names[e.id] = e.name;
+  return String(text || "")
+    .replace(new RegExp(String.raw`\s*\((?:\s*${ID}\s*[,;]?)+\)`, "g"), "")
+    .replace(new RegExp(ID, "g"), (id) => names[id] || "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.,;:])/g, "$1")
+    .trim();
+}
+
+/** [first sentence, the rest] — the lead is what a reviewer reads before deciding to read on. */
+export function splitLead(text) {
+  const s = String(text || "").trim();
+  const at = s.search(/[.!?]\s+(?=[A-Z])/);
+  return at < 0 ? [s, ""] : [s.slice(0, at + 1), s.slice(at + 1).trim()];
+}
+
 /** One comparison row per pillar, in a fixed order that never moves as results arrive. */
 export function pillarRows(res) {
   const pillars = res?.assessment?.pillars || {};

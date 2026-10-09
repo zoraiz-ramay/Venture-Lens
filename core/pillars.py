@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from . import config
 
-VERSION = "siemens-fit-pillars-v5"
+VERSION = "siemens-fit-pillars-v6"
 ORDER = ("Empower", "Collaborate", "Connect")          # the stable tie-break, per the spec
 
 PILLARS = {
@@ -308,6 +308,31 @@ def connect_case(rows: list[dict], band_name: str, similar: dict) -> dict:
     return {"verdict": verdict, "title": title, "summary": summary, "points": points}
 
 
+def _full_id(cid, catalog_ids: dict):
+    """A shortlisted id the model wrote without its namespace ("di-02-1" for "need:di-02-1").
+
+    Gemini 3.5 Flash Lite drops the prefix often enough that Collaborate came back unassessed for
+    every department on two of three companies, though each id it cited was one it had been shown.
+    Restored only when exactly one shortlisted id carries that bare id; anything else is returned
+    as written, so an entry the model was not shown still fails validation below."""
+    if not isinstance(cid, str) or cid in catalog_ids or ":" in cid:
+        return cid
+    hits = [i for i in catalog_ids if str(i).partition(":")[2] == cid]
+    return hits[0] if len(hits) == 1 else cid
+
+
+def _with_full_ids(raw: dict, catalog_ids: dict) -> dict:
+    raw = dict(raw)
+    raw["criteria"] = {k: ({**v, "catalog_ids": [_full_id(c, catalog_ids) for c in v["catalog_ids"]]}
+                           if isinstance(v, dict) and isinstance(v.get("catalog_ids"), list) else v)
+                       for k, v in raw["criteria"].items()}
+    for key in ("neighbours", "recommended_tools"):
+        if isinstance(raw.get(key), list):
+            raw[key] = [{**i, "catalog_id": _full_id(i.get("catalog_id"), catalog_ids)} if isinstance(i, dict) else i
+                        for i in raw[key]]
+    return raw
+
+
 def validate_match(pillar: str, raw, evidence: dict, catalog_ids: dict) -> dict:
     """Turn a model's proposed pillar judgment into an assessed pillar, or raise ValueError.
 
@@ -329,6 +354,7 @@ def validate_match(pillar: str, raw, evidence: dict, catalog_ids: dict) -> dict:
     spec = PILLARS[pillar]
     if not isinstance(raw, dict) or not isinstance(raw.get("criteria"), dict):
         raise ValueError("missing criteria")
+    raw = _with_full_ids(raw, catalog_ids)
     derived = spec.get("derived", ())
     keys = [k for k, _ in spec["criteria"] if k not in derived]
     if set(raw["criteria"]) != set(keys):
@@ -434,7 +460,45 @@ def siemens_fit(pillars: dict) -> dict:
             "raw": best["total"], "partial": partial, "status": "assessed"}
 
 
+def with_relationship_bonus(pillar: dict, engagements) -> dict:
+    """Collaborate +1 for an existing Siemens relationship the evidence links to, capped at 9.
+
+    Derived in Python after the model, like Connect's Market signals, so the model can neither
+    award it nor talk itself out of it. The criteria are left exactly as the model scored them and
+    the point is recorded beside them (`model_total`, `relationship_bonus`), so a reviewer sees why
+    the total is higher. It applies to every ASSESSED Collaborate, a 0/9 included — a relationship
+    is a route in by itself — but never to an unassessed one, which has no total to raise. Only an
+    engagement with a source a reviewer can open counts (`programs.sourced_engagements`), past ones
+    included; the band is re-derived, so 6 → 7 is Strong only with Actionability at 2 or more.
+    """
+    from .programs import sourced_engagements, engagement_label
+    linked = sourced_engagements(engagements)
+    if pillar.get("pillar") != "Collaborate" or pillar.get("status") != "assessed" or not linked:
+        return pillar
+    out = {**pillar, "model_total": pillar["total"], "relationship_bonus": 1,
+           "total": min(9, pillar["total"] + 1), "siemens_relationship": linked}
+    out["band"] = band(out["total"], out["criteria"][2]["score"])
+    lead = engagement_label(linked[0])
+    out["notes"] = list(pillar.get("notes") or []) + [
+        f"+1 for an existing Siemens relationship ({lead}"
+        + (f" and {len(linked) - 1} more" if len(linked) > 1 else "") + ")."]
+    if not out.get("next_step"):
+        out["next_step"] = f"Build on the existing Siemens relationship: {lead}."
+    return out
+
+
 def recommend(pillars: dict) -> dict:
+    """The route, decided from the pillar outcomes alone, with the Siemens relationship named when
+    it is part of Collaborate's total — a reviewer must be able to see that a point was added."""
+    out = _route(pillars)
+    collaborate = pillars.get("Collaborate") or {}
+    if collaborate.get("relationship_bonus"):
+        out["reasons"] = list(out["reasons"]) + [
+            f"Collaborate {collaborate['total']}/9 includes +1 for an existing Siemens relationship."]
+    return out
+
+
+def _route(pillars: dict) -> dict:
     """The route, decided from the pillar outcomes alone — no model can override it.
 
     Strong pillar → that pillar (highest ranked). Every pillar assessed and every one a no-match

@@ -4,6 +4,9 @@ from __future__ import annotations
 import contextvars
 import functools
 import hashlib
+import os
+import threading
+import time
 
 from opentelemetry import trace
 
@@ -61,13 +64,60 @@ def reset_cache_enabled(token) -> None:
     _cache_enabled.reset(token)
 
 
+# ---------------------------------------------------------------------------- run timeline
+# Where an evaluation's wall time went. The token log records how long each model call took but
+# not when it started, and search waves not at all — so a slow run could not be read as a chain:
+# the profile branch's ~100s turned out to be mostly search waves queued behind each other, which
+# no per-call duration shows. scripts/waterfall.py draws a stored run from these events.
+# Lives here, not in llm.py, because llm imports web: both record into the same timeline.
+_timeline: contextvars.ContextVar = contextvars.ContextVar("run_timeline", default=None)
+
+
+def collect_timeline():
+    """Start a run's timeline. Returns (token, timeline) — timeline["events"] fills as it runs."""
+    timeline = {"t0": time.time(), "events": []}
+    return _timeline.set(timeline), timeline
+
+
+def stop_collecting_timeline(token) -> None:
+    _timeline.reset(token)
+
+
+def run_offset_ms(t: float):
+    """Milliseconds from the run's start to ``t``, or None outside a run."""
+    timeline = _timeline.get()
+    return None if timeline is None else int((t - timeline["t0"]) * 1000)
+
+
+def _current_stage() -> str:
+    try:
+        from . import llm   # llm imports web at module level, so this import waits until call time
+    except ImportError:     # web.py loaded on its own, outside the package (the dependency-light tests)
+        return ""
+    return llm._stage.get() or ""
+
+
+def mark(kind: str, started: float, **extra) -> None:
+    """Record one span of a run that began at ``started`` and ends now. No-op outside a run."""
+    timeline = _timeline.get()
+    if timeline is None:
+        return
+    timeline["events"].append({"kind": kind, "stage": extra.pop("stage", None) or _current_stage(),
+                               "start_ms": int((started - timeline["t0"]) * 1000),
+                               "duration_ms": int((time.time() - started) * 1000), **extra})
+
+
 def _cache_key(*parts) -> str:
     return hashlib.sha256("\x00".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
 
-def _cached(kind: str, key: str, meta: dict | None = None):
-    """Cached payload, or None. ``meta`` receives ``cached_at`` when the backend can supply it."""
-    if _cache_private.get() or not _cache_enabled.get():
+def _cached(kind: str, key: str, meta: dict | None = None, shared: bool = False):
+    """Cached payload, or None. ``meta`` receives ``cached_at`` when the backend can supply it.
+
+    ``shared`` is for entries that are not evidence about the company being evaluated (whether a
+    Siemens catalog tool exists): a refresh has nothing of the company's to renew in them, and a
+    private run has nothing of its own to protect, so neither flag applies."""
+    if not shared and (_cache_private.get() or not _cache_enabled.get()):
         return None
     if _cache_entry is not None:
         try:
@@ -88,14 +138,20 @@ def _cached(kind: str, key: str, meta: dict | None = None):
         return None
 
 
-def _store(kind: str, key: str, payload) -> None:
+def _store(kind: str, key: str, payload, shared: bool = False) -> None:
     # Written even when reads are disabled, so a forced refresh repopulates the cache.
-    if _cache_private.get() or _cache_put is None:
+    if (_cache_private.get() and not shared) or _cache_put is None:
         return
     try:
         _cache_put(kind, key, payload)
     except Exception:
         pass
+
+
+# Which engine answers ddg_search. "ddg" scrapes DuckDuckGo; "gemini" has Gemini's Google Search
+# grounding find the pages and then reads the pages itself (_grounded_search). Every caller gets
+# the same {title, href, body} hits either way, so no grounding gate changes.
+SEARCH_BACKEND = os.getenv("SEARCH_BACKEND", "ddg").strip().lower()
 
 
 @_tracer.start_as_current_span("web.search")
@@ -112,8 +168,9 @@ def ddg_search(query: str, max_results: int = 5,
 
     Results are cached (see install_cache): re-running the same query inside the TTL replays
     the same hits, which is what makes a re-evaluation fast AND reproducible."""
-    import time
     import random
+    if SEARCH_BACKEND == "gemini":
+        return _grounded_search(query, max_results, meta)
     key = _cache_key("ddg", query, max_results)
     hit = _cached("ddg", key, meta)
     span = trace.get_current_span()
@@ -150,6 +207,128 @@ def ddg_search(query: str, max_results: int = 5,
     return hits
 
 
+# Searches actually on the wire, across every wave in this process. Each wave used to cap only
+# itself at 10, which held while the waves of one evaluation ran one after another. They now
+# overlap — enrichment, profile and trend all start the moment the company is resolved — and
+# several reviewers' evaluations overlap with each other, so per-wave caps added up to bursts of
+# 40+ that the search engines answer with 429s, i.e. silently empty results. Past this limit a
+# search waits for a slot instead.
+DDG_CONCURRENCY = max(1, int(os.getenv("DDG_CONCURRENCY", "10")))
+_ddg_slots = threading.BoundedSemaphore(DDG_CONCURRENCY)
+# The grounded backend is not a scraper the engine throttles, so it does not queue behind the
+# DuckDuckGo limit; the model quota (llm's rate gate, LLM_RPM) paces its calls instead.
+SEARCH_CONCURRENCY = max(1, int(os.getenv("SEARCH_CONCURRENCY", "20")))
+_search_slots = threading.BoundedSemaphore(SEARCH_CONCURRENCY)
+
+
+# ----------------------------------------------------------------- grounded search backend
+# Gemini's Google Search grounding answers in prose and lists the pages it searched — no snippets.
+# Its answer is never used as a result: every grounding gate in the engine (_program_grounded's
+# "name and company in ONE result", _ground_customers' phrase window, the landscape's name check,
+# _verbatim) asks whether independent text supports a claim, and with the model's own answer as
+# that text the model would be checked against itself. So the answer is thrown away, each page
+# is fetched, and a result's body is read off the page.
+_GROUNDING_REDIRECT_HOST = "vertexaisearch.cloud.google.com"
+_GROUNDING_REDIRECT_PATH = "/grounding-api-redirect/"
+_GROUNDED_WINDOW = 200          # characters per passage
+_GROUNDED_PASSAGES = 2          # passages per page
+_grounded_llm = None
+_grounded_llm_lock = threading.Lock()
+
+
+def _resolve_grounding_redirect(url: str, timeout: float = 5.0) -> str:
+    """The page a grounding link points to, or ''. Only Google's own redirect is followed
+    off-site: _fetch_with_url refuses cross-site hops, and that refusal is the SSRF guarantee
+    every other fetch keeps. The target must itself be a public http(s) host."""
+    from urllib.parse import urlparse, urljoin
+    parsed = urlparse(url)
+    if parsed.hostname != _GROUNDING_REDIRECT_HOST:
+        return url
+    if parsed.scheme != "https" or not parsed.path.startswith(_GROUNDING_REDIRECT_PATH):
+        return ""
+    try:
+        import requests
+        resp = requests.get(url, timeout=timeout, allow_redirects=False, headers={"User-Agent": _UA})
+        resp.close()
+    except Exception:
+        return ""
+    target = urljoin(url, resp.headers.get("Location", "") or "")
+    t = urlparse(target)
+    if resp.status_code not in (301, 302, 303, 307, 308) or t.scheme not in ("http", "https") \
+            or not t.hostname or not _is_public_host(t.hostname):
+        return ""
+    return t.geturl()
+
+
+def _passages(text: str, query: str) -> str:
+    """The page's passages that share the most words with the query, in page order.
+
+    Snippet-sized on purpose. A whole page as one "result" would make "the program and the company
+    co-occur in a single result" true of any long page that mentions both anywhere, which is the
+    looseness every grounding gate exists to refuse."""
+    import re
+    words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
+    if not text or not words:
+        return ""
+    step = _GROUNDED_WINDOW // 2
+    scored = []
+    for start in range(0, max(1, len(text) - step), step):
+        chunk = text[start:start + _GROUNDED_WINDOW]
+        hits = len(words & set(re.findall(r"[a-z0-9]+", chunk.lower())))
+        if hits:
+            scored.append((hits, start))
+    picked: list[int] = []
+    for _, start in sorted(scored, key=lambda s: (-s[0], s[1])):
+        if all(abs(start - p) >= _GROUNDED_WINDOW for p in picked):
+            picked.append(start)
+        if len(picked) == _GROUNDED_PASSAGES:
+            break
+    return " … ".join(text[p:p + _GROUNDED_WINDOW].strip() for p in sorted(picked))
+
+
+def _grounding_client():
+    global _grounded_llm
+    with _grounded_llm_lock:
+        if _grounded_llm is None:
+            from .llm import LLMClient
+            _grounded_llm = LLMClient()
+        return _grounded_llm
+
+
+def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None) -> list[dict]:
+    """ddg_search's contract — [{title, href, body}] — answered by Gemini's Google Search.
+
+    A page that cannot be fetched is dropped rather than described from the answer: no page text,
+    no evidence. Cached like a DuckDuckGo search (own key, so switching engines never replays the
+    other's results); a search that found nothing readable is not cached, so a transient failure
+    does not stick for the whole TTL."""
+    import concurrent.futures as cf
+    key = _cache_key("ddg", "gemini", query, max_results)
+    hit = _cached("ddg", key, meta)
+    if hit is not None:
+        return hit
+    llm = _grounding_client()
+    if not llm.available or llm.provider != "gemini":
+        return []
+    answer = llm.web_answer(f"Search the web for: {query}\nList the pages you found, one per line.",
+                            max_tokens=256, thinking_budget=0)
+    pages = [p for p in (answer or {}).get("pages", []) if p.get("url")][:max_results]
+    if not pages:
+        return []
+
+    def read(page):
+        url = _resolve_grounding_redirect(page["url"])
+        text, landed = _fetch_with_url(url) if url else ("", "")
+        body = _passages(text, query)
+        return {"title": page.get("title", ""), "href": landed or url, "body": body} if body else None
+
+    with cf.ThreadPoolExecutor(max_workers=len(pages)) as ex:
+        hits = [h for h in ex.map(read, pages) if h]
+    if hits:
+        _store("ddg", key, hits)
+    return hits
+
+
 def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
               overall_timeout: float = 40.0, stats: dict | None = None) -> dict:
     """Run several DuckDuckGo searches concurrently and return {key: hits}.
@@ -179,8 +358,13 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
 
     Uses daemon threads (capped by a semaphore) so abandoned in-flight searches can never block
     process shutdown or pile up across evaluations.
+
+    The deadline runs from the moment the wave's first search starts, not from the call: time
+    spent queued behind other waves for a process-wide slot (``_ddg_slots``) is not throttling,
+    and charging it to the wave would abandon queries that never got to run. The queue wait is
+    itself bounded by one more ``overall_timeout``.
     """
-    import threading
+    called = time.time()
     out: dict = {k: [] for k in (queries or {})}
     items = [(k, q) for k, q in (queries or {}).items() if str(q).strip()]
     if isinstance(stats, dict):
@@ -194,14 +378,25 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
     finished: set = set()
     cached_at: dict = {}
     done = threading.Event()
+    started = threading.Event()
+    first_search: list = []
 
     def worker(key: str, query: str):
         meta: dict = {}
         with sem:
             try:
-                hits = ddg_search(query, max_results, meta=meta)
+                # A cached result needs no slot: replaying it must not queue behind live searches.
+                hits = (None if SEARCH_BACKEND != "ddg"
+                        else _cached("ddg", _cache_key("ddg", query, max_results), meta))
+                if hits is None:
+                    with (_ddg_slots if SEARCH_BACKEND == "ddg" else _search_slots):
+                        if not first_search:
+                            first_search.append(time.time())
+                        started.set()
+                        hits = ddg_search(query, max_results, meta=meta)
             except Exception:
                 hits = []
+            started.set()
         with lock:
             out[key] = hits
             if meta.get("cached_at"):
@@ -218,7 +413,13 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
         # only be entered once, so the copy has to be per-thread).
         threading.Thread(target=contextvars.copy_context().run,
                          args=(worker, k, q), daemon=True).start()
+    started.wait(timeout=overall_timeout)
     done.wait(timeout=overall_timeout)   # returns early once all finish, else at the deadline
+    with lock:
+        settled, replayed = set(finished), len(cached_at)
+    # queued_ms is the wait for a process-wide search slot: other waves' searches, not this one's.
+    mark("search_wave", called, queries=len(items), cached=replayed, timed_out=len(items) - len(settled),
+         queued_ms=int(((first_search[0] if first_search else called) - called) * 1000))
     if isinstance(stats, dict):
         # Snapshot under the lock: workers may still be running past the deadline.
         with lock:

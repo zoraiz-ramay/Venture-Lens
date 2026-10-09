@@ -3,13 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { IxDropdownButton, IxDropdownItem, IxMessageBar, IxToggleButton } from "@siemens/ix-react";
 import DepartmentPanel from "./DepartmentPanel.jsx";
 import DepartmentRanking, { viewAs } from "./DepartmentRanking.jsx";
-import FitComparison from "./FitComparison.jsx";
 import FitSummary from "./FitSummary.jsx";
-import MarketScorePanel from "./MarketScorePanel.jsx";
-import Supplementary from "./Supplementary.jsx";
-import TeamPanel from "./TeamPanel.jsx";
-import TotalContribution from "./TotalContribution.jsx";
-import TractionPanel from "./TractionPanel.jsx";
+import ScoreGrid from "./ScoreGrid.jsx";
 import { scoringNotices } from "./presentation.js";
 
 export const VIEW_KEY = "se.scoringView.v1";
@@ -28,9 +23,11 @@ function useView() {
   return [view, change];
 }
 
-/* Scoring & Fit, in the order a reviewer decides: what we recommend and why, what the total is
-   made of, then its components by weight — Siemens Fit (35%, as three routes), Traction (30%),
-   Team & Ecosystem (20%), Market (15%) — then supporting detail. The order here and in sections.js is the same list; the rail reads the latter. */
+/* Scoring & Fit, in the order a reviewer decides: what we recommend and why — with the total and
+   its four components — then the components themselves by weight, as five compact blocks two to a
+   row (ScoreGrid), each opening into its full panel. The order here and in sections.js is the same
+   list; the rail reads the latter. A separate "Total score" panel used to sit between them and
+   repeated the summary's own total and component tiles; its formula now lives in the summary. */
 export default function ScoringTab({ res: run, runId, onAssessment, onRefresh }) {
   const [view, setView] = useView();
   const [params, setParams] = useSearchParams();
@@ -62,12 +59,7 @@ export default function ScoringTab({ res: run, runId, onAssessment, onRefresh })
         </IxMessageBar>
       ))}
       <FitSummary res={res} runId={runId} onAssessment={onAssessment} detailed={detailed} />
-      <TotalContribution res={res} detailed={detailed} />
-      <FitComparison res={res} runId={runId} detailed={detailed} />
-      <TractionPanel res={res} runId={runId} detailed={detailed} />
-      <TeamPanel res={res} />
-      <MarketScorePanel res={res} detailed={detailed} />
-      <Supplementary res={res} />
+      <ScoreGrid res={res} runId={runId} detailed={detailed} />
     </>
   );
 }

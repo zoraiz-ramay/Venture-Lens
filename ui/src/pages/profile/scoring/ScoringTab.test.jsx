@@ -52,6 +52,7 @@ describe("ScoringTab", () => {
   it("starts in the view the reviewer last chose", () => {
     localStorage.setItem(VIEW_KEY, "detailed");
     renderTab();
+    fireEvent.click(screen.getByRole("button", { name: "Open Siemens Fit details" }));
     expect(screen.getByText("Scoring method")).toBeInTheDocument();
   });
 

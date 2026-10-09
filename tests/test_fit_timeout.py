@@ -12,6 +12,7 @@ import os
 import sys
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -57,6 +58,25 @@ def test_the_match_call_is_allowed_longer_than_it_measurably_takes():
     assert match_kw["timeout"] > MEASURED_MATCH_SECONDS
     # Bounded, so a hung provider cannot outlast gunicorn's 300s worker timeout on its own.
     assert match_kw["timeout"] * match_kw["max_attempts"] < 300
+
+
+@pytest.mark.parametrize("named, kept", [
+    ("Process Simulate | Robotics simulation | DI SW", ["Process Simulate"]),   # the whole catalogue line
+    ("Tecnomatix | Robotics simulation | DI SW", []),                           # not shortlisted
+])
+def test_a_match_named_by_its_whole_catalogue_line_is_that_tool(named, kept):
+    """Gemini 3.5 Flash Lite copied "product | category | division" into the tool field, and the
+    exact-name check dropped all four of its matches for Daedalus Defence."""
+    class _LineLLM(_RecordingLLM):
+        def complete(self, prompt, **kw):
+            if "SIEMENS PORTFOLIO" in prompt:
+                return ('{"aligned": true, "matches": [{"tool": "' + named + '", "division": "DI SW",'
+                        ' "confidence": 70, "relation": "complement", "rationale": "r"}]}')
+            return super().complete(prompt, **kw)
+
+    row = pd.Series({"company_name": "Wandelbots", "short_description": "Robot OS for factories"})
+    result = fit.match_siemens_tools(row, "", TOOLS, _LineLLM())
+    assert [m["tool"] for m in result.get("matches") or []] == kept
 
 
 def test_complete_sends_the_per_call_timeout_and_defaults_to_the_global(monkeypatch):

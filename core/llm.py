@@ -25,12 +25,12 @@ log = logging.getLogger(__name__)
 LLM_BASE_URL = (os.getenv("LLM_BASE_URL") or "https://llm.sdc.siemens.cloud/v1").strip()
 GEMINI_BASE_URL = (os.getenv("GEMINI_BASE_URL")
                    or "https://generativelanguage.googleapis.com/v1beta/openai/").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 # A ceiling, not a charge: the model stops when its answer is done. At 1024 the gateway's gpt-5.4
 # stopped mid-JSON (finish_reason=length) on the profile extraction — founders, team, advisors,
 # programs and customers, each with a source URL — and the profile fell back to keyword-only.
 LLM_MIN_BUDGET = int(os.getenv("LLM_MIN_BUDGET", "4096"))
-# A reply that still hits its ceiling is re-asked once at a larger one, up to this.
+# A reply that still hits its ceiling is re-asked at a larger one, up to this.
 LLM_MAX_BUDGET = int(os.getenv("LLM_MAX_BUDGET", "16384"))
 # Gemini 2.5 is a THINKING model: its reasoning tokens are billed against
 # max_completion_tokens, before a single character of the answer is emitted. A budget sized
@@ -41,12 +41,26 @@ LLM_MAX_BUDGET = int(os.getenv("LLM_MAX_BUDGET", "16384"))
 # no founding year. Reasoning models get this headroom added on top of the requested budget.
 LLM_THINKING_HEADROOM = int(os.getenv("LLM_THINKING_HEADROOM", "6144"))
 _THINKING_PROVIDERS = ("gemini",)
-# Reasoning effort for gateway (gpt-5.x) calls that do not choose their own. gpt-5.4 reasons not at
-# all unless asked, so a judgement call (verify, route, trend, fit) answered on its first instinct.
-# Calls that pass reasoning="none" — the transcription prompts — keep it off. "none" disables.
-LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "high").strip().lower()
-# A reasoning call thinks before it writes; the 30s hang timeout cut those off and retried them.
-LLM_REASONING_TIMEOUT = float(os.getenv("LLM_REASONING_TIMEOUT", "120"))
+# The gateway's gpt-5/gpt-6 models also bill reasoning against max_completion_tokens, so they get
+# the headroom and `reasoning_effort` too — decided by model name, so the same code is right on the
+# gateway in production and on Gemini locally. A gateway that rejects the parameter costs one
+# retry, then complete() drops it (_unsupported_param).
+_REASONING_MODEL = re.compile(r"^(gpt-[56]|o\d|(google/)?gemini-)", re.I)
+_GPT_REASONING = re.compile(r"^(gpt-[56]|o\d)", re.I)
+# Gemini 3 and later cannot switch thinking off: reasoning_effort "none" and a thinking budget of 0
+# are both rejected with a bare 400 that names no parameter, so _unsupported_param cannot drop them
+# and every evidence-to-JSON call failed outright. "minimal" is what "off" means on those models.
+_THINKING_ALWAYS_ON = re.compile(r"(^|/)gemini-([3-9]|\d{2})", re.I)
+# Effort for calls that do not ask for one (none|low|medium|high); empty keeps the model default.
+LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
+
+
+def _reasons(provider: str, model: str) -> bool:
+    return provider in _THINKING_PROVIDERS or (provider == "openai" and bool(_REASONING_MODEL.match(model or "")))
+
+
+def _thinking_floor(model: str) -> bool:
+    return bool(_THINKING_ALWAYS_ON.search(model or ""))
 # Deterministic by default. Unset, Gemini samples at 1.0 and four identical extraction calls
 # returned three different JSON spellings, so re-evaluating a startup never reproduced exactly.
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
@@ -133,7 +147,7 @@ def _num(value) -> int:
 
 def _record_call(*, kind: str, model: str, provider: str, started: float, cached: bool = False,
                  ok: bool = True, reason: str = "", attempts: int = 1, input_tokens=0, output_tokens=0,
-                 reasoning_tokens=0, total_tokens=0) -> None:
+                 reasoning_tokens=0, total_tokens=0, hedged: bool = False) -> None:
     calls = _usage.get()
     if calls is None:
         return
@@ -145,7 +159,59 @@ def _record_call(*, kind: str, model: str, provider: str, started: float, cached
                   "cached": cached, "ok": ok, "reason": reason, "attempts": attempts,
                   "input_tokens": inp, "output_tokens": out, "reasoning_tokens": think,
                   "total_tokens": max(total, inp + out + think),
-                  "duration_ms": int((time.time() - started) * 1000)})
+                  "duration_ms": int((time.time() - started) * 1000),
+                  # When it started, as an offset into the run: durations alone cannot show which
+                  # calls ran one after another, and that chain is what a slow run is made of.
+                  **({"start_ms": offset} if (offset := _web.run_offset_ms(started)) is not None else {}),
+                  **({"hedged": True} if hedged else {})})
+
+
+def _usage_counts(resp) -> dict:
+    usage = getattr(resp, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None)
+    return {"input_tokens": getattr(usage, "prompt_tokens", 0),
+            "output_tokens": getattr(usage, "completion_tokens", 0),
+            "reasoning_tokens": getattr(details, "reasoning_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0)}
+
+
+# A thinking call's time varies a lot from one request to the next — fit's match call measured
+# 25s typically and over 90s under load — and a slow request does not get faster by waiting on
+# it. Retrying after the timeout threw away everything it had waited for; a duplicate sent at
+# `hedge_after` instead races the original, and the run gets whichever answers first. Costs one
+# extra request on the slow tail only, and the reply is the same contract as a retry's:
+# temperature 0, the same request, and the cache keeps whichever won.
+def _hedged(send, hedge_after: float, record_loser) -> tuple:
+    """(response, hedged?) — ``send()`` once, again after ``hedge_after``s; the first success wins.
+
+    Raises the last error when every request sent failed, exactly like a single ``send()``. A
+    request that loses the race is not cancelled (the client cannot), so ``record_loser(response)``
+    logs its tokens when it lands: it was billed, and the token log is what a run cost."""
+    import concurrent.futures as cf
+    # Not a `with` block: leaving one waits for the loser, which is the wait this exists to skip.
+    pool = cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="llm-hedge")
+    try:
+        first = pool.submit(contextvars.copy_context().run, send)
+        try:
+            return first.result(timeout=hedge_after), False
+        except cf.TimeoutError:
+            if first.done():       # the request itself timed out: that is the retry path's to handle
+                raise
+        second = pool.submit(contextvars.copy_context().run, send)
+        error = None
+        for fut in cf.as_completed((first, second)):
+            try:
+                resp = fut.result()
+            except Exception as e:                       # noqa: BLE001 — the other may still answer
+                error = e
+                continue
+            other = second if fut is first else first
+            ctx = contextvars.copy_context()
+            other.add_done_callback(lambda f: f.exception() is None and ctx.run(record_loser, f.result()))
+            return resp, fut is second
+        raise error
+    finally:
+        pool.shutdown(wait=False)
 
 
 def summarize_usage(calls: list) -> dict:
@@ -197,7 +263,24 @@ def _rate_limit_wait(exc: Exception, attempt: int) -> float | None:
     return min(RATE_LIMIT_MAX_WAIT, wait) + random.uniform(0, 1.0)
 
 
+# A spending cap or a daily/monthly quota is a 429 too, but no wait inside a run ends it: retrying
+# only spends the run's time (three attempts were ~13s per call, on every call of a run) before
+# failing the same way. Per-minute limits do clear, and are waited out.
+_QUOTA_EXHAUSTED = re.compile(r"spending cap|per[ _-]?day|perday|daily|monthly|billing|quota exceeded for quota metric.*day",
+                              re.I)
+# How many attempts a per-minute rate limit gets: enough for the waits (4, 8, 16, 32 s, or the
+# provider's own hint) to span a whole quota window, so a burst queues instead of failing a part.
+RATE_LIMIT_ATTEMPTS = int(os.getenv("RATE_LIMIT_ATTEMPTS", "5"))
+
+
+def _quota_exhausted(exc: Exception) -> bool:
+    msg = str(exc) + " " + json.dumps(getattr(exc, "body", None), default=str)
+    return _rate_limit_wait(exc, 1) is not None and bool(_QUOTA_EXHAUSTED.search(msg))
+
+
 def _failure_reason(exc: Exception) -> str:
+    if _quota_exhausted(exc):
+        return "quota_exhausted"
     if _rate_limit_wait(exc, 1) is not None:
         return "rate_limited"
     return "timeout" if "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower() else "error"
@@ -268,8 +351,11 @@ class LLMClient:
     def complete(self, prompt: str, system: str = "", max_tokens: int = 1200,
                  model: str = "", temperature: float = LLM_TEMPERATURE,
                  reasoning: str = "", max_attempts: int | None = None,
-                 timeout: float | None = None) -> str:
+                 timeout: float | None = None, hedge_after: float | None = None) -> str:
         """Run one completion; '' on failure.
+
+        ``hedge_after`` sends one identical duplicate if the first request has not answered after
+        that many seconds, and takes whichever answers first (see ``_hedged``).
 
         ``timeout`` overrides LLM_TIMEOUT for a call measured to need longer. The default is sized
         for a hung request, not a slow one: a call that reliably takes longer than it is killed
@@ -280,46 +366,39 @@ class LLMClient:
         and four identical extraction calls returned three different JSON spellings, which is
         why re-evaluating the same startup kept producing subtly different profiles.
 
-        ``reasoning`` maps to OpenAI's ``reasoning_effort`` and is sent ONLY to providers that
-        actually reason (``_THINKING_PROVIDERS``). On the Siemens gateway a call that leaves it
-        empty runs at ``LLM_REASONING_EFFORT``, and "none" sends nothing (gpt-5.4 then does
-        not reason). Pass
+        ``reasoning`` maps to OpenAI's ``reasoning_effort`` and is sent ONLY to models that
+        actually reason (Gemini, and gpt-5/gpt-6 on the Siemens gateway). Pass
         "none" for calls that transcribe supplied evidence into JSON — measured on the profile
         extraction prompt, that is ~5x faster AND more accurate than thinking (it recovered a
         founding year the thinking run missed), because the work is reading, not reasoning.
         """
         if not self.available:
             return ""
+        use_model = (model or self.model)
+        thinks = _reasons(self.provider, use_model)
         budget = max(max_tokens, LLM_MIN_BUDGET)
         # Applied even when reasoning is off. max_completion_tokens is a ceiling, not a charge,
         # so a generous one costs nothing — whereas trimming it to the "no thought tokens
         # needed" figure truncated the largest profile extractions mid-JSON and dropped them
         # back to keyword-only, because the per-call max_tokens values were never sized for a
         # full founders+advisors+programs+customers reply on their own.
-        if self.provider in _THINKING_PROVIDERS:
+        if thinks:
             budget += LLM_THINKING_HEADROOM
-        effort = self._gateway_effort(reasoning)
-        if effort:
-            # Reasoning tokens are billed against the same ceiling as the answer.
-            budget += LLM_THINKING_HEADROOM
-        use_model = (model or self.model)
         msgs = [
             {"role": "system",
              "content": system or "You are a precise startup-evaluation analyst for Siemens."},
             {"role": "user", "content": prompt},
         ]
         extra: dict = {}
-        # gpt-5.x rejects any temperature but 1 while reasoning, so a reasoning call samples. The
-        # cache below still makes a re-run replay the stored answer.
-        if temperature is not None and not effort:
+        effort = (reasoning or LLM_REASONING_EFFORT) if thinks else ""
+        if effort == "none" and _thinking_floor(use_model):
+            effort = "minimal"
+        # The gateway's gpt-5.x rejects any temperature but the default unless reasoning is off.
+        if temperature is not None and not (self.provider == "openai" and _GPT_REASONING.match(use_model or "")
+                                            and effort != "none"):
             extra["temperature"] = temperature
-        if reasoning and self.provider in _THINKING_PROVIDERS:
-            extra["reasoning_effort"] = reasoning
-        elif effort:
-            extra["reasoning_effort"] = effort
-        call_timeout = timeout or LLM_TIMEOUT
         if effort:
-            call_timeout = max(call_timeout, LLM_REASONING_TIMEOUT)
+            extra["reasoning_effort"] = effort
         # Replies are cached on the full request. Sound only because temperature is 0: at the
         # old default of 1.0 the same prompt gave a different answer every time, so a cache
         # would have frozen one arbitrary sample. A changed prompt changes the key, so prompt
@@ -338,36 +417,47 @@ class LLMClient:
                 return cached
         attempts = MAX_RETRIES if max_attempts is None else max(1, int(max_attempts))
         reason = "error"
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             try:
-                if _rate_gate is not None:
-                    _rate_gate()
+                sent = dict(extra)
                 ceiling = budget
-                resp = self._client.chat.completions.create(
-                    model=use_model, messages=msgs, max_completion_tokens=ceiling,
-                    timeout=call_timeout, **extra)
+
+                def send():
+                    if _rate_gate is not None:
+                        _rate_gate()
+                    return self._client.chat.completions.create(
+                        model=use_model,
+                        messages=msgs,
+                        max_completion_tokens=ceiling,
+                        timeout=timeout or LLM_TIMEOUT,
+                        **sent,
+                    )
+                hedged = False
+                if hedge_after and hedge_after > 0:
+                    resp, hedged = _hedged(send, hedge_after, lambda r: _record_call(
+                        kind="completion", model=use_model, provider=self.provider, started=started,
+                        reason="hedge_loser", hedged=True, **_usage_counts(r)))
+                else:
+                    resp = send()
                 # A reply cut off at its ceiling is half a JSON object: parse_json rejects it and
                 # the caller drops to its offline fallback, with no error anywhere to show for it.
                 # Ask again with room to finish, and never cache the cut-off copy.
                 while _truncated(resp) and ceiling < LLM_MAX_BUDGET:
                     ceiling = min(ceiling * 4, LLM_MAX_BUDGET)
-                    log.warning("LLM reply hit its token ceiling; retrying at %d", ceiling)
-                    resp = self._client.chat.completions.create(
-                        model=use_model, messages=msgs, max_completion_tokens=ceiling,
-                        timeout=max(call_timeout, LLM_REASONING_TIMEOUT), **extra)
+                    log.warning("LLM reply hit its token ceiling (%s, stage %s); retrying at %d",
+                                use_model, _stage.get() or "input", ceiling)
+                    resp = send()
                 self.last_error = ""
                 text = resp.choices[0].message.content or ""
                 if _truncated(resp):
-                    log.warning("LLM reply still truncated at %d tokens (stage %s)", ceiling, _stage.get())
+                    log.warning("LLM reply still truncated at %d tokens (%s, stage %s)",
+                                ceiling, use_model, _stage.get() or "input")
                 elif LLM_CACHE and text:
                     _web._store("llm", ckey, text)
-                usage = getattr(resp, "usage", None)
-                details = getattr(usage, "completion_tokens_details", None)
                 _record_call(kind="completion", model=use_model, provider=self.provider, started=started,
-                             attempts=attempt, input_tokens=getattr(usage, "prompt_tokens", 0),
-                             output_tokens=getattr(usage, "completion_tokens", 0),
-                             reasoning_tokens=getattr(details, "reasoning_tokens", 0),
-                             total_tokens=getattr(usage, "total_tokens", 0))
+                             attempts=attempt, hedged=hedged, **_usage_counts(resp))
                 return text
             except Exception as e:
                 # A gateway that rejects one of the tuning parameters fails every call with a
@@ -381,7 +471,11 @@ class LLMClient:
                 self.last_error = str(e)
                 reason = _failure_reason(e)
                 wait = _rate_limit_wait(e, attempt)
+                if reason == "rate_limited" and max_attempts is None:
+                    attempts = max(attempts, RATE_LIMIT_ATTEMPTS)
                 log.warning("LLM attempt %d/%d failed (%s): %s", attempt, attempts, reason, e)
+                if reason == "quota_exhausted":
+                    break
                 if attempt < attempts:
                     time.sleep(wait if wait is not None else RETRY_BACKOFF * attempt)
         failures = _failures.get()
@@ -390,15 +484,8 @@ class LLMClient:
         # A failed call is billed for nothing the run used, but its time and attempts belong in
         # the log: three 30s timeouts are where a slow run went.
         _record_call(kind="completion", model=use_model, provider=self.provider, started=started,
-                     ok=False, reason=reason, attempts=attempts)
+                     ok=False, reason=reason, attempts=attempt)
         return ""
-
-    def _gateway_effort(self, reasoning: str) -> str:
-        """The reasoning_effort to send the OpenAI-compatible gateway; '' sends none."""
-        if self.provider != "openai":
-            return ""
-        effort = (reasoning or LLM_REASONING_EFFORT).strip().lower()
-        return "" if effort in ("", "none") else effort
 
     def web_answer(self, prompt: str, system: str = "", max_tokens: int = 1200,
                    thinking_budget: Optional[int] = None) -> Optional[dict]:
@@ -426,7 +513,12 @@ class LLMClient:
         return out
 
     def embedding_model(self) -> str:
-        """The embedding model served by the selected endpoint."""
+        """The embedding model served by the selected endpoint, or '' when none is known.
+
+        Gemini direct serves gemini-embedding-001; the Siemens gateway serves Gemini's embedding
+        under its own name. The two produce different vectors, so core/tool_search.py keeps one
+        index file per model and each environment loads its own.
+        """
         configured = os.getenv("EMBEDDING_MODEL", "").strip()
         if configured:
             return configured
@@ -435,6 +527,8 @@ class LLMClient:
         return "gemini-embedding-001" if self.provider == "gemini" else ""
 
     def _gateway_embeddings(self, texts: list[str], model: str, dims: int) -> list:
+        # The gateway does not serve Gemini embeddings on the OpenAI-compatible /embeddings route,
+        # only on Gemini's native embedContent, one text per request.
         from concurrent.futures import ThreadPoolExecutor
         import requests
         model_path = f"models/{model.removeprefix('google/')}"
@@ -503,7 +597,7 @@ class LLMClient:
                 break
             except Exception as e:                              # noqa: BLE001 — any failure means "no vectors"
                 wait = _rate_limit_wait(e, attempt)
-                if wait is not None and attempt < EMBED_RETRIES:
+                if wait is not None and attempt < EMBED_RETRIES and not _quota_exhausted(e):
                     log.warning("Embedding rate-limited (%s), attempt %d/%d; retrying in %.0fs",
                                 model, attempt, EMBED_RETRIES, wait)
                     time.sleep(wait)
@@ -614,7 +708,9 @@ def _gemini_grounded(client: "LLMClient", prompt: str, system: str, max_tokens: 
     if system:
         body["systemInstruction"] = {"parts": [{"text": system}]}
     if thinking_budget is not None:
-        body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": int(thinking_budget)}
+        body["generationConfig"]["thinkingConfig"] = (
+            {"thinkingLevel": "minimal"} if int(thinking_budget) == 0 and _thinking_floor(client.model)
+            else {"thinkingBudget": int(thinking_budget)})
     resp = requests.post(f"{base}/models/{client.model}:generateContent", headers={"x-goog-api-key": client.key},
                          json=body, timeout=WEB_SEARCH_TIMEOUT)
     resp.raise_for_status()
@@ -629,21 +725,29 @@ def _gemini_grounded(client: "LLMClient", prompt: str, system: str, max_tokens: 
     meta = cand.get("groundingMetadata") or {}
     chunks = [c for c in meta.get("groundingChunks") or [] if isinstance(c, dict)]
     text, sources = _cite(text, meta.get("groundingSupports") or [], chunks)
+    # Every page the search returned, cited or not, in Google's order: web.py's search backend
+    # reads these pages itself and never the answer (see web._grounded_search).
+    pages = [{"title": str(w.get("title", "")), "url": str(w.get("uri", ""))}
+             for w in ((c.get("web") or {}) for c in chunks) if w.get("uri")]
     return {"text": _drop_repeat(text).strip(), "sources": [s for s in sources if s["url"]],
-            "queries": [q for q in meta.get("webSearchQueries") or [] if isinstance(q, str)]}
+            "queries": [q for q in meta.get("webSearchQueries") or [] if isinstance(q, str)],
+            "pages": pages}
 
 
 def _openai_web_search(client: "LLMClient", prompt: str, system: str, max_tokens: int) -> Optional[dict]:
     ceiling = max(max_tokens, LLM_MIN_BUDGET)
+    headroom = LLM_THINKING_HEADROOM if _reasons(client.provider, client.model) else 0
     resp = client._client.responses.create(
         model=client.model, tools=[{"type": "web_search"}], instructions=system or None,
-        input=prompt, max_output_tokens=ceiling, timeout=WEB_SEARCH_TIMEOUT)  # secret-scan:allow
+        input=prompt, timeout=WEB_SEARCH_TIMEOUT,
+        max_output_tokens=ceiling + headroom)
     # Search results and the answer share the ceiling; one that ran out answers only in part.
     if getattr(resp, "status", "") == "incomplete" and ceiling < LLM_MAX_BUDGET:
         log.warning("web-search answer incomplete at %d tokens; retrying", ceiling)
         resp = client._client.responses.create(
             model=client.model, tools=[{"type": "web_search"}], instructions=system or None,
-            input=prompt, max_output_tokens=LLM_MAX_BUDGET, timeout=WEB_SEARCH_TIMEOUT * 2)  # secret-scan:allow
+            input=prompt, timeout=WEB_SEARCH_TIMEOUT * 2,
+            max_output_tokens=LLM_MAX_BUDGET + headroom)
     usage = getattr(resp, "usage", None)
     _tls.web_usage = {"input_tokens": getattr(usage, "input_tokens", 0),
                          "output_tokens": getattr(usage, "output_tokens", 0),

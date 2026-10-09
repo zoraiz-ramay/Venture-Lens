@@ -100,6 +100,21 @@ def test_an_evaluation_carries_its_token_log_and_saving_it_shows_it_to_admins(of
     assert [c["stage"] for c in log] == [c["stage"] for c in usage["log"]]
 
 
+def test_an_evaluation_carries_a_timeline_of_its_branches_and_calls(offline, monkeypatch):
+    """Durations alone cannot show which calls ran one after another; start offsets and branch
+    spans can, and that chain is where a slow run's time went (scripts/waterfall.py)."""
+    df, tools = offline
+    monkeypatch.setattr(llm_mod, "LLM_CACHE", False)
+    monkeypatch.setattr(pipeline, "LLMClient", lambda *a, **kw: _client([("", _Usage(500, 50, 550))]))
+    result = _run(df, tools)
+    usage = result["token_usage"]
+    sections = {e["stage"] for e in usage["timeline"] if e["kind"] == "section"}
+    assert {"verification", "summary", "fit", "profile", "trend"} <= sections
+    assert all(isinstance(c["start_ms"], int) and c["start_ms"] >= 0 for c in usage["log"])
+    run_id = store.save_run({**result, "company": f"Timeline-{uuid.uuid4().hex[:6]}"})
+    assert all(isinstance(c["start_ms"], int) for c in store.token_usage_log(run_id))
+
+
 def test_an_offline_evaluation_has_no_token_log(offline):
     df, tools = offline
     assert "token_usage" not in _run(df, tools)

@@ -759,41 +759,80 @@ ix-menu:not(.expanded) .acct-name { display: none; }
   .section-rail-group.open > .section-rail-group-head { justify-content: flex-start; }
 }
 
-/* Problem-led scouting workspace; all colours follow the active Siemens iX theme. */
-.problem-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 24px; align-items: start; }
-.problem-brief, .solution-card { width: 100%; height: auto; }
-.problem-brief ix-card-content, .solution-card ix-card-content { display: block; padding: 24px; }
-.problem-eyebrow { color: var(--accent); font-size: 12px; letter-spacing: .08em; font-weight: 600; }
-.problem-brief h2 { margin: 12px 0; font-size: 25px; line-height: 1.3; }
-.problem-brief p { line-height: 1.6; margin-bottom: 24px; max-width: 65ch; }
-.problem-brief ix-textarea { display: block; width: 100%; }
-.problem-submit, .solution-actions, .problem-results-head { display: flex; gap: 12px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
-.problem-submit { margin-top: 18px; font-size: 12px; }
-.problem-examples { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 24px; font-size: 12px; }
-.problem-examples > div { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.problem-sources { margin: 0; }
-.problem-sources ol { padding-left: 24px; margin: 20px 0; }
-.problem-sources li { padding-left: 8px; margin-bottom: 24px; }
-.problem-sources li::marker { color: var(--accent); font-weight: 600; }
-.problem-sources li > span, .problem-sources li > small { display: block; font-size: 12px; line-height: 1.6; margin: 8px 0; color: var(--text-2); }
-.problem-sources > p { font-size: 12px; line-height: 1.6; }
-.problem-progress { padding: 24px; margin-top: 20px; background: var(--surface); border: 1px solid var(--border); }
-.problem-results { margin-top: 32px; }
-.problem-results-head h2 { margin: 0; }
-.problem-source-status { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 24px; }
-.solution-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.solution-heading { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
-.solution-heading h3 { margin: 0; flex: 1; }
-.solution-card p { line-height: 1.6; overflow-wrap: anywhere; }
-.solution-reason { border-left: 2px solid var(--accent); padding-left: 12px; margin: 20px 0; font-size: 13px; }
-.solution-reason p { margin: 6px 0 0; }
-.solution-actions { margin-top: 20px; font-size: 13px; }
-.problem-workspace-history { margin-top: 32px; border-top: 1px solid var(--border); padding-top: 20px; }
-.problem-workspace-history summary { cursor: pointer; font-weight: 600; color: var(--text-2); margin-bottom: 20px; }
-@media (max-width: 1000px) { .problem-layout { grid-template-columns: minmax(0, 1fr); } }
+/* Solve a Problem (pages/solve/). One reading column: the brief, how it was read, the two result
+   groups, then comparison and follow-ups. All colours come from the active iX theme's tokens. */
+.problem-submit { display: flex; gap: 12px; justify-content: space-between; align-items: center; flex-wrap: wrap; margin-top: 18px; font-size: 12px; }
+.solve-page { max-width: 920px; padding-bottom: 96px; }
+.solve-page .page-head { justify-content: space-between; }
+.solve-page h2 { font-size: var(--fs-section); margin: 0; }
+.solve-dev-notice { display: block; margin-bottom: 16px; }
+.solve-start, .solve-read, .solve-group, .solve-compare, .solve-ask {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 24px; margin-bottom: 16px; }
+.solve-start h2 { font-size: var(--fs-title); line-height: 1.3; margin-bottom: 8px; }
+.solve-start > p { line-height: 1.6; max-width: 65ch; margin: 0 0 20px; }
+.solve-start ix-textarea { display: block; width: 100%; }
+.solve-start-submit { display: flex; gap: 12px; justify-content: flex-end; align-items: center; margin-top: 12px; font-size: var(--fs-meta); }
+.solve-examples { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 20px; font-size: var(--fs-meta); }
+.solve-start .connection-compact { justify-content: flex-start; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.solve-read-head { display: flex; gap: 8px; align-items: center; }
+.solve-ai { color: var(--ai); display: inline-flex; }
+.solve-problem { margin: 12px 0 0; padding-left: 12px; border-left: 2px solid var(--border-2); color: var(--text-2);
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.solve-restatement { margin: 12px 0 0; line-height: 1.6; }
+.solve-facets { margin-top: 16px; }
+.solve-facets > p { margin: 0 0 8px; font-size: var(--fs-meta); }
+.solve-facet { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.solve-facet-label { min-width: 110px; font-size: var(--fs-meta); font-weight: 600; color: var(--text-2); }
+.solve-refined { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-top: 16px; font-size: var(--fs-meta); }
+.solve-failed { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-bottom: 16px; }
+.solve-group-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.solve-group-head > .muted { font-size: var(--fs-meta); }
+.solve-empty { margin: 8px 0 0; }
+.solve-list { list-style: none; margin: 0; padding: 0; }
+.solve-row { display: flex; gap: 12px; align-items: flex-start; padding: 14px 0; border-top: 1px solid var(--border); }
+.solve-row:first-child { border-top: none; }
+.solve-pick { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+.solve-row-main { flex: 1; min-width: 0; }
+.solve-row-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.solve-name { font-weight: 600; font-size: 14px; cursor: pointer; overflow-wrap: anywhere; }
+.solve-band { font-size: var(--fs-meta); font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border-2); color: var(--text-2); }
+.solve-band.strong { color: var(--success); border-color: var(--success); background: var(--success-soft); }
+.solve-band.good { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.solve-band.pending { font-weight: 400; border-style: dashed; color: var(--text-3); }
+.solve-reason { margin: 6px 0 0; line-height: 1.5; }
+.solve-quote { margin: 8px 0 0; padding-left: 10px; border-left: 2px solid var(--accent); font-size: var(--fs-table); }
+.solve-quote p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.solve-quote footer { font-size: var(--fs-meta); margin-top: 2px; }
+.solve-details { margin-top: 8px; font-size: var(--fs-table); }
+.solve-details summary { cursor: pointer; color: var(--accent); font-size: var(--fs-meta); }
+.solve-details p { line-height: 1.6; overflow-wrap: anywhere; }
+.solve-source { font-size: var(--fs-meta); }
+.solve-facts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin: 8px 0; }
+.solve-facts div { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 12px; }
+.solve-facts dt { color: var(--text-2); }
+.solve-facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
+.solve-row-actions { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+.solve-compare-scroll { overflow-x: auto; max-width: 100%; }
+.solve-compare-table { border-collapse: collapse; font-size: var(--fs-table); min-width: 560px; width: 100%; }
+.solve-compare-table th, .solve-compare-table td { text-align: left; vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.solve-compare-table thead th { border-top: none; font-size: 14px; min-width: 160px; }
+.solve-compare-table tbody th { color: var(--text-2); font-weight: 600; width: 150px; min-width: 120px; }
+.solve-compare-table small { display: block; margin-top: 4px; font-size: var(--fs-meta); }
+.solve-compare-table td p { margin: 6px 0 0; }
+.solve-cell-empty { color: var(--text-3); }
+.solve-quote-inline { font-style: italic; }
+.solve-ask-thread { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.solve-ask-form { display: flex; gap: 8px; margin-top: 16px; }
+.solve-ask-form .input { flex: 1; min-width: 0; }
+.solve-selection { position: sticky; bottom: 16px; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 10px 16px; background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius);
+  box-shadow: 0 4px 16px var(--chart-grid); }
+.solve-selection > span { margin-right: auto; }
 @media (max-width: 600px) {
-  .solution-grid { grid-template-columns: minmax(0, 1fr); }
-  .problem-brief ix-card-content, .solution-card ix-card-content { padding: 16px; }
+  .solve-start, .solve-read, .solve-group, .solve-compare, .solve-ask { padding: 16px; }
+  .solve-facts div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .solve-facet-label { min-width: 100%; }
   .problem-submit { align-items: flex-start; flex-direction: column; }
 }
 
@@ -913,8 +952,16 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 /* Hero and KPI tiles */
 .fit-hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px 32px; align-items: center; }
 .fit-hero-route { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
-.fit-opportunity { font-size: 20px; line-height: 1.4; font-weight: 700; margin: 10px 0 8px; text-wrap: balance; max-width: 70ch; }
+.fit-hero-strength { font-weight: 600; color: var(--text-1); font-size: var(--fs-body); }
+.fit-opportunity { font-size: 18px; line-height: 1.45; font-weight: 600; margin: 12px 0 6px; text-wrap: pretty; max-width: 70ch; }
+.fit-opportunity-more { color: var(--text-2); font-size: var(--fs-body); line-height: 1.55; margin: 0 0 8px; max-width: 75ch; }
 .next-step-box { display: flex; gap: 12px; align-items: flex-start; background: var(--surface-2); border-radius: var(--radius); padding: 12px 14px; color: var(--accent); margin-top: 8px; max-width: 80ch; }
+.route-chips { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.route-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px; background: var(--surface-2); color: var(--text-2); font-size: var(--fs-table); }
+.route-chip strong { color: var(--text-1); font-weight: 600; }
+.route-chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); flex: none; }
+.route-chip[data-band="strong"] .route-chip-dot { background: var(--success); }
+.route-chip[data-band="review"] .route-chip-dot { background: var(--warning); }
 .next-step-box > div { color: var(--text-1); }
 .fit-hero-rings { display: flex; gap: 24px; }
 .fit-hero-rings figure { margin: 0; text-align: center; }
@@ -1285,3 +1332,34 @@ details.blind > summary { cursor: pointer; padding: 10px 14px; font-weight: 600;
 .sig-empty.failed { color: var(--warning); font-style: normal; }
 .fd-stored { font-size: 11.5px; color: var(--text-3); }
 .tool-verified { align-self: flex-start; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--success); }
+
+/* Scoring & Fit as five blocks, two to a row (ScoreGrid); selecting one opens its full panel in a
+   modal, so the grid never moves. One column below 1000px, like .grid2. */
+.score-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.score-cell { min-width: 0; }
+/* No flex sizing here: `flex: 1` sets a zero basis, which silently overrode the fixed height below
+   and let each row size to its own content. */
+.score-cell > .profile-section { margin-bottom: 0; }
+@media (max-width: 1000px) { .score-grid { grid-template-columns: minmax(0, 1fr); } }
+/* Every box the same height, whichever row it is in: sized to the tallest face (the team radar). A
+   longer SFS verdict scrolls inside its box rather than stretching its row. */
+.score-card { display: flex; flex-direction: column; gap: 10px; height: 270px; box-sizing: border-box; position: relative;
+  transition: background-color .15s, border-color .15s; }
+.score-card.openable:hover { background: var(--surface-2); border-color: var(--border-2); }
+/* The box's one control, stretched over all of it: the whole box opens the popup. */
+.score-card-open { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
+  background: transparent; cursor: pointer; border-radius: var(--radius); }
+.score-card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.score-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.score-card-head h3 { margin: 0; }
+.score-card-body { flex: 1; min-height: 0; overflow: auto; }
+/* A chart sits in the middle of its box, whatever the box's spare height; text starts at the top. */
+.score-card-body:has(> .score-card-chart) { display: flex; flex-direction: column; justify-content: center; }
+.score-card-chart { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; }
+.score-card-chart.center { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+.score-card-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.score-card-bars li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(60px, 1.2fr) auto; gap: 10px;
+  align-items: center; font-size: 12.5px; }
+/* A panel inside its popup: no second frame inside the dialog's own. */
+.dialog-panel { min-width: 0; }
+.dialog-sub { margin: 0 0 12px; }

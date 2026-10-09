@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProvider } from "../state.jsx";
@@ -111,6 +111,9 @@ describe("pillar panels on a legacy run", () => {
     RUN = {...BASE, routing:{pillar:"Empower", secondary:[], pillar_assessments:ASSESSMENTS}};
     await renderScoringTab();
     await screen.findByRole("region", {name:"Scoring & Fit"});
+    expect(screen.getByText(/Legacy run: routes are assessed for a department/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", {name:"Open Siemens Fit details"}));
+    await screen.findByRole("group", {name:"Compare and explore partnership routes"});
     const detail = document.getElementById("fit-opportunity");
     expect(within(detail).getByText(/Legacy run: routes are assessed for a department/)).toBeInTheDocument();
     expect(detail.querySelector(".opp-flow")).toBeNull();
@@ -130,7 +133,7 @@ describe("SFS panel", () => {
       sfs_lines: [{ line: "Vendor / sales finance", fit: "strong", rationale: "Sells physical equipment.", evidence_url: "", missing: [] }],
       sfs_blockers: [] } };
     await renderScoringTab();
-    const panel = (await screen.findByRole("heading", { name: /Siemens Financial Services/i })).closest(".profile-section");
+    const panel = await screen.findByRole("region", { name: "SFS financing" });
     expect(panel.id).toBe("scoring-supplementary");
     expect(within(panel).getByText("Sells physical equipment.")).toBeInTheDocument();
     expect(screen.queryByText(/Model score diagnostics|model's view of each dimension/i)).toBeNull();
@@ -149,8 +152,7 @@ describe("SFS panel", () => {
       },
     };
     await renderScoringTab();
-    const panel = (await screen.findByRole("heading", { name: /Siemens Financial Services/i }))
-      .closest(".profile-section");
+    const panel = await screen.findByRole("region", { name: "SFS financing" });
     expect(within(panel).getAllByText(/Vendor \/ sales finance/).length).toBeGreaterThan(0);
     expect(within(panel).getByText(/Sells physical equipment/)).toBeInTheDocument();
   });
@@ -185,8 +187,7 @@ describe("SFS panel", () => {
   it("says it never looked, rather than saying no", async () => {
     RUN = { ...BASE, routing: { pillar: "Empower", secondary: [], sfs_relevant: false } };
     await renderScoringTab();
-    const panel = (await screen.findByRole("heading", { name: /Siemens Financial Services/i }))
-      .closest(".profile-section");
+    const panel = await screen.findByRole("region", { name: "SFS financing" });
     expect(within(panel).getByText("not assessed")).toBeInTheDocument();
     expect(within(panel).getByText(/Re-evaluate to assess it/i)).toBeInTheDocument();
   });

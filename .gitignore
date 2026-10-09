@@ -38,3 +38,6 @@ ui/test-results/
 ui/playwright-report/
 ui/blob-report/
 ix-config.patch
+
+# Local UI-review screenshots; never part of the app or its image.
+output/

@@ -28,7 +28,8 @@ function Harness({ run }) {
 describe("DepartmentRanking", () => {
   it("leads with the department whose needs the startup answers best, then the rest in order", () => {
     render(<Harness run={RUN} />);
-    expect(screen.getByText(/Best fit for Collaborate:/)).toHaveTextContent("Siemens Mobility");
+    // The badge names the recommended department; no sentence above the list repeats it.
+    expect(screen.queryByText(/Best fit for Collaborate/)).not.toBeInTheDocument();
     const items = within(screen.getByRole("list", { name: /best Collaborate fit first/ })).getAllByRole("button");
     expect(items.map((b) => b.textContent)).toEqual([
       "Siemens MobilityRecommendedCollaborate 8/9 · strong match · total 81",

@@ -13,7 +13,7 @@ import AssistantDock from "./components/AssistantDock.jsx";
 import Icon from "./components/Icon.jsx";
 import { Loading } from "./components/widgets.jsx";
 import SignIn from "./pages/SignIn.jsx";
-import Home from "./pages/Home.jsx";
+import SolvePage from "./pages/solve/SolvePage.jsx";
 import SearchHome from "./pages/SearchHome.jsx";
 import Explore from "./pages/Explore.jsx";
 import Profile from "./pages/Profile.jsx";
@@ -240,9 +240,8 @@ function Shell() {
         <main className={"content" + (noSidenav ? " no-sidenav" : "") + (dockOpen ? " with-dock" : "")}>
           <Routes>
             <Route path="/" element={<SearchHome />} />
-            {/* pages/Home.jsx is the scouting workspace the rail now calls "Solve a Problem". The file
-                keeps its name; only the route and the label moved. */}
-            <Route path="/workspace" element={<Home />} />
+            {/* "Solve a Problem". The route keeps its old name so links already shared resolve. */}
+            <Route path="/workspace" element={<SolvePage />} />
             <Route path="/explore" element={<Explore />} />
             <Route path="/startup/:id" element={<Profile />} />
             <Route path="/saved" element={<Saved />} />

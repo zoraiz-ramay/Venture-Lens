@@ -96,6 +96,22 @@ def _as_url(value: str) -> str:
     return "https://" + s.lstrip("/")
 
 
+# Words that say what kind of company it is rather than which one, so a host carrying one of them
+# ("solutions", "defence") is no evidence it is this company's site.
+_GENERIC_NAME_WORDS = {"gmbh", "inc", "llc", "ltd", "limited", "corp", "company", "group", "holding",
+                       "holdings", "solutions", "systems", "technologies", "technology", "tech", "labs",
+                       "global", "international", "the", "defence", "defense", "software", "industries",
+                       "services", "consulting", "digital", "energy", "robotics", "health", "medical"}
+
+
+def _host_names(href: str, name: str) -> bool:
+    """Whether a URL's host carries the company's first distinctive name word."""
+    from urllib.parse import urlparse
+    host = (urlparse(href if "//" in href else "https://" + href).hostname or "").lower()
+    words = [w for w in _norm(name).split() if len(w) >= 4 and w not in _GENERIC_NAME_WORDS]
+    return bool(words) and words[0] in host.replace("-", "")
+
+
 def web_profile_row(name: str, llm: "LLMClient" = None, max_results: int = 4) -> Optional[pd.Series]:
     """Assemble a GlassDollar-like row for a startup that is NOT in the database, live from
     the web (DuckDuckGo) plus optional LLM extraction. Returns None if the web yields nothing.
@@ -129,13 +145,18 @@ def web_profile_row(name: str, llm: "LLMClient" = None, max_results: int = 4) ->
     if mentions < (1 if (llm and llm.available) else 2):
         return None
 
-    # first non-social result is a reasonable website guess
+    # The website when the model names none: the first non-social result whose host carries the
+    # company's name. "First non-social result" alone took a trade-press article about Daedalus
+    # Defence (engineering.com) as its website, and every identity-pinned search after it went to
+    # that press site. A cautious model leaves the field blank often (Gemini 3.5 Flash Lite did, 2
+    # runs in 3), so this guess is what most web-resolved companies got. Blank is better than wrong:
+    # profile._extract_links fills a blank website later through its own identity gate.
     _SOCIAL = ("linkedin.", "crunchbase.", "wikipedia.", "facebook.", "twitter.", "x.com",
                "youtube.", "instagram.", "bloomberg.", "pitchbook.")
     website = ""
     for h in hits:
         href = h.get("href", "")
-        if href and not any(s in href for s in _SOCIAL):
+        if href and not any(s in href for s in _SOCIAL) and _host_names(href, name):
             website = href
             break
 
@@ -151,9 +172,11 @@ def web_profile_row(name: str, llm: "LLMClient" = None, max_results: int = 4) ->
             'Return ONLY JSON: {"exists":true,"company_name":"","website":"","hq":"","founded_year":"",'
             '"funding":"","employees":"","customers":"","business_model":"","stage":"","description":""}'
         )
+        # No thinking: this copies search results into fields, and it sits on every web-resolved
+        # run's slow path (~1,150 thinking tokens, 7.3s of a 17s lookup, measured).
         fields = LLMClient.parse_json(
             llm.complete(prompt, system="You extract structured company facts strictly from the "
-                         "supplied web text. JSON only.", max_tokens=600)) or {}
+                         "supplied web text. JSON only.", max_tokens=600, reasoning="none")) or {}
         if fields and fields.get("exists") is False:
             return None            # LLM judged the results do not describe a real company
 

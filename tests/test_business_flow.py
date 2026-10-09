@@ -93,7 +93,7 @@ def test_two_first_views_at_once_make_one_model_call(monkeypatch):
     csrf = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
     codes = []
     threads = [threading.Thread(target=lambda: codes.append(
-        client.post("/api/runs/7302/business-flow", headers=csrf).status_code)) for _ in range(2)]
+        client.post("/api/runs/7302/business-flow", headers=csrf).status_code)) for _ in range(2)]  # secret-scan:allow
     for t in threads:
         t.start()
     for t in threads:

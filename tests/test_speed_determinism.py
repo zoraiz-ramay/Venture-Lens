@@ -77,7 +77,7 @@ def test_gateway_reasoning_model_gets_effort_headroom_and_valid_temperature(monk
     c.complete("hi", max_tokens=900, reasoning="none")
     assert r.seen["reasoning_effort"] == "none"
     assert r.seen["temperature"] == 0
-    assert r.seen["max_completion_tokens"] == 1024 + llm_mod.LLM_THINKING_HEADROOM
+    assert r.seen["max_completion_tokens"] == max(900, llm_mod.LLM_MIN_BUDGET) + llm_mod.LLM_THINKING_HEADROOM
 
     r2 = _Recorder()
     c._client = type("C", (), {"chat": type("Ch", (), {"completions": r2})()})()
@@ -98,7 +98,7 @@ def test_gemini_3_gets_minimal_thinking_where_a_call_asks_for_none(monkeypatch, 
     c.complete("hi", max_tokens=900, reasoning="none")
     assert r.seen["reasoning_effort"] == "minimal"
     assert r.seen["temperature"] == 0                      # only the gateway's gpt-5.x rejects it
-    assert r.seen["max_completion_tokens"] == 1024 + llm_mod.LLM_THINKING_HEADROOM
+    assert r.seen["max_completion_tokens"] == max(900, llm_mod.LLM_MIN_BUDGET) + llm_mod.LLM_THINKING_HEADROOM
 
 
 def test_gemini_2_5_still_switches_thinking_off(monkeypatch):

@@ -54,8 +54,8 @@ CONTRADICTION_FLOOR = 0.85       # never costs more than 15% of confidence
 FIT_ALIGN_THRESHOLD = 50.0       # below this, "not aligned with Siemens portfolio"
 MIN_OFFLINE_OVERLAP = 2          # offline mode needs >=2 meaningful shared terms to count
 # The Siemens gateway's chat model (production). Local runs without OPENAI_API_KEY use
-# core/llm.GEMINI_MODEL instead — the same model, served directly by Google.
-LLM_MODEL = os.getenv("LLM_MODEL", "google/gemini-3.5-flash-lite")
+# core/llm.GEMINI_MODEL instead, served directly by Google.
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-6-luna")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
 
 # --- Program prestige -------------------------------------------------------------------

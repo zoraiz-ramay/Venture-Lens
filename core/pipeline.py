@@ -203,6 +203,7 @@ def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = T
     token = web.set_cache_enabled(use_web_cache)
     try:
         with _run_records() as records:
+            web.set_search_subject(name)
             return records(_evaluate(name, glassdollar_path, tools_path, do_web, df, on_step,
                                      on_partial, tracxn, department, prior_runs, departments, team_record))
     finally:
@@ -220,6 +221,7 @@ def _run_records():
     collecting, failures = llm_mod.collect_failures()
     counting, calls = llm_mod.collect_usage()
     timing, timeline = web.collect_timeline()
+    sharing, shared = web.share_searches()
 
     def attach(result: dict) -> dict:
         result = _with_degraded(result, failures)
@@ -227,11 +229,13 @@ def _run_records():
             # The timeline rides inside the token log: it is diagnostics about the same calls, and
             # an offline run (no calls) stays exactly as it was.
             result["token_usage"] = {**llm_mod.summarize_usage(list(calls)),
+                                     "searches_reused": shared["reused"],
                                      "timeline": list(timeline["events"])}
         return result
     try:
         yield attach
     finally:
+        web.stop_sharing_searches(sharing)
         web.stop_collecting_timeline(timing)
         llm_mod.stop_collecting_usage(counting)
         llm_mod.stop_collecting(collecting)
@@ -371,6 +375,7 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     from .traction import score_traction, gather_traction_inputs, apply_traction
     from .judgment import score_research, decision_research
     company = str(row.get("company_name", "")) or name
+    web.set_search_subject(company)
     deps = list(departments or ([department] if department else []))
     # The raw database values ride along in the result: the header profile only keeps funding
     # after format_funding has rounded it, and "€2.0M" can be €1.96M, one band lower.

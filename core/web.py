@@ -5,6 +5,7 @@ import contextvars
 import functools
 import hashlib
 import os
+import re
 import threading
 import time
 
@@ -87,6 +88,133 @@ def run_offset_ms(t: float):
     """Milliseconds from the run's start to ``t``, or None outside a run."""
     timeline = _timeline.get()
     return None if timeline is None else int((t - timeline["t0"]) * 1000)
+
+
+# ---------------------------------------------------------------------------- shared searches
+# The search waves were written for DuckDuckGo, where any one query often came back empty, so each
+# stage asks for the same facts in its own words: one evaluation sent four funding searches, five
+# headcount searches and four founder searches across enrich, profile and trend. On the gateway a
+# search does not fail that way, and each costs ~14k input tokens. Within one evaluation, a search
+# on the same topic about the company reuses the page list the first one found, and reads it for its
+# own words (_search_pages). Measured on Wandelbots: 54 billed searches before, 36 with market
+# searches shared too (which cost Connect its market signals), fewer than 54 with company ones only.
+#
+# Queries naming something in quotes (a founder, a programme list) and Siemens queries (each lists
+# different products) are only shared when worded identically. A shared search that found nothing
+# does not stand in for anyone: the later query runs its own.
+_shared: contextvars.ContextVar = contextvars.ContextVar("shared_searches", default=None)
+_TOPIC = lambda p: re.compile(p, re.I)
+# The first that matches names the topic. Only searches about the company itself are shared: market
+# searches (no company name in them) each ask about a different slice of the market, and sharing
+# them dropped Connect's dated market signals from 2 to 0 on the same run.
+_SEARCH_TOPICS = (
+    ("funding", _TOPIC(r"\b(fund(ing|ed)|raised?|investors?|series [a-e]|pre-seed|seed|venture capital|funding round)\b")),
+    ("headcount_history", _TOPIC(r"\b(employees?|headcount|employee count)\b.*\b(history|over time|growth|20\d\d)\b")),
+    ("headcount", _TOPIC(r"\b(employees?|headcount|employee count|company size)\b")),
+    ("advisors", _TOPIC(r"\badvis(ors?|ory)\b")),
+    ("founders", _TOPIC(r"\b(co-?founders?|founders?)\b")),
+    ("customers", _TOPIC(r"\b(customers?|clients?|case stud(y|ies))\b")),
+    ("programmes", _TOPIC(r"\b(accelerators?|incubators?|cohort|alumni|backed by)\b")),
+    ("founded_hq", _TOPIC(r"\b(headquarters|founded|established|location)\b")),
+    ("competitors", _TOPIC(r"\b(competitors?|alternatives?)\b")),
+)
+
+
+# SEARCH_SHARING=0 turns it off: every query is searched, as before.
+SEARCH_SHARING = os.getenv("SEARCH_SHARING", "1").strip() != "0"
+
+
+def share_searches(company: str = ""):
+    """Start sharing searches for one evaluation. Returns (token, state); state["reused"] counts."""
+    state = {"company": str(company or "").strip(), "searches": {}, "reused": 0, "lock": threading.Lock()}
+    return _shared.set(state if SEARCH_SHARING else None), state
+
+
+def stop_sharing_searches(token) -> None:
+    _shared.reset(token)
+
+
+def set_search_subject(company: str) -> None:
+    """The resolved company name: what tells a company search from a market search."""
+    state = _shared.get()
+    if state is not None and str(company or "").strip():
+        state["company"] = str(company).strip()
+
+
+def search_signature(query: str, company: str = "") -> tuple:
+    """What a search asks for: (topic, quoted names) for a company search, else ("exact", text)."""
+    q = str(query or "")
+    norm = " ".join(re.findall(r"[a-z0-9]+", q.casefold()))
+    if "siemens" in norm or not company or company.casefold() not in q.casefold():
+        return ("exact", norm)
+    quoted = frozenset(p.casefold() for p in re.findall(r'"([^"]+)"', q))
+    for topic, pattern in _SEARCH_TOPICS:
+        if pattern.search(q):
+            return (topic, quoted)
+    return ("exact", norm)
+
+
+def _search_pages(query: str, ask) -> tuple[list, bool]:
+    """(pages the search found, whether they came from an earlier search in this evaluation).
+
+    Only the page list is shared — that is what a search is billed for. Each query still reads the
+    pages and cuts its own passages around its own words (_passages): sharing the finished hits
+    handed the employee-history query passages chosen for "number of employees", with no years in
+    them, and the run lost its headcount history and investors."""
+    import concurrent.futures as cf
+    state = _shared.get()
+    if state is None:
+        return _pages_of(_first_answer(ask)), False
+    sig = search_signature(query, state["company"])
+    with state["lock"]:
+        future = state["searches"].get(sig)
+        owner = future is None
+        if owner:
+            future = state["searches"][sig] = cf.Future()
+    if owner:
+        pages = []
+        try:
+            pages = _pages_of(_first_answer(ask))
+        finally:
+            future.set_result(pages)
+        return pages, False
+    try:
+        pages = future.result(timeout=GROUNDED_SEARCH_TIMEOUT + 5)
+    except cf.TimeoutError:
+        pages = []
+    if not pages:            # an empty search does not stand in for anyone: search for this query
+        return _pages_of(_first_answer(ask)), False
+    with state["lock"]:
+        state["reused"] += 1
+    return pages, True
+
+
+def _pages_of(answer) -> list:
+    return [p for p in (answer or {}).get("pages", []) if p.get("url")]
+
+
+def _read_page(url: str) -> tuple[str, str]:
+    """_fetch_with_url, once per URL per evaluation: queries sharing a page list share the fetch."""
+    import concurrent.futures as cf
+    state = _shared.get()
+    if state is None:
+        return _fetch_with_url(url, timeout=GROUNDED_FETCH_TIMEOUT)
+    with state["lock"]:
+        future = state.setdefault("pages", {}).get(url)
+        owner = future is None
+        if owner:
+            future = state["pages"][url] = cf.Future()
+    if owner:
+        got = ("", "")
+        try:
+            got = _fetch_with_url(url, timeout=GROUNDED_FETCH_TIMEOUT)
+        finally:
+            future.set_result(got)
+        return got
+    try:
+        return future.result(timeout=GROUNDED_FETCH_TIMEOUT + 1.0)
+    except cf.TimeoutError:
+        return "", ""
 
 
 def _current_stage() -> str:
@@ -327,16 +455,18 @@ def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None)
     llm = _grounding_client()
     if not llm.available or llm.provider not in ("gemini", "openai"):
         return []
-    answer = _first_answer(lambda: llm.web_answer(
+    found, shared = _search_pages(query, lambda: llm.web_answer(
         f"Search the web for: {query}\nList the pages you found, one per line.",
         max_tokens=256, thinking_budget=0))
-    pages = [p for p in (answer or {}).get("pages", []) if p.get("url")][:max_results]
+    # A query answered from another's page list reads further down it: the first pages were picked
+    # for the other wording, and reading a page costs no tokens.
+    pages = found[:max_results * 2 if shared else max_results]
     if not pages:
         return []
 
     def read(page):
         url = _resolve_grounding_redirect(page["url"])
-        text, landed = _fetch_with_url(url, timeout=GROUNDED_FETCH_TIMEOUT) if url else ("", "")
+        text, landed = _read_page(url) if url else ("", "")
         body = _passages(text, query)
         return {"title": page.get("title", ""), "href": landed or url, "body": body} if body else None
 
@@ -346,7 +476,7 @@ def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None)
     try:
         futures = [pool.submit(contextvars.copy_context().run, read, p) for p in pages]
         done, _ = cf.wait(futures, timeout=GROUNDED_FETCH_TIMEOUT + 1.0)
-        hits = [h for f in futures if f in done and not f.exception() and (h := f.result())]
+        hits = [h for f in futures if f in done and not f.exception() and (h := f.result())][:max_results]
         complete = len(done) == len(futures)
     finally:
         pool.shutdown(wait=False)

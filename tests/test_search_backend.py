@@ -203,3 +203,67 @@ def test_a_search_cut_off_while_reading_pages_is_not_cached(gemini, monkeypatch)
     assert [h["href"] for h in hits] == ["https://fast.example/a"]
     assert time.monotonic() - started < 1.5
     assert stored == {}
+
+
+# ----------------------------------------------------------------- one search per topic per evaluation
+
+@pytest.mark.parametrize("a, b", [
+    ("Acme funding round amount raised investors", "Acme crunchbase founded funding stage pre-seed seed series"),
+    ("Acme founders team background", "Acme founder previous company career university"),
+    ("Acme number of employees headcount", "Acme acme.com number of employees company size linkedin"),
+    ("Acme linkedin employees company size over time", "Acme crunchbase employee count history"),
+    ("Acme customers clients case study", "Acme customer case study deployment client announcement"),
+])
+def test_searches_asking_for_the_same_fact_share_a_signature(a, b):
+    assert web.search_signature(a, "Acme") == web.search_signature(b, "Acme")
+
+
+@pytest.mark.parametrize("a, b", [
+    ('"Ada Lovelace" Acme founder background LinkedIn', '"Grace Hopper" Acme founder background LinkedIn'),
+    ("Acme Siemens partnership OR pilot", "Acme Siemens integration Teamcenter OR Simcenter"),
+    ("Acme number of employees headcount", "Acme linkedin employees company size over time"),   # now vs history
+    ("Acme funding round raised investors", "robotics startup funding round 2025"),            # company vs market
+    ("Acme pricing plans license cost", "Acme API developer documentation SDK"),
+    # Market searches each ask about a different slice: sharing them cost Connect its market signals.
+    ("robotic software market size billion CAGR report", "industrial robotics market size growth leading companies"),
+    ("robotics software startup funding 2025", "industrial robot programming startup raised seed series A funding round"),
+])
+def test_searches_asking_different_things_stay_apart(a, b):
+    assert web.search_signature(a, "Acme") != web.search_signature(b, "Acme")
+
+
+TEAM_PAGE = ("Header. " * 40 + "Acme had 40 employees in 2021 and 120 employees in 2024, LinkedIn shows. "
+             + "Filler text. " * 60 + "Acme raised EUR 9M led by NotARealFund in its Series A round. " + "Footer. " * 40)
+
+
+def test_one_evaluation_pays_for_each_topic_once_but_reads_it_for_each_query(gemini, monkeypatch):
+    """Same topic, two wordings: one billed search, and each query's passages are cut for its own
+    words — the history query must still see the years."""
+    client, _ = gemini([{"title": "p1", "url": "https://acme.example/team"}], lambda url, **kw: (TEAM_PAGE, url))
+    fetched = []
+    real_read = web._fetch_with_url
+    monkeypatch.setattr(web, "_fetch_with_url", lambda url, **kw: fetched.append(url) or real_read(url, **kw))
+    token, state = web.share_searches("Acme")
+    try:
+        now = web.ddg_search("Acme linkedin employees company size over time", 5)
+        history = web.ddg_search("Acme number of employees 2021 2022 2023 2024 headcount growth", 5)
+        funding = web.ddg_search("Acme funding round raised investors", 5)
+    finally:
+        web.stop_sharing_searches(token)
+    assert len(client.asked) == 2 and state["reused"] == 1            # history reused the first page list
+    assert "2021" in history[0]["body"] and "2024" in history[0]["body"]
+    assert "NotARealFund" in funding[0]["body"]
+    assert fetched.count("https://acme.example/team") == 1             # one fetch per page per evaluation
+    web.ddg_search("Acme number of employees 2021 2022 headcount growth", 5)   # outside an evaluation
+    assert len(client.asked) == 3
+
+
+def test_an_empty_shared_search_does_not_stand_in_for_the_next_one(gemini):
+    client, _ = gemini([], lambda url, **kw: (PAGE, url))
+    token, state = web.share_searches("Acme")
+    try:
+        assert web.ddg_search("Acme customers clients case study", 5) == []
+        web.ddg_search("Acme customer case study deployment", 5)
+    finally:
+        web.stop_sharing_searches(token)
+    assert len(client.asked) == 2 and state["reused"] == 0

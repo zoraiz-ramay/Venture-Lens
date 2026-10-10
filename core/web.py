@@ -231,8 +231,10 @@ def ddg_search(query: str, max_results: int = 5,
 DDG_CONCURRENCY = max(1, int(os.getenv("DDG_CONCURRENCY", "10")))
 _ddg_slots = threading.BoundedSemaphore(DDG_CONCURRENCY)
 # The grounded backend is not a scraper the engine throttles, so it does not queue behind the
-# DuckDuckGo limit; the model quota (llm's rate gate, LLM_RPM) paces its calls instead.
-SEARCH_CONCURRENCY = max(1, int(os.getenv("SEARCH_CONCURRENCY", "20")))
+# DuckDuckGo limit; the model quota (llm's rate gate, LLM_RPM) paces its calls instead. One
+# evaluation opens ~47 searches at once, so at 20 its own waves queued behind each other for 5s.
+# The gateway answered 40 concurrent searches with no 429 (limit 15,000 requests/min).
+SEARCH_CONCURRENCY = max(1, int(os.getenv("SEARCH_CONCURRENCY", "64")))
 _search_slots = threading.BoundedSemaphore(SEARCH_CONCURRENCY)
 
 
@@ -325,23 +327,76 @@ def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None)
     llm = _grounding_client()
     if not llm.available or llm.provider not in ("gemini", "openai"):
         return []
-    answer = llm.web_answer(f"Search the web for: {query}\nList the pages you found, one per line.",
-                            max_tokens=256, thinking_budget=0)
+    answer = _first_answer(lambda: llm.web_answer(
+        f"Search the web for: {query}\nList the pages you found, one per line.",
+        max_tokens=256, thinking_budget=0))
     pages = [p for p in (answer or {}).get("pages", []) if p.get("url")][:max_results]
     if not pages:
         return []
 
     def read(page):
         url = _resolve_grounding_redirect(page["url"])
-        text, landed = _fetch_with_url(url) if url else ("", "")
+        text, landed = _fetch_with_url(url, timeout=GROUNDED_FETCH_TIMEOUT) if url else ("", "")
         body = _passages(text, query)
         return {"title": page.get("title", ""), "href": landed or url, "body": body} if body else None
 
-    with cf.ThreadPoolExecutor(max_workers=len(pages)) as ex:
-        hits = [h for h in ex.map(read, pages) if h]
-    if hits:
+    # A page that has not arrived by the deadline is dropped like one that failed: a wave waits for
+    # its slowest search, so one slow site held every other company field behind it.
+    pool = cf.ThreadPoolExecutor(max_workers=len(pages), thread_name_prefix="grounded-read")
+    try:
+        futures = [pool.submit(contextvars.copy_context().run, read, p) for p in pages]
+        done, _ = cf.wait(futures, timeout=GROUNDED_FETCH_TIMEOUT + 1.0)
+        hits = [h for f in futures if f in done and not f.exception() and (h := f.result())]
+        complete = len(done) == len(futures)
+    finally:
+        pool.shutdown(wait=False)
+    # Only a search whose every page settled is cached: a cut-off one must not stand in for the
+    # full result for the whole TTL.
+    if hits and complete:
         _store("ddg", key, hits)
     return hits
+
+
+# How long a grounded search may take. Gateway searches measured 3.6s median and 5.4s p90, but
+# one in ~20 took 10-20s, and a wave waits for its slowest: the profile's first wave took 20s for
+# three queries. Past GROUNDED_SEARCH_TIMEOUT the search counts as empty. GROUNDED_SEARCH_HEDGE
+# (off by default) sends one duplicate after that many seconds and takes whichever answers first:
+# at 4s it duplicated ~40% of searches, for ~50% more tokens and no measurable gain in two runs.
+GROUNDED_SEARCH_HEDGE = float(os.getenv("GROUNDED_SEARCH_HEDGE", "0"))
+GROUNDED_SEARCH_TIMEOUT = float(os.getenv("GROUNDED_SEARCH_TIMEOUT", "7"))
+GROUNDED_FETCH_TIMEOUT = float(os.getenv("GROUNDED_FETCH_TIMEOUT", "3"))
+
+
+def _first_answer(ask):
+    """``ask()`` within GROUNDED_SEARCH_TIMEOUT, else None; raced by one duplicate when hedging.
+
+    A request past the deadline is not cancelled (the client cannot): it finishes in the background
+    and its tokens are still recorded, since they were billed."""
+    import concurrent.futures as cf
+    deadline = time.monotonic() + GROUNDED_SEARCH_TIMEOUT
+    hedge = GROUNDED_SEARCH_HEDGE if 0 < GROUNDED_SEARCH_HEDGE < GROUNDED_SEARCH_TIMEOUT else 0.0
+    pool = cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="grounded-search")
+    try:
+        futures = [pool.submit(contextvars.copy_context().run, ask)]
+        if hedge:
+            done, _ = cf.wait(futures, timeout=hedge)
+            if done and not futures[0].exception() and futures[0].result():
+                return futures[0].result()
+            futures.append(pool.submit(contextvars.copy_context().run, ask))
+        pending = [f for f in futures if not f.done()]
+        while pending:
+            done, _ = cf.wait(pending, timeout=max(0.0, deadline - time.monotonic()),
+                              return_when=cf.FIRST_COMPLETED)
+            if not done:
+                return None
+            for f in done:
+                if not f.exception() and f.result():
+                    return f.result()
+            pending = [f for f in pending if f not in done]
+        first = futures[0]
+        return first.result() if first.done() and not first.exception() else None
+    finally:
+        pool.shutdown(wait=False)
 
 
 def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,

@@ -144,3 +144,62 @@ def test_the_gateway_lists_every_searched_page_not_only_the_cited_ones(monkeypat
     client.model = "gpt-5-mini"
     llm_mod._openai_web_search(client, "Search the web for: acme", "", 256, thinking_budget=0)
     assert seen["reasoning"] == {"effort": "low"}             # the gateway refuses web_search at "minimal"
+
+
+# ----------------------------------------------------------------- search deadline and hedging
+
+def _answers(*plan):
+    """ask() that sleeps then answers per call, in order: [(seconds, answer), ...]."""
+    import threading
+    import time
+    calls, lock = [], threading.Lock()
+
+    def ask():
+        with lock:
+            i = len(calls)
+            calls.append(i)
+        delay, answer = plan[min(i, len(plan) - 1)]
+        time.sleep(delay)
+        return answer
+    return ask, calls
+
+
+def test_a_search_past_its_deadline_counts_as_empty(monkeypatch):
+    """One slow gateway search held a whole wave for 20s; now it stops at the deadline."""
+    import time
+    monkeypatch.setattr(web, "GROUNDED_SEARCH_TIMEOUT", 0.3)
+    monkeypatch.setattr(web, "GROUNDED_SEARCH_HEDGE", 0.0)
+    ask, calls = _answers((2.0, {"pages": [{"url": "https://slow.example"}]}))
+    started = time.monotonic()
+    assert web._first_answer(ask) is None
+    assert time.monotonic() - started < 1.0 and calls == [0]          # no duplicate without hedging
+
+    ask, calls = _answers((0.01, {"pages": [{"url": "https://fast.example"}]}))
+    assert web._first_answer(ask)["pages"][0]["url"] == "https://fast.example"
+
+
+def test_a_hedged_duplicate_wins_over_a_slow_first_request(monkeypatch):
+    monkeypatch.setattr(web, "GROUNDED_SEARCH_TIMEOUT", 2.0)
+    monkeypatch.setattr(web, "GROUNDED_SEARCH_HEDGE", 0.1)
+    ask, calls = _answers((1.5, {"pages": [{"url": "https://slow.example"}]}),
+                          (0.05, {"pages": [{"url": "https://second.example"}]}))
+    assert web._first_answer(ask)["pages"][0]["url"] == "https://second.example"
+    assert calls == [0, 1]
+
+
+def test_a_search_cut_off_while_reading_pages_is_not_cached(gemini, monkeypatch):
+    """Pages still loading at the deadline are dropped, and that partial result is not cached."""
+    import time
+    monkeypatch.setattr(web, "GROUNDED_FETCH_TIMEOUT", 0.1)
+
+    def fetch(url, timeout=8.0):
+        if "slow" in url:
+            time.sleep(2.0)
+        return PAGE, url
+    _, stored = gemini([{"title": "fast", "url": "https://fast.example/a"},
+                     {"title": "slow", "url": "https://slow.example/b"}], fetch)
+    started = time.monotonic()
+    hits = web.ddg_search("Acme Robotics accelerator", 5)
+    assert [h["href"] for h in hits] == ["https://fast.example/a"]
+    assert time.monotonic() - started < 1.5
+    assert stored == {}

@@ -20,6 +20,25 @@ FUNDING_SIGNAL = re.compile(
     r"\bbridge\b|\bipo\b|\bventure\b", re.I)
 
 
+# Sites that publish modelled revenue for every company (data brokers and lead databases), and the
+# words such estimates are written in. The prompt has always said third-party estimates are not
+# revenue, but only the model enforced it: Gemini 2.5 Flash took SignalHire's "The annual revenue of
+# Tridiagonal Solutions varies between 50M and 100M" as revenue — 30 traction points — while the
+# gpt-6 models left it out as the rule says. Python decides now — at extraction (profile._clean_revenue) and again in the traction score, which
+# is recomputed on every read, so stored runs are corrected too — and every model scores it alike.
+_ESTIMATE_HOSTS = ("growjo.", "owler.", "zoominfo.", "signalhire.", "rocketreach.", "leadiq.", "apollo.io",
+                   "konaequity.", "zippia.", "craft.co", "lusha.", "datanyze.", "kaspr.", "dnb.com", "zoominfo",
+                   "companiesmarketcap.", "macrotrends.", "ecdb.", "6sense.")
+_ESTIMATE_WORDS = re.compile(r"\bestimat|\bvaries between\b|\brevenue range\b|\bis projected\b|\bmodell?ed\b", re.I)
+
+
+def is_revenue_estimate(quote: str, url: str) -> bool:
+    """A revenue statement that is a data broker's model or worded as an estimate: never revenue."""
+    host = re.sub(r"^https?://(www\.)?", "", str(url or "").lower()).split("/")[0]
+    return any(h in host for h in _ESTIMATE_HOSTS) or bool(_ESTIMATE_WORDS.search(str(quote or "")))
+
+
+
 def has_funding_signal(value) -> bool:
     """True when a funding string names a stage or an amount."""
     return bool(FUNDING_SIGNAL.search(str(value or "")))

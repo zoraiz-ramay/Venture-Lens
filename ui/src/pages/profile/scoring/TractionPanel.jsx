@@ -6,7 +6,7 @@ import { MiniBar, RingGauge } from "../../../components/charts.jsx";
 import TractionDetail, { barId, flagsOf, pts } from "./TractionDetail.jsx";
 import { divisionDisplay } from "./presentation.js";
 
-const VERSION = "traction-rubric-v2";
+const VERSION = "traction-rubric-v3";
 // pts: 7.5 and 11.25 are real rubric values; "7.50" and "11" would each misstate one.
 
 /* A division with no evidence is excluded from the total, and the row has to say so in words:

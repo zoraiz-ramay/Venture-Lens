@@ -233,6 +233,26 @@ def _profile_of(run: dict) -> dict:
     return run.get("deep_profile") or {}
 
 
+def team_run(record: dict | None) -> dict | None:
+    """The team section's stored refresh (api ``lookup/team``) as one more prior run, so what it
+    found is carried into a full evaluation exactly like what an earlier evaluation found."""
+    if not record:
+        return None
+    # `new` marks what one refresh added, for the page that ran it; it is not part of the evidence.
+    items = lambda k: [{f: v for f, v in i.items() if f != "new"} for i in record.get(k) or [] if isinstance(i, dict)]  # noqa: E731
+    dp = {k: items(k) for k in ("founders", "key_team", "advisors", "programs")}
+    dp["commercial"] = {"investors": items("investors")}
+    return {"deep_profile": dp, "created_at": str(record.get("retrieved_at") or record.get("stored_at") or "")}
+
+
+def known_team(prior_runs: list) -> dict:
+    """Whether earlier runs already found sourced founders / programmes. A full evaluation does not
+    search for them again; they come in through merge_profile like every carried list."""
+    def found(path):
+        return any(_grounded(i) for run in prior_runs or [] for i in _get(_profile_of(run), path) or [])
+    return {"founders": found(("founders",)), "programs": found(("programs",))}
+
+
 # ----------------------------------------------------------------------------------- public API
 
 def usable_priors(prior_runs, fresh_identity: dict) -> list:

@@ -176,7 +176,7 @@ def test_reusing_research_rescores_the_model_only_when_the_source_has_no_current
     monkeypatch.setattr(core.market, "assess_market",
                         lambda run, llm: {"version": core.market.VERSION, "status": "assessed", "score_0_100": 66.7})
     source = {"found": True, "company": "Acme", "score": source_score,
-              "traction": {"version": "traction-rubric-v2", "status": "scored", "score_0_100": 80.0,
+              "traction": {"version": "traction-rubric-v3", "status": "scored", "score_0_100": 80.0,
                            "earned": 56, "available_max": 70, "divisions_known": 3, "divisions": []}}
     out = assess_department(source, {"id": "si", "label": "SI", "interests": ["grid"], "demo": True}, llm=object())
     assert bool(calls) is rescored

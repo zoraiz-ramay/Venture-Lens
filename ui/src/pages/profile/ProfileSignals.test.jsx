@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -63,6 +63,20 @@ describe("MarketSignals", () => {
     expect(within(policy).getByText("Adjacent")).toBeInTheDocument();
     expect(within(funding).queryByText("Adjacent")).toBeNull();
     expect(api.runLookup).toHaveBeenCalledWith(701, "signals", false);
+  });
+
+  it("shows a box's newest signals and opens all of them, with what the last Refresh added", async () => {
+    const five = ["May", "April", "March", "February", "January"].map((m, i) =>
+      signal("funding", "up", `round ${i + 1}`, { date: `${m} 2026`, new: i === 0, found_at: "2026-09-01T00:00:00+00:00" }));
+    api.runLookup.mockResolvedValue({ provider: "web", note: "", sources: [], market: "m", signals: five });
+    render(<MarketSignals res={{ run_id: 702 }} />);
+    const funding = (await screen.findByRole("heading", { name: "VC funding & investor momentum" })).closest("section");
+    expect(within(funding).getAllByRole("listitem").map((li) => li.textContent.slice(0, 8)))
+      .toEqual(["May 2026", "April 20", "March 20"]);                                  // newest three
+    expect(within(funding).getByText("Added")).toBeInTheDocument();
+    fireEvent.click(within(funding).getByRole("button", { name: "View all 5 signals · 1 added" }));
+    expect(screen.getByText(/5 signals, newest first/)).toBeInTheDocument();
+    expect(screen.getAllByText(/^Found /)).toHaveLength(5);
   });
 
   it("waits for a saved run before looking anything up", () => {

@@ -604,3 +604,28 @@ def test_clean_segment_grade_level_must_be_discrete(level, ok):
     None])
 def test_clean_segment_grade_needs_quote_and_source(raw):
     assert _clean_segment_grade(raw, CORPUS) == {}
+
+
+@pytest.mark.parametrize("quote, url", [
+    # Gemini 2.5 Flash scored this as revenue (30 points); the gpt-6 models left it out, as the rule says.
+    ("The annual revenue of Tridiagonal Solutions varies between 50M and 100M.",
+     "https://www.signalhire.com/companies/tridiagonal-solutions"),
+    ("Tridiagonal Solutions's estimated annual revenue is currently $19.6M per year.",
+     "https://growjo.com/company/Tridiagonal_Solutions"),
+    # Estimate wording on an ordinary site is an estimate too.
+    ("Its revenue is estimated at $12 million a year.", "https://news.example/acme"),
+])
+def test_a_third_party_revenue_estimate_is_kept_as_an_estimate_and_never_scored(quote, url):
+    from core.traction import _revenue
+    out = _clean_revenue({"status": "amount", "quote": quote, "metric": "revenue", "source_url": url}, quote)
+    assert out["metric"] == "estimate" and out["source_url"] == url        # shown with its source
+    division = _revenue({"revenue": out})
+    assert division.get("points") is None and "not revenue (estimate)" in division["rationale"]
+
+
+def test_a_company_stated_revenue_still_scores():
+    from core.traction import _revenue
+    quote = "Acme reported revenue of €12 million for 2025."
+    out = _clean_revenue({"status": "amount", "quote": quote, "metric": "revenue",
+                          "source_url": "https://acme.example/press"}, quote)
+    assert out["metric"] == "revenue" and _revenue({"revenue": out})["points"] == 30

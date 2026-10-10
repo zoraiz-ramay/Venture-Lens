@@ -25,7 +25,7 @@ const RUN = {
       criteria: crit([["founder_experience", "Founder experience", 3], ["domain_expertise", "Domain expertise", 3],
         ["external_validation", "External validation", 3], ["strategic_network", "Strategic network", 3]], 5) },
   },
-  traction: { version: "traction-rubric-v2", score_0_100: 55, confidence: 0.7, earned: 38.5, available_max: 70, fx_as_of: "2026-10-01",
+  traction: { version: "traction-rubric-v3", score_0_100: 55, confidence: 0.7, earned: 38.5, available_max: 70, fx_as_of: "2026-10-01",
     divisions: [{ id: "funding", label: "Funding", status: "evidenced", points: 22.5, max: 30, value: "€3M" },
       { id: "revenue", label: "Revenue", status: "unknown", points: 0, max: 30 }] },
   market: { status: "assessed", points: 9, band: "Moderate", score_0_100: 60, figures: {},

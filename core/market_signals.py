@@ -232,3 +232,35 @@ def market_signals(company: str, *, run: dict | None = None, website: str = "", 
     if "failed" not in status.values():
         web._store("signals", key, json.loads(json.dumps(out)))
     return {**out, "note": note}
+
+
+# --------------------------------------------------------------------------- history across refreshes
+
+def _signal_key(row: dict) -> tuple:
+    # Who and what, not the source link: the grounded search returns a different redirect URL for
+    # the same article on every call, so a link never matched the same signal found again.
+    return (row.get("category", ""), _norm(row.get("who", "")), _norm(row.get("what", ""))[:120])
+
+
+def merge_signals(fresh: dict, prior: dict | None, now: str) -> dict:
+    """``fresh`` with every signal ``prior`` held that it did not find again.
+
+    A Refresh used to replace the stored signals, so a signal one search found and the next missed
+    was gone, though nothing about it had changed. Each signal carries ``found_at`` (when a search
+    first returned it; kept when one finds it again) and ``new`` (first found by this search), and
+    the list stays newest first by the signal's own date, the order the page reads it in."""
+    old = {}
+    for row in (prior or {}).get("signals") or []:
+        old.setdefault(_signal_key(row), {**row, "found_at": row.get("found_at") or (prior or {}).get("retrieved_at", "")})
+    merged, seen = [], set()
+    for row in fresh.get("signals") or []:
+        key = _signal_key(row)
+        earlier = old.get(key)
+        merged.append({**row, "found_at": earlier["found_at"] if earlier else now, "new": earlier is None and bool(prior)})
+        seen.add(key)
+    merged += [{**row, "new": False} for key, row in old.items() if key not in seen]
+    merged.sort(key=lambda r: (_when(r), r.get("found_at", "")), reverse=True)
+    urls = {s["url"] for r in merged for s in r.get("sources") or []}
+    sources = {s["url"]: s for s in list((prior or {}).get("sources") or []) + list(fresh.get("sources") or [])
+               if s.get("url") in urls}
+    return {**fresh, "signals": merged, "sources": list(sources.values())}

@@ -32,6 +32,7 @@ def gateway_client():
     ("openai", "https://llm.sdc.siemens.cloud/v1", "google/gemini-embedding-2"),
     ("openai", "https://llm.sdc.siemens.cloud/v1/", "google/gemini-embedding-2"),
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-embedding-001"),
+    ("openai", "https://api.openai.com/v1", "text-embedding-3-small"),
     ("openai", "https://other.example/v1", ""),
     ("none", "https://llm.sdc.siemens.cloud/v1", ""),
 ])

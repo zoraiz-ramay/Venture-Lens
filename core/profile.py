@@ -27,7 +27,8 @@ from .web import _ddg_many
 from .llm import LLMClient
 from .config import KNOWN_PROGRAM_TIERS
 from . import programs as programs_mod
-from .text import _clean_source_url, _norm, dedupe_people, founders_first, has_funding_signal, is_named_org
+from .text import (_clean_source_url, _norm, dedupe_people, founders_first, has_funding_signal, is_named_org,
+                   is_revenue_estimate, same_person)
 # Known startup programs for offline detection (matched case-insensitively).
 KNOWN_PROGRAMS = {
     "siemens xcelerator": "corporate_program",
@@ -1190,6 +1191,8 @@ def _clean_revenue(raw, corpus: str) -> dict:
     if status not in ("amount", "pre_revenue") or not url or not quote:
         return {}
     metric = str(raw.get("metric") or "revenue").strip().lower().replace("-", "_").replace(" ", "_")
+    if status == "amount" and is_revenue_estimate(quote, url):
+        metric = "estimate"                  # kept and shown with its source, never scored as revenue
     year = re.sub(r"\D", "", str(raw.get("fiscal_year") or ""))[:4]
     out = {"status": status, "quote": quote, "metric": metric if metric in _REVENUE_METRICS else "estimate",
            "fiscal_year": year if len(year) == 4 else "", "growth_pct": None, "source_url": url}
@@ -1682,6 +1685,107 @@ def _siemens_in(passage: str, original: str, company: str, own_site: bool, url: 
     return out
 
 
+# ---- the team record: founders and external validation, searched once and reused ----------------
+
+_TEAM_LISTS = ("founders", "key_team", "advisors", "programs", "investors")
+
+
+def _recover_investors(prof: dict, company: str, llm: LLMClient) -> None:
+    """A dedicated investor wave, for the team section's Refresh. Same bar as the commercial
+    extraction's investors (named funds or institutions, each with its URL), plus co-occurrence:
+    an investor counts only where one result names it with the company."""
+    if not llm.available:
+        return
+    hits = _ddg_many({"i1": f"{company} investors funding round led by",
+                      "i2": f"{company} backed by venture capital seed series",
+                      "i3": f"{company} raises investment from"}, max_results=5)
+    corpus = _corpus(hits)
+    if not corpus:
+        return
+    data = LLMClient.parse_json(llm.complete(
+        f"Web results about the startup '{company}':\n\n{corpus}\n\n"
+        "List the INVESTORS in this company: named funds or institutional investors, NOT individuals "
+        "unless the evidence calls them the lead. Each with the source_url of the result that names it. "
+        "Never invent; empty list if none.\n"
+        'Return ONLY JSON: {"investors":[{"name":"","source_url":""}]}',
+        system="You extract structured facts strictly from supplied evidence. JSON only.",
+        max_tokens=500, reasoning="none")) or {}
+    blobs = [(str(h.get("title", "")) + " " + str(h.get("body", ""))).lower()
+             for found in hits.values() for h in found or []]
+    out = []
+    for inv in data.get("investors") or []:
+        name = str(inv.get("name", "") if isinstance(inv, dict) else inv).strip()
+        url = _clean_source_url(inv.get("source_url") if isinstance(inv, dict) else "")
+        if name and len(name) <= 60 and url and any(name.lower() in b and company.lower() in b for b in blobs):
+            out.append({"name": name, "source_url": url})
+    prof["investors"] = out
+
+
+def refresh_team(company: str, row: pd.Series, llm: LLMClient) -> dict:
+    """The founders, programmes and investors searched again from scratch.
+
+    A full evaluation reuses what earlier runs found (``research_profile(known_team=...)``) instead
+    of searching for them again; this is the one place they are searched on request. Lists only —
+    whoever stores it merges it with what was already known (``merge_team``)."""
+    prof: dict = {"founders": [], "programs": [], "investors": []}
+    jobs = [functools.partial(_recover_founders, prof, company, llm),
+            functools.partial(_recheck_programs, prof, row, company, {}, llm),
+            functools.partial(_recover_investors, prof, company, llm)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        for fut in [ex.submit(contextvars.copy_context().run, fn) for fn in jobs]:
+            try:
+                fut.result()
+            except Exception:
+                pass
+    try:
+        _deepen_founders(prof, company, llm)
+    except Exception:
+        pass
+    return {k: prof.get(k) or [] for k in ("founders", "programs", "investors")}
+
+
+def merge_team(base: dict, *more: dict) -> dict:
+    """``base``'s lists first and in their order, then what each later record adds.
+
+    The run's own lists lead because Team & Ecosystem cites their entries by position; anything
+    only a refresh found is appended, so those positions never move. An entry is the same entry by
+    the person (``same_person``), the programme (``_program_key``) or the investor's name. Entries
+    only the last record adds are marked ``new``."""
+    out: dict = {}
+    for key in _TEAM_LISTS:
+        merged = [dict(i) for i in base.get(key) or [] if isinstance(i, dict)]
+        for n, record in enumerate(more):
+            for item in (record or {}).get(key) or []:
+                if not isinstance(item, dict) or not str(item.get("name", "")).strip():
+                    continue
+                if key in ("founders", "key_team", "advisors"):
+                    known = any(same_person(item, m) for m in merged)
+                elif key == "programs":
+                    known = any(_program_key(item.get("name", "")) == _program_key(m.get("name", "")) for m in merged)
+                else:
+                    known = any(str(item["name"]).strip().lower() == str(m.get("name", "")).strip().lower() for m in merged)
+                if not known:
+                    merged.append({**item, "new": n == len(more) - 1 and len(more) > 1})
+        out[key] = merged
+    return out
+
+
+def _siemens_as_customer(prof: dict) -> None:
+    """Siemens among the reference customers when the relationship wave found it as one.
+
+    Reference customers come from the general waves only, so Siemens reached them only when one of
+    those happened to return a page tying it to the company — the model's suggested queries and the
+    day's DuckDuckGo results decided, and Humanoid lost a customer the Siemens wave had found with
+    two Siemens press releases. A `customer` engagement with an http source already met the
+    `_ground_customers` bar: the company, Siemens and a customer phrase together in one result.
+    Pilots, partners and programmes are not customers and stay in the relationship only."""
+    customer = any(e.get("type") == "customer" and str(e.get("source_url", "")).startswith("http")
+                   for e in prof.get("siemens_engagements") or [])
+    names = prof.setdefault("reference_customers", [])
+    if customer and not any(str(n).strip().lower().startswith("siemens") for n in names):
+        names.append("Siemens")
+
+
 def _siemens_relationship(prof: dict, company: str, row: pd.Series, *result_maps) -> list[dict]:
     """Every engagement between the company and Siemens the run's evidence states, deduplicated.
 
@@ -1742,7 +1846,7 @@ def _ready(value):
 
 
 def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
-                     site=None, web=None, on_progress=None) -> dict:
+                     site=None, web=None, on_progress=None, known_team: dict | None = None) -> dict:
     """Return {'profile': {...}, 'facts': [Fact...]}; never raises.
 
     ``site`` is the optional {path: text} map of the company's OWN pages already fetched
@@ -1856,10 +1960,15 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
                 def _spawn(fn, *a):
                     return ex.submit(contextvars.copy_context().run, functools.partial(fn, *a))
 
+                # Founders and programmes an earlier run already found are not searched for again:
+                # carry_forward brings them in with their sources and last-confirmed dates, and the
+                # team section's Refresh (refresh_team) is where they are searched on request.
+                known = known_team or {}
                 jobs = {
                     "headline": _spawn(_recover_headline_facts, prof, company, row, llm),
-                    "founders": _spawn(_recover_founders, prof, company, llm),
-                    "programs": _spawn(_recheck_programs, prof, row, company, results, llm),
+                    "founders": None if known.get("founders") else _spawn(_recover_founders, prof, company, llm),
+                    "programs": None if known.get("programs") else _spawn(
+                        _recheck_programs, prof, row, company, results, llm),
                     "history": history,
                     # Costs one completion and no searches, so it rides along in the pool it does
                     # not lengthen. It reads `prof['funding']`, which _llm_extract has already set
@@ -1905,10 +2014,11 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
             prof["siemens_engagements"] = _siemens_relationship(prof, company, row, results, web, siemens_hits)
         except Exception:
             prof["siemens_engagements"] = []
+        _siemens_as_customer(prof)
         tail = [functools.partial(_grade_programs, prof.get("programs", []), company, llm),
                 functools.partial(_recall_hq_offline, prof, company, row, llm),
                 functools.partial(_recall_links_offline, prof, company, row, llm)]
-        if do_web:
+        if do_web and not (known_team or {}).get("founders"):
             tail.append(functools.partial(_deepen_founders, prof, company, llm))
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(tail)) as ex:
             for fut in [ex.submit(contextvars.copy_context().run, fn) for fn in tail]:

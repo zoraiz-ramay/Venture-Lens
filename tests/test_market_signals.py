@@ -107,3 +107,27 @@ def test_no_web_search_means_no_signals_from_memory():
     llm.web_answer.side_effect = lambda *a, **k: None
     out = M.market_signals("Radical Dot", run=RUN, llm=llm)
     assert out["provider"] == "none" and out["signals"] == []
+
+
+def _sig(category, who, what, date, url="https://x.test/a"):
+    return {"category": category, "who": who, "what": what, "date": date, "direction": "up",
+            "sources": [{"title": "x", "url": url}]}
+
+
+def test_a_refresh_keeps_earlier_signals_marks_new_ones_and_orders_newest_first():
+    """A Refresh used to replace the stored signals: one the last search found and this one missed was gone."""
+    prior = {"retrieved_at": "2026-09-01T00:00:00+00:00", "signals": [
+        _sig("funding", "Alpha", "raised a seed round", "March 2026", "https://old.test/1"),
+        _sig("policy", "EU", "opened a grant call", "January 2026", "https://old.test/2")]}
+    fresh = {"retrieved_at": "2026-10-09T00:00:00+00:00", "signals": [
+        # Found again, under a different redirect link: the same signal, not a new one.
+        _sig("funding", "Alpha", "Raised a seed round", "March 2026", "https://redirect.test/xyz"),
+        _sig("competition", "Beta", "launched a rival product", "September 2026")]}
+    out = M.merge_signals(fresh, prior, fresh["retrieved_at"])
+    assert [(s["who"], s["new"], s["found_at"][:10]) for s in out["signals"]] == [
+        ("Beta", True, "2026-10-09"), ("Alpha", False, "2026-09-01"), ("EU", False, "2026-09-01")]
+
+
+def test_the_first_search_marks_nothing_new():
+    out = M.merge_signals({"signals": [_sig("funding", "Alpha", "raised", "2026")]}, None, "2026-10-09")
+    assert [s["new"] for s in out["signals"]] == [False]

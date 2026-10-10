@@ -18,11 +18,14 @@ import datetime
 import re
 
 from . import config
-from .text import find_money, is_named_org, parse_funding_stage, parse_headcount, _clean_source_url
+from .text import (find_money, is_named_org, is_revenue_estimate, parse_funding_stage, parse_headcount,
+                   _clean_source_url)
 
 # v2: customers must read as named organisations (text.is_named_org). Bumping the version is what
 # makes every stored run rescore on read instead of keeping a breakdown that counted fragments.
-VERSION = "traction-rubric-v2"
+# v3: a third-party revenue estimate (a data broker's figure, or a statement worded as an estimate)
+# is never revenue (text.is_revenue_estimate); stored runs that scored one are corrected on read.
+VERSION = "traction-rubric-v3"
 DIVISIONS = ("funding", "customers", "revenue", "employees")
 # Relations that make a named organisation a customer. A pilot is not yet a paying account, and a
 # partner, investor or supplier is not one at all — the grounding window accepts "partner" as a
@@ -228,6 +231,8 @@ def _revenue(inputs: dict) -> dict:
                          stale=stale, basis="pre_revenue",
                          rationale=f"Evidenced as pre-revenue: 0 of {rubric['max']}.")
     metric = str(rev.get("metric") or "revenue").lower()
+    if is_revenue_estimate(rev.get("quote"), url):
+        metric = "estimate"          # a stored run scored before the check existed is corrected on read
     money = max(_amounts_about(rev.get("quote"), _REVENUE, _NOT_REVENUE),
                 key=lambda m: m["low"], default=None)
     if rev.get("status") != "amount" or metric not in _REVENUE_METRICS or not money:

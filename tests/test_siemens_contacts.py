@@ -152,8 +152,8 @@ def test_a_broad_department_is_ranked_by_how_closely_each_person_matches_the_too
               {"name": "Plm Deep", "department": "DI SW PLM PD", "email": "d@s"},
               {"name": "Plm Word", "department": "DI SW CS PLM", "email": "w@s"}]
     ranked = SC.rank(people, {**TOOL, "division": "DI"}, "DI")
-    assert [p["name"] for p in ranked] == ["Plm Deep", "Plm Word", "Plm Person"]
-    assert len(ranked) == config.SIEMENS_CONTACTS_PER_TOOL
+    assert [p["name"] for p in ranked] == ["Plm Deep", "Plm Word"]                 # two per tool
+    assert len(ranked) == config.SIEMENS_CONTACTS_PER_TOOL == 2
 
 
 def test_the_department_is_kept_as_supplied_and_a_translated_one_says_so():
@@ -215,8 +215,8 @@ def test_the_endpoint_reads_the_tools_tool_fit_cites_and_needs_a_session(monkeyp
     assert [t["name"] for t in seen["tools"]] == ["Teamcenter"]
 
 
-@pytest.mark.parametrize("tool_count", [4, 7])
-def test_the_endpoint_looks_up_all_recommended_tools_up_to_five(monkeypatch, temp_db, tool_count):
+@pytest.mark.parametrize("tool_count", [2, 7])
+def test_the_endpoint_looks_up_the_recommended_tools_up_to_three(monkeypatch, temp_db, tool_count):
     from api import main, store
     tools = [{"id": f"tool:recommended-{index}", "name": f"Recommended {index}",
               "division": "DI SW", "category": "Engineering"} for index in range(tool_count)]
@@ -232,7 +232,7 @@ def test_the_endpoint_looks_up_all_recommended_tools_up_to_five(monkeypatch, tem
     headers = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
     response = client.post(f"/api/runs/{run_id}/lookup/contacts?refresh=true", headers=headers)
     assert response.status_code == 200
-    assert seen["tools"] == tools[:5]
+    assert seen["tools"] == tools[:3]
     assert seen["refresh"] is True
 
 
@@ -261,3 +261,12 @@ def test_a_redirect_to_sign_in_is_reported_not_followed():
     with pytest.raises(DirectoryError, match="sign-in page.*SIEMENS_DIRECTORY_API_BASE"):
         DirectoryClient(api_key="k", session=session).people_in("DI SW PLM")
     assert session.calls[0]["allow_redirects"] is False
+
+
+def test_a_list_cached_under_the_older_limit_shows_two(monkeypatch):
+    import datetime as dt
+    cached = {"contacts": [{"name": n, "department": "DI SW", "email": f"{n}@s"} for n in ("A", "B", "C")],
+              "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    monkeypatch.setattr(SC.web, "_cached", lambda *a, **k: cached)
+    row = SC.contacts_for_tool({**TOOL, "division": "DI SW"})
+    assert [p["name"] for p in row["contacts"]] == ["A", "B"]

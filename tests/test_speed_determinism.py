@@ -543,3 +543,31 @@ def test_a_reply_cut_off_at_its_ceiling_is_asked_again_with_room_and_not_cached(
     _client("openai", a).complete("hi", reasoning="none")
     assert a.seen[-1]["max_completion_tokens"] == llm_mod.LLM_MAX_BUDGET
     assert stored == []                           # a reply still cut off is never cached
+
+
+def test_a_refused_effort_teaches_the_client_the_models_floor(monkeypatch):
+    """gpt-6.1-sol refuses reasoning_effort "none" and names what it accepts. The client learns the
+    floor from the first refusal and every later call uses it, so nothing is sent twice."""
+    from types import SimpleNamespace
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 2)
+    monkeypatch.setattr(llm_mod, "LLM_CACHE", False)
+    monkeypatch.setattr(llm_mod, "_EFFORTS", {})
+    sent = []
+
+    class Sol:
+        def create(self, **kw):
+            sent.append(dict(kw))
+            if kw.get("reasoning_effort") == "none":
+                raise RuntimeError("Error code: 400 - {'error': {'message': \"Unsupported value: 'reasoning_effort' does not "
+                                   "support 'none' with this model. Supported values are: 'low', 'medium', 'high', and "
+                                   "'xhigh'.\", 'type': 'invalid_request_error', 'param': 'reasoning_effort'}}")
+            msg = SimpleNamespace(content="ok")
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")], usage=None)
+
+    c = _client("openai", Sol())
+    c.model = "gpt-6.1-sol"
+    assert c.complete("first", reasoning="none") == "ok"
+    assert [s["reasoning_effort"] for s in sent] == ["none", "low"] and "temperature" not in sent[1]
+    sent.clear()
+    assert c.complete("second", reasoning="none") == "ok"
+    assert [s["reasoning_effort"] for s in sent] == ["low"]                       # straight to the floor

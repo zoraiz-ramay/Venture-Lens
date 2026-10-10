@@ -23,6 +23,12 @@ gap between the two across the corpus is the calibration signal.
   (`_extract_commercial_posture`) returns a revenue *quote*, which must appear verbatim in the
   evidence, and Python parses the figure out of it (`text.parse_money`). A model asked for a
   revenue number rounds, converts and occasionally invents one.
+- **A third-party revenue estimate is never revenue.** Data brokers (Growjo, SignalHire, ZoomInfo,
+  Owler…) publish modelled revenue for every company. The prompt always said so, but only the model
+  enforced it: Gemini 2.5 Flash scored SignalHire's "revenue … varies between 50M and 100M" as
+  30 points for Tridiagonal while the gpt-6 models left it out. `text.is_revenue_estimate` (broker
+  host, or estimate wording) now marks it `estimate` at extraction and again when traction is scored
+  — recomputed on read, so `VERSION` v3 corrects stored runs. It is still shown, with its source.
 - **Labelling a grounded customer "big name" is identifying, not evaluative** — the same kind of
   fact as a programme's prestige tier (`_grade_programs`). Whether a company is a customer at all
   stays with `_ground_customers`; the model may only label names already in that list, never add

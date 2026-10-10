@@ -301,6 +301,31 @@ def _unsupported_param(exc: Exception, sent: dict) -> str:
     return ""
 
 
+# The reasoning_effort values each model accepts, learnt from its own rejection. gpt-6.1-sol accepts
+# only 'low' and up, so the ~30 calls that ask for "none" were each refused once and then retried
+# with no effort at all; now the first refusal teaches the client the model's floor, that call and
+# every later one use it, and nothing is sent twice. Process-wide: a model's accepted values do not
+# change between requests.
+_EFFORTS: dict[str, list[str]] = {}
+
+
+def _supported_efforts(exc: Exception) -> list[str]:
+    """['low', 'medium', ...] from "Supported values are: 'low', 'medium', ..." — lowest first."""
+    m = re.search(r"supported values are:?(.*?)(?:\"|'\s*,\s*'type'|$)", str(exc), re.I | re.S)
+    return re.findall(r"'([a-z]+)'", m.group(1)) if m else []
+
+
+def _apply_effort_floor(extra: dict, model: str) -> None:
+    """Raise a reasoning_effort this model refuses to the lowest one it accepts."""
+    allowed = _EFFORTS.get(model)
+    effort = extra.get("reasoning_effort")
+    if allowed and effort and effort not in allowed:
+        extra["reasoning_effort"] = allowed[0]
+        # Temperature went out only because reasoning was off; with reasoning on, gpt-5/6 refuse it.
+        if _GPT_REASONING.match(model or ""):
+            extra.pop("temperature", None)
+
+
 def openai_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "").strip().strip("<>").strip()
 
@@ -421,6 +446,7 @@ class LLMClient:
         while attempt < attempts:
             attempt += 1
             try:
+                _apply_effort_floor(extra, use_model)
                 sent = dict(extra)
                 ceiling = budget
 
@@ -464,6 +490,12 @@ class LLMClient:
                 # 400. Drop the offending parameter and carry on rather than letting a model
                 # swap silently disable the LLM entirely.
                 dropped = _unsupported_param(e, extra)
+                if dropped == "reasoning_effort" and _supported_efforts(e):
+                    # Refused a value, not the parameter: learn the model's floor and use it.
+                    _EFFORTS[use_model] = _supported_efforts(e)
+                    log.warning("LLM %s refused reasoning_effort %r; using %r from now on",
+                                use_model, extra.get("reasoning_effort"), _EFFORTS[use_model][0])
+                    continue
                 if dropped:
                     log.warning("LLM rejected %r; retrying without it", dropped)
                     extra.pop(dropped, None)
@@ -524,6 +556,10 @@ class LLMClient:
             return configured
         if self.provider == "openai" and self.base_url.rstrip("/") == "https://llm.sdc.siemens.cloud/v1":
             return "google/gemini-embedding-2"
+        # OpenAI directly (local testing). Not set through EMBEDDING_MODEL in .env: that would also
+        # apply after falling back to Gemini, which does not serve this model.
+        if self.provider == "openai" and self.base_url.rstrip("/") == "https://api.openai.com/v1":
+            return "text-embedding-3-small"
         return "gemini-embedding-001" if self.provider == "gemini" else ""
 
     def _gateway_embeddings(self, texts: list[str], model: str, dims: int) -> list:

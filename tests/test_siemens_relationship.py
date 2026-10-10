@@ -176,3 +176,24 @@ def test_the_year_is_the_engagements_not_the_founding_year():
     assert e["type"] == "investment" and e["year"] == ""
     (e,) = found("In 2024 Acme started a pilot with Siemens Mobility.")
     assert e["year"] == "2024"
+
+
+@pytest.mark.parametrize("engagements, before, after", [
+    # Found by the relationship wave with a source: Siemens is a customer, whatever unit is named.
+    ([{"type": "customer", "unit": "Siemens Digital Industries", "source_url": "https://press.siemens.com/a"}],
+     ["Schaeffler"], ["Schaeffler", "Siemens"]),
+    # Already listed (by any Siemens name): not added twice.
+    ([{"type": "customer", "unit": "Siemens", "source_url": "https://press.siemens.com/a"}],
+     ["Siemens Mobility"], ["Siemens Mobility"]),
+    # Application-only mention: no source, not a grounded customer.
+    ([{"type": "customer", "unit": "Siemens", "source_url": ""}], [], []),
+    # A pilot or a partner is not a customer.
+    ([{"type": "pilot", "unit": "Siemens", "source_url": "https://x.test"},
+      {"type": "partner", "unit": "Siemens", "source_url": "https://x.test"}], [], []),
+])
+def test_a_sourced_siemens_customer_relationship_is_a_reference_customer(engagements, before, after):
+    """Humanoid lost Siemens from its customers on runs whose general searches missed the page,
+    though the relationship wave had found it with two Siemens press releases."""
+    prof = {"siemens_engagements": engagements, "reference_customers": list(before)}
+    P._siemens_as_customer(prof)
+    assert prof["reference_customers"] == after

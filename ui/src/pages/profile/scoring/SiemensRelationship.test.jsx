@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
-import SiemensRelationship from "./SiemensRelationship.jsx";
+import SiemensRelationship, { relationSentence } from "./SiemensRelationship.jsx";
 import PillarMethod from "./PillarMethod.jsx";
 
 /* An existing Siemens relationship adds a point to Collaborate in the engine. The reviewer must be
@@ -21,11 +21,12 @@ const BONUS = { pillar: "Collaborate", status: "assessed", total: 7, model_total
 describe("Existing Siemens relationship on Collaborate", () => {
   it("names each engagement with its source and says it added a point", () => {
     render(<SiemensRelationship res={{ deep_profile: { siemens_engagements: [PILOT, USES] } }} pillar={BONUS} />);
-    const section = screen.getByRole("region", { name: "Existing Siemens relationship" });
+    const section = screen.getByRole("region", { name: "Relation with Siemens" });
     expect(within(section).getByText("Siemens Mobility: pilot (2024)")).toBeInTheDocument();
     expect(within(section).getByText("Siemens: uses Teamcenter")).toBeInTheDocument();
     expect(within(section).getByText(/Adds \+1 to Collaborate \(criteria 6\/9, total 7\/9\)/)).toBeInTheDocument();
-    expect(within(section).getAllByRole("link", { name: /Source/ })).toHaveLength(2);
+    // One link on the summary sentence, one per engagement.
+    expect(within(section).getAllByRole("link", { name: /Source/ })).toHaveLength(3);
   });
 
   it("labels the company's own statement as a claim", () => {
@@ -41,13 +42,27 @@ describe("Existing Siemens relationship on Collaborate", () => {
     expect(screen.getByText(/none adds to the score/)).toBeInTheDocument();
   });
 
-  it("renders nothing when the run found no relationship", () => {
-    const { container } = render(<SiemensRelationship res={{ deep_profile: {} }} pillar={BONUS} />);
-    expect(container).toBeEmptyDOMElement();
+  it("says None found when the run found no relationship", () => {
+    render(<SiemensRelationship res={{ deep_profile: {} }} pillar={BONUS} />);
+    expect(within(screen.getByRole("region", { name: "Relation with Siemens" })).getByText("None found")).toBeInTheDocument();
   });
 
   it("says in the method total that a point was added beside the criteria", () => {
     render(<PillarMethod pillar={BONUS} row={{ bandLabel: "Strong", value: 78 }} name="Collaborate" onOpenCriterion={() => {}} />);
     expect(screen.getByText(/including \+1 for an existing Siemens relationship \(criteria 6\/9\)/)).toBeInTheDocument();
+  });
+});
+
+describe("relationSentence", () => {
+  const eng = (type, unit = "Siemens", year = "", url = "https://x.test/" + type) => ({ type, unit, year, source_url: url });
+  it("leads with the strongest sourced relationship and names the rest in a few words", () => {
+    const res = { deep_profile: { siemens_engagements: [eng("partner"), eng("customer", "Siemens Digital Industries", "2026"),
+      eng("pilot"), eng("customer")] } };
+    expect(relationSentence(res)).toEqual({ text: "Siemens is a customer (Siemens Digital Industries, 2026); also pilot, partner.",
+      url: "https://x.test/customer" });
+  });
+  it("counts only engagements with a source link, and otherwise says None found", () => {
+    expect(relationSentence({ deep_profile: { siemens_engagements: [{ ...APP_ONLY }] } }).text).toBe("None found");
+    expect(relationSentence({}).text).toBe("None found");
   });
 });

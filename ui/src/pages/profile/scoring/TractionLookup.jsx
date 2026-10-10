@@ -34,7 +34,7 @@ export function Sources({ items, label = "Sources" }) {
   );
 }
 
-function useLookup(runId, kind) {
+export function useLookup(runId, kind) {
   const key = `${runId}:${kind}`;
   const [state, setState] = useState(() => (cache.has(key) ? { data: cache.get(key) } : { loading: runId != null }));
   const load = useCallback(async (refresh = false) => {

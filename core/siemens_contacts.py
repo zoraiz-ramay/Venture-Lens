@@ -81,7 +81,8 @@ def contacts_for_tool(tool: dict, client: DirectoryClient | None = None, refresh
     key = web._cache_key("contacts", query, row["tool"], row["category"])
     cached = None if refresh else web._cached("contacts", key)
     if isinstance(cached, dict) and _fresh(cached):
-        return {**row, "contacts": cached.get("contacts", [])}
+        # Cut to today's limit: a list cached under an older, larger one would show more people.
+        return {**row, "contacts": cached.get("contacts", [])[:config.SIEMENS_CONTACTS_PER_TOOL]}
     try:
         people = (client or DirectoryClient()).people_in(query)
     except DirectoryError as e:

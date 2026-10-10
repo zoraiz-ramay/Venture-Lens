@@ -475,7 +475,8 @@ def _fresh_evaluation(name, body, principal, on_partial, user, departments, trac
     try:
         res = core.evaluate(name, None, core.DEFAULT_TOOLS_CSV, do_web=body.do_web, df=df,
                             use_web_cache=not body.refresh, on_partial=on_partial, tracxn=tracxn,
-                            departments=departments, prior_runs=store.prior_runs_for(name))
+                            departments=departments, prior_runs=store.prior_runs_for(name),
+                            team_record=store.latest_enrichment(name, "team"))
     finally:
         if token is not None:
             core.web.reset_cache_private(token)
@@ -797,9 +798,39 @@ def _flow_lock(run_id: int) -> threading.Lock:
         return _flow_locks.setdefault(run_id, threading.Lock())
 
 
+@app.post("/api/runs/{run_id}/lookup/team")
+def run_team(run_id: int, refresh: bool = False, user: Principal = Depends(current_user)) -> dict:
+    """The founders, programmes and investors on record for this run's company.
+
+    A full evaluation does not search for these again once any run has found them; this is where
+    they are searched on request (``refresh``). The result is merged into what the run and earlier
+    refreshes hold — the run's own entries first and in order, since Team & Ecosystem cites them by
+    position — stored, and read by the next full evaluation as one more earlier run. Like the other
+    lookups it never rewrites the run, so it moves no score until the company is evaluated again.
+    Declared before the generic lookup route so "team" is not read as one of its kinds."""
+    from datetime import datetime, timezone
+    from core.profile import merge_team, refresh_team
+    res = _run_for(run_id, user)
+    company = str(res.get("company", ""))
+    dp = res.get("deep_profile") or {}
+    run_lists = {"founders": dp.get("founders"), "key_team": dp.get("key_team"), "advisors": dp.get("advisors"),
+                 "programs": dp.get("programs"), "investors": (dp.get("commercial") or {}).get("investors")}
+    stored = store.latest_enrichment(company, "team")
+    if not refresh:
+        return {**merge_team(run_lists, stored or {}), "retrieved_at": (stored or {}).get("retrieved_at", ""),
+                "from_store": bool(stored)}
+    profile = res.get("profile") or {}
+    row = pd.Series({"company_name": company, "website": profile.get("website", ""),
+                     "domain": profile.get("domain", ""), "short_description": res.get("summary", "")})
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out = {**merge_team(run_lists, stored or {}, refresh_team(company, row, core.LLMClient())), "retrieved_at": now}
+    store.save_enrichment(company, "team", out, run_id=None, user_oid=user.oid)
+    return {**out, "from_store": False}
+
+
 @app.post("/api/runs/{run_id}/lookup/contacts")
 def run_contacts(run_id: int, refresh: bool = False, user: Principal = Depends(current_user)) -> dict:
-    """Relevant Siemens contacts for up to five tools recommended by this run's Empower pillar, from the Siemens
+    """Relevant Siemens contacts for up to three tools recommended by this run's Empower pillar, from the Siemens
     Directory (core/siemens_contacts.py). Declared before the generic lookup route so "contacts" is
     not read as one of its kinds.
 
@@ -820,7 +851,7 @@ def run_contacts(run_id: int, refresh: bool = False, user: Principal = Depends(c
             continue
         tools.append(entry)
         seen.add(name)
-        if len(tools) == 5:
+        if len(tools) == core.config.SIEMENS_CONTACT_TOOLS:
             break
     return contacts(tools, refresh=refresh)
 
@@ -849,8 +880,13 @@ def run_lookup(run_id: int, kind: Literal["funding", "headcount", "signals"], re
     tracxn = tracxn_client_for(user, llm)
     website = str(profile.get("website") or "")
     if kind == "signals":
+        from core.market_signals import merge_signals
         # Signals start from an understanding of the market, which needs the run's own research.
         out = market_signals(company, run=res, website=website, llm=llm, tracxn=tracxn, refresh=refresh)
+        # A Refresh adds to what was stored instead of replacing it: a signal the last search found
+        # and this one missed is still a signal, so the page keeps it, marked by when it was found.
+        if out.get("provider") in ("tracxn", "web"):
+            out = merge_signals(out, store.latest_enrichment(company, "signals"), out.get("retrieved_at", ""))
     else:
         fetch = funding_details if kind == "funding" else headcount_details
         out = fetch(company, website=website, llm=llm, tracxn=tracxn, refresh=refresh)

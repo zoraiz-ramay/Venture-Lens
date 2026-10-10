@@ -164,7 +164,7 @@ def test_invalid_model_output_leaves_market_unassessed():
 
 def _dept_run(market):
     return {"found": True, "company": "Acme", "department": {"id": "di", "label": "DI"},
-            "traction": {"version": "traction-rubric-v2", "status": "scored", "score_0_100": 80.0,
+            "traction": {"version": "traction-rubric-v3", "status": "scored", "score_0_100": 80.0,
                          "earned": 56, "available_max": 70, "divisions_known": 3, "divisions": []},
             "score": {"version": "llm-judgment-v1", "status": "assessed", "final_score": 60,
                       "dimensions": {"traction": 80.0, "market": 90}},

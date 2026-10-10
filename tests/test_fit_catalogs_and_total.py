@@ -186,7 +186,7 @@ def test_any_missing_component_leaves_the_total_pending_not_zeroed(missing):
 def _department_run(fit=78, team_points=12, market=70, traction_dims=None):
     return {"found": True, "company": "Acme",
             "department": {"id": "di", "label": "DI", "interests": ["automation"], "demo": True},
-            "traction": {"version": "traction-rubric-v2", "status": "scored", "score_0_100": 80.0, "earned": 56,
+            "traction": {"version": "traction-rubric-v3", "status": "scored", "score_0_100": 80.0, "earned": 56,
                          "available_max": 70, "divisions_known": 3, "divisions": []},
             "score": {"version": "llm-judgment-v1", "status": "assessed", "final_score": 64,
                       "dimensions": {"traction": traction_dims or 80.0, "siemens_fit": 55, "market": market}},

@@ -16,7 +16,7 @@ const DEPT_RUN = {
   department: { id: "di", label: "Digital Industries", interests: ["automation", "manufacturing"], demo: true },
   routing: { version: "pillar-route-v1", status: "assessed", pillar: "Empower", reasons: ["Empower is a strong match (8/9)."],
     next_steps: ["Scope a SIMATIC AI trial."], evidence: [], portfolio_stance: null },
-  traction: { version: "traction-rubric-v2", status: "scored", score_0_100: 60, earned: 42, available_max: 70, confidence: 0.7,
+  traction: { version: "traction-rubric-v3", status: "scored", score_0_100: 60, earned: 42, available_max: 70, confidence: 0.7,
     divisions_known: 3, fx_as_of: "2026-09-01", divisions: [] },
   market: { version: "market-rubric-v1", status: "assessed", points: 9, score_0_100: 60, band: "Moderate Market", figures: {},
     criteria: [{ id: "market_size", label: "Market size", score: 3, anchor: "Large market", basis: "model_judgment", evidence: [], areas: [] }] },

@@ -172,7 +172,8 @@ def _by_domain(name: str):
 def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = True,
              df: "pd.DataFrame" = None, on_step=None, use_web_cache: bool = True,
              on_partial=None, tracxn=None, department: dict | None = None,
-             prior_runs: list | None = None, departments: list | None = None) -> dict:
+             prior_runs: list | None = None, departments: list | None = None,
+             team_record: dict | None = None) -> dict:
     """Run the full pipeline for one startup.
 
     ``departments`` assesses the startup for every listed department at once: research, Empower
@@ -203,7 +204,7 @@ def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = T
     try:
         with _run_records() as records:
             return records(_evaluate(name, glassdollar_path, tools_path, do_web, df, on_step,
-                                     on_partial, tracxn, department, prior_runs, departments))
+                                     on_partial, tracxn, department, prior_runs, departments, team_record))
     finally:
         web.reset_cache_enabled(token)
 
@@ -250,7 +251,7 @@ def _with_degraded(result: dict, failures: list) -> dict:
 def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = True,
               df: "pd.DataFrame" = None, on_step=None, on_partial=None, tracxn=None,
               department: dict | None = None, prior_runs: list | None = None,
-              departments: list | None = None) -> dict:
+              departments: list | None = None, team_record: dict | None = None) -> dict:
     # Optional progress callback: on_step(step_label, status) where status is one of
     # "running" | "done" | "error". Reporting must never break the evaluation itself.
     def _step(label: str, status: str = "running") -> None:
@@ -337,6 +338,12 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     now = datetime.now(timezone.utc)
     priors = carry_forward.usable_priors(prior_runs, carry_forward.identity(
         str(row.get("company_name", "")) or name, row.get("website", ""), row.get("domain", "")))
+    # The team section's own refresh is carried like an earlier run, in date order, and anything an
+    # earlier run or that refresh already found is not searched for again (research_profile).
+    stored_team = carry_forward.team_run(team_record)
+    if stored_team:
+        priors = sorted(priors + [stored_team], key=carry_forward._when)
+    known_team = carry_forward.known_team(priors)
     carried: dict = {}
 
     tools = load_siemens_tools(tools_path)
@@ -413,7 +420,7 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
             # Enrichment's site pages and search results go in as futures: the branch waits for
             # each only where it first reads it (core/profile.research_profile).
             "profile": _spawn("profile", research_profile, row, llm, do_web,
-                              _Pick(site, "site"), _Pick(searched, "web"), _profile_progress),
+                              _Pick(site, "site"), _Pick(searched, "web"), _profile_progress, known_team),
             # trend uses niche keywords derived inside analyze_trend (stage 1); we pass an empty
             # list here and it derives its own terms. Kicked off early so it runs in parallel.
             "trend": _spawn("trend", analyze_trend, row, "", [], llm, do_web),

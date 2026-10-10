@@ -20,13 +20,53 @@ export function sourcedEngagements(res) {
   return (res?.deep_profile?.siemens_engagements || []).filter((e) => /^https?:/.test(e?.source_url || ""));
 }
 
+// Strongest first: what a reviewer most needs to know about the relationship leads the sentence.
+const LEAD = [
+  ["customer", (u) => `${u} is a customer`], ["investment", (u) => `${u} has invested`],
+  ["pilot", (u) => `Piloted with ${u}`], ["joint_project", (u) => `Joint project with ${u}`],
+  ["supplier", (u) => `Supplies ${u}`], ["partner", (u) => `Partners with ${u}`],
+  ["programme", (u) => `In a ${u} programme`], ["uses_product", () => "Uses Siemens products"],
+];
+const ALSO = { customer: "customer", investment: "investment", pilot: "pilot", joint_project: "joint project",
+  supplier: "supplier", partner: "partner", programme: "programme", uses_product: "uses Siemens products" };
+
+/** The relationship in one short sentence, built from sourced engagements only — templated, never
+ *  generated — with the source of the one it leads with. {text, url}; "None found" without any. */
+export function relationSentence(res) {
+  const eng = sourcedEngagements(res);
+  const lead = LEAD.find(([type]) => eng.some((e) => e.type === type));
+  if (!lead) return { text: "None found", url: "" };
+  const [type, say] = lead;
+  const mine = eng.filter((e) => e.type === type);
+  const named = [...new Set(mine.map((e) => e.unit).filter((u) => u && u !== "Siemens"))];
+  const year = mine.map((e) => e.year).filter(Boolean).sort().pop();
+  const detail = [named.join(", "), year].filter(Boolean).join(", ");
+  const others = LEAD.map(([t]) => t).filter((t) => t !== type && eng.some((e) => e.type === t)).map((t) => ALSO[t]);
+  const text = `${say("Siemens")}${detail ? ` (${detail})` : ""}${others.length ? `; also ${others.join(", ")}` : ""}.`;
+  return { text, url: mine[0].source_url };
+}
+
+/* The sentence with its source, as the profile summary and Collaborate both show it. */
+export function RelationLine({ res }) {
+  const { text, url } = relationSentence(res);
+  return <>{text}{url && <> <ExtLink href={url}>Source</ExtLink></>}</>;
+}
+
 export default function SiemensRelationship({ res, pillar }) {
   const all = res?.deep_profile?.siemens_engagements || [];
-  if (!all.length) return null;
   const bonus = Boolean(pillar?.relationship_bonus);
+  if (!all.length) {
+    return (
+      <section className="opp-other" aria-labelledby="siemens-relationship">
+        <h4 id="siemens-relationship">Relation with Siemens</h4>
+        <p>None found</p>
+      </section>
+    );
+  }
   return (
     <section className="opp-other" aria-labelledby="siemens-relationship">
-      <h4 id="siemens-relationship">Existing Siemens relationship</h4>
+      <h4 id="siemens-relationship">Relation with Siemens</h4>
+      <p className="relation-line"><RelationLine res={res} /></p>
       <p className="muted">
         {bonus ? `Adds +1 to Collaborate (criteria ${pillar.model_total}/9, total ${pillar.total}/9).`
           : "Listed for the reviewer; none of these has a source link, so none adds to the score."}

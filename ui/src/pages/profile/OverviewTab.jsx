@@ -2,11 +2,12 @@ import React from "react";
 import ConfirmedTag from "../../components/ConfirmedTag.jsx";
 import { Spec, ExtLink } from "../../components/widgets.jsx";
 import Section from "./Section.jsx";
-import { dedupePeople, withoutListed } from "./people.js";
 import BusinessFlow from "./BusinessFlow.jsx";
 import MarketSignals from "./MarketSignals.jsx";
 import ReferenceCustomers from "./ReferenceCustomers.jsx";
+import TeamSection from "./TeamSection.jsx";
 import { formatMoney } from "./scoring/presentation.js";
+import { RelationLine } from "./scoring/SiemensRelationship.jsx";
 
 /* A value the DB did not have, filled in from web research. Marked so it is never mistaken
    for application data — the source link is the evidence for it.
@@ -132,9 +133,6 @@ function RevenueMetric({ division: d }) {
 export default function OverviewTab({ res }) {
   const p = res.profile || {}, sc = res.score || {}, dp = res.deep_profile || {};
   const psrc = res.profile_sources || {};
-  const founders = dedupePeople((dp.founders || []).filter((f) => f?.name));
-  const advisors = withoutListed(dedupePeople((dp.advisors || []).filter((a) => a?.name)), founders);
-  const programs = (dp.programs || []).filter((x) => x?.name);
   // The profile reaches the page before its recall nets finish (core/pipeline.py), and an empty
   // list then means "not found yet", not "not found". Only a streaming partial carries the flag.
   const researching = Boolean(res.streaming && res.profile_researching);
@@ -180,7 +178,8 @@ export default function OverviewTab({ res }) {
         <Spec k="Headquarters">{p.hq}{p.hq && <> <WebSourced src={psrc.hq} field="headquarters" /></>}</Spec>
         <Spec k="Stage">{p["Development stage of your solution"]}</Spec>
         <Spec k="Business model">{p["Business model"]}</Spec>
-        <Spec k="Funding">{p.funding}{p.funding && <> <WebSourced src={psrc.funding} field="funding" /></>}</Spec>
+        {/* Funding is the headline tile above; this row used to repeat it. */}
+        <Spec k="Relation with Siemens"><RelationLine res={res} /></Spec>
         <Spec k="Website"><ExtLink href={p.website} /></Spec>
         <Spec k="LinkedIn"><ExtLink href={p.linkedin_url} />
           {p.linkedin_url && <> <WebSourced src={psrc.linkedin_url} field="LinkedIn URL" /></>}</Spec>
@@ -191,42 +190,7 @@ export default function OverviewTab({ res }) {
 
       <BusinessFlow res={res} />
 
-      <Section id="profile-team-ecosystem">
-        <h3>Team &amp; ecosystem</h3>
-        {founders.length === 0 && advisors.length === 0 && programs.length === 0 && (
-          <p className="muted" style={{ margin: 0 }}>
-            {researching ? "Still researching founders, advisors and programmes…" : "No researched team data."}
-          </p>
-        )}
-        {founders.map((f, i) => (
-          <Spec key={i} k="Founder">
-            {f.name} — {f.role || "founder"}
-            {f.background && <span className="muted"> · {f.background}</span>}{" "}
-            {f.linkedin && <ExtLink href={f.linkedin}>LinkedIn</ExtLink>} <ConfirmedTag item={f} />
-          </Spec>
-        ))}
-        {advisors.map((a, i) => (
-          <Spec key={i} k="Advisor">{a.name} — {a.role || "advisor"}{a.affiliation ? `, ${a.affiliation}` : ""} <ConfirmedTag item={a} /></Spec>
-        ))}
-        {programs.length > 0 && (
-          <div style={{ marginTop: 6 }}>
-            {programs.map((x, i) => {
-              // A membership found only on the company's own site is a claim, not a
-              // verified fact — several such programs publish no searchable member
-              // directory, so it is shown but explicitly marked as uncorroborated.
-              const claimed = String(x.confidence || "").toLowerCase() === "self_asserted";
-              return (
-                <span key={i} className="chip"
-                      title={claimed
-                        ? `${x.type} — company-claimed, not independently corroborated`
-                        : `${x.type} — independently corroborated`}>
-                  {x.name}{claimed && <span className="muted"> · claimed</span>} <ConfirmedTag item={x} />
-                </span>
-              );
-            })}
-          </div>
-        )}
-      </Section>
+      <TeamSection res={res} researching={researching} />
 
       <ReferenceCustomers res={res} />
 

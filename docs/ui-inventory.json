@@ -830,7 +830,7 @@
     },
     {
       "path": "ui/src/pages/profile/MarketSignals.jsx",
-      "lines": 88,
+      "lines": 125,
       "exports": [
         "MarketSignals"
       ],
@@ -839,19 +839,23 @@
         "failed",
         "muted",
         "sig-adjacent",
+        "sig-all",
         "sig-blurb",
         "sig-body",
         "sig-card-head",
         "sig-card-title",
         "sig-date",
+        "sig-dialog",
         "sig-empty",
         "sig-figure",
+        "sig-found",
         "sig-grid",
         "sig-icon",
         "sig-lede",
         "sig-list",
         "sig-lookup",
         "sig-market",
+        "sig-new",
         "sig-row",
         "sig-tally",
         "sig-text"
@@ -880,7 +884,7 @@
     },
     {
       "path": "ui/src/pages/profile/OverviewTab.jsx",
-      "lines": 243,
+      "lines": 207,
       "exports": [
         "OverviewTab"
       ],
@@ -922,7 +926,7 @@
     },
     {
       "path": "ui/src/pages/profile/ProfileSignals.test.jsx",
-      "lines": 73,
+      "lines": 87,
       "exports": [],
       "css_classes": []
     },
@@ -1259,16 +1263,22 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/SiemensContacts.jsx",
-      "lines": 39,
+      "lines": 51,
       "exports": [
         "SiemensContacts"
       ],
       "css_classes": [
+        "contact-avatar",
         "contact-list",
+        "contact-mail",
+        "contact-note",
+        "contact-person",
         "contact-tool",
+        "contact-tool-head",
+        "contact-tool-name",
         "contact-tools",
+        "contact-who",
         "contacts",
-        "crit-catalog-name",
         "fd",
         "kind-tag",
         "muted"
@@ -1288,16 +1298,19 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/SiemensRelationship.jsx",
-      "lines": 47,
+      "lines": 87,
       "exports": [
+        "RelationLine",
         "SiemensRelationship",
         "engagementText",
+        "relationSentence",
         "sourcedEngagements"
       ],
       "css_classes": [
         "kind-tag",
         "muted",
         "opp-other",
+        "relation-line",
         "tool-card",
         "tool-card-head",
         "tool-cards"
@@ -1305,7 +1318,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/SiemensRelationship.test.jsx",
-      "lines": 54,
+      "lines": 69,
       "exports": [],
       "css_classes": []
     },
@@ -1425,7 +1438,8 @@
         "HeadcountLookup",
         "Lookup",
         "Sources",
-        "hostOf"
+        "hostOf",
+        "useLookup"
       ],
       "css_classes": [
         "crit-note",
@@ -1495,6 +1509,28 @@
       "css_classes": [
         "dialog-panel"
       ]
+    },
+    {
+      "path": "ui/src/pages/profile/TeamSection.jsx",
+      "lines": 90,
+      "exports": [
+        "TeamSection"
+      ],
+      "css_classes": [
+        "chip",
+        "fd-stored",
+        "link-btn",
+        "muted",
+        "sig-new",
+        "team-head",
+        "team-head-meta"
+      ]
+    },
+    {
+      "path": "ui/src/pages/profile/TeamSection.test.jsx",
+      "lines": 41,
+      "exports": [],
+      "css_classes": []
     },
     {
       "path": "ui/src/pages/profile/useScrollSpy.test.jsx",
@@ -1773,7 +1809,7 @@
     "routes": 9,
     "api_methods": 41,
     "design_tokens": 70,
-    "jsx_files": 99,
-    "jsx_lines": 10582
+    "jsx_files": 101,
+    "jsx_lines": 10795
   }
 }

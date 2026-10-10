@@ -193,7 +193,10 @@ SIEMENS_DIRECTORY_LIMIT = int(os.getenv("SIEMENS_DIRECTORY_LIMIT", "25"))
 SIEMENS_DIRECTORY_MAX_PAGES = int(os.getenv("SIEMENS_DIRECTORY_MAX_PAGES", "4"))
 SIEMENS_DIRECTORY_TIMEOUT = float(os.getenv("SIEMENS_DIRECTORY_TIMEOUT", "15"))
 # How many contacts are shown per tool, and how long a tool's contacts are reused before asking again.
-SIEMENS_CONTACTS_PER_TOOL = 3
+# Empower shows contacts for its first SIEMENS_CONTACT_TOOLS recommended tools, two people each:
+# enough to start a conversation, few enough to read at a glance.
+SIEMENS_CONTACT_TOOLS = 3
+SIEMENS_CONTACTS_PER_TOOL = 2
 SIEMENS_CONTACTS_TTL_DAYS = 7
 
 

@@ -15,7 +15,7 @@ const division = (over) => ({
 });
 
 const TRACTION = {
-  version: "traction-rubric-v2", status: "scored", score_0_100: 72.2, earned: 32.5,
+  version: "traction-rubric-v3", status: "scored", score_0_100: 72.2, earned: 32.5,
   available_max: 45, total_max: 100, confidence: 0.45, divisions_known: 3, fx_as_of: "2026-09-01",
   divisions: [
     division({ status: "evidenced", points: 25, value: "€2.8M", band: "≥ €2M", origin: "GlassDollar",

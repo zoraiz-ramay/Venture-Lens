@@ -510,8 +510,11 @@ def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None)
 # three queries. Past GROUNDED_SEARCH_TIMEOUT the search counts as empty. GROUNDED_SEARCH_HEDGE
 # (off by default) sends one duplicate after that many seconds and takes whichever answers first:
 # at 4s it duplicated ~40% of searches, for ~50% more tokens and no measurable gain in two runs.
+# 12s, not 7: a search past the deadline is billed anyway, so the wait costs latency and no tokens,
+# while 7s threw away 7-9 paid searches per evaluation once a run's ~45 searches went out together
+# (Radical Dot lost its advisor, "backed by" and three market searches that way).
 GROUNDED_SEARCH_HEDGE = float(os.getenv("GROUNDED_SEARCH_HEDGE", "0"))
-GROUNDED_SEARCH_TIMEOUT = float(os.getenv("GROUNDED_SEARCH_TIMEOUT", "7"))
+GROUNDED_SEARCH_TIMEOUT = float(os.getenv("GROUNDED_SEARCH_TIMEOUT", "12"))
 GROUNDED_FETCH_TIMEOUT = float(os.getenv("GROUNDED_FETCH_TIMEOUT", "3"))
 
 

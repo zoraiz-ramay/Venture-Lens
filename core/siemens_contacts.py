@@ -72,6 +72,7 @@ def _fresh(entry) -> bool:
 
 
 def contacts_for_tool(tool: dict, client: DirectoryClient | None = None, refresh: bool = False) -> dict:
+    """One tool's row: its department as supplied, the query searched, and the ranked contacts."""
     department = str(tool.get("division") or "").strip()
     query, translated = department_query(department)
     row = {"tool": tool.get("name", ""), "category": tool.get("category", ""), "department": department,

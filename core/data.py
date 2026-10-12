@@ -1,5 +1,9 @@
 """Data loading: GlassDollar export, startup lookup, live web-profile fallback,
-Siemens tool catalogue, and pitch-PDF text extraction."""
+Siemens tool catalogue, and pitch-PDF text extraction.
+
+The input end of `core/pipeline.py::evaluate`: the company is resolved here (GlassDollar first, then
+`web_profile_row` for a company outside it) before enrichment and the research branches run.
+`web_profile_row` deliberately leaves verifiable fields to the grounded research in core/profile.py."""
 from __future__ import annotations
 
 import os
@@ -14,7 +18,7 @@ from .llm import LLMClient
 from . import s3 as _s3
 
 
-def load_glassdollar(path: str = None) -> pd.DataFrame:
+def load_glassdollar(path: str | None = None) -> pd.DataFrame:
     """Load the GlassDollar company set.
 
     Primary source is the live GlassDollar REST API (requires GLASSDOLLAR_API_KEY, or a key
@@ -43,7 +47,6 @@ def search_glassdollar(query: str, limit: int = 10, api_key: str = "") -> pd.Dat
     """Search the GlassDollar API for companies matching `query` (interactive picker use)."""
     from . import glassdollar_api
     return glassdollar_api.search_as_df(query, limit=limit, api_key=api_key)
-
 
 
 def find_startup(df: pd.DataFrame, name: str) -> Optional[pd.Series]:
@@ -219,7 +222,6 @@ def web_profile_row(name: str, llm: "LLMClient" = None, max_results: int = 4) ->
             for k in missing:
                 if str(gap.get(k) or "").strip():
                     fields[k] = gap[k]
-            fields["_knowledge_filled"] = missing
 
     site = (_flat(fields.get("website")) or website)
     # Derive the bare host. Downstream research pins its identity-sensitive searches to the
@@ -277,11 +279,11 @@ def _knowledge_profile_row(name: str, llm: "LLMClient" = None) -> Optional[pd.Se
 
 
 def load_siemens_tools(path: str) -> list[dict]:
+    """The Siemens tool catalogue (siemens_tools.csv) as records keyed `product` and `category`;
+    the newer `name` / `type` column headers are accepted for either."""
     df = pd.read_csv(path).fillna("")
-    # Normalize the tool-name column: accept 'name' (new) or 'product' (legacy).
     if "product" not in df.columns and "name" in df.columns:
         df = df.rename(columns={"name": "product"})
-    # Normalize the tool-type column: accept 'type' -> 'category' if 'category' missing.
     if "category" not in df.columns and "type" in df.columns:
         df = df.rename(columns={"type": "category"})
     return df.to_dict("records")
@@ -300,7 +302,6 @@ def _resolve_pdf(path_field: str, pdf_dir: str = PDF_DIR) -> str:
         for cand in (raw, os.path.join(pdf_dir, basename)):
             if cand and os.path.exists(cand):
                 return cand
-        # Fall back to S3
         if basename:
             local = _s3.fetch_pdf(basename)
             if local:
@@ -309,6 +310,7 @@ def _resolve_pdf(path_field: str, pdf_dir: str = PDF_DIR) -> str:
 
 
 def extract_pdf_text(path: str, max_chars: int = 6000) -> str:
+    """The pitch deck's text, cut to `max_chars`; '' when missing or unreadable."""
     if not path or not os.path.exists(path):
         return ""
     try:

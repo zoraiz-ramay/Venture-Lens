@@ -1,4 +1,10 @@
-"""Free web enrichment via DuckDuckGo (no paid data APIs)."""
+"""Web search and page fetching for every research stage, behind one cache.
+
+`ddg_search` / `_ddg_many` answer {title, href, body} hits from DuckDuckGo or, with
+SEARCH_BACKEND=grounded, from pages the model's web search found and this module then reads itself
+(`_grounded_search`; the model's prose is discarded). `fetch_site_text` / `fetch_url` are the
+SSRF-guarded direct fetches. Also here: the injected result cache (`install_cache`, `_cached`,
+`_store`), per-evaluation search sharing, and the run timeline `scripts/waterfall.py` draws."""
 from __future__ import annotations
 
 import contextvars
@@ -21,7 +27,7 @@ _tracer = trace.get_tracer(__name__)
 # disagree. Caching both makes a re-run fast and byte-reproducible.
 #
 # The backend is injected rather than imported: nothing in core/ depends on api/, and keeping it
-# that way lets the engine run uncached from tests, scripts and Streamlit. api/main.py installs
+# that way lets the engine run uncached from tests and scripts. api/main.py installs
 # the SQLite-backed store at startup via install_cache().
 _cache_get = None
 _cache_put = None
@@ -52,7 +58,7 @@ def set_cache_private(private: bool):
     return _cache_private.set(private)
 
 
-def reset_cache_private(token):
+def reset_cache_private(token) -> None:
     _cache_private.reset(token)
 
 
@@ -208,6 +214,7 @@ def _own_search(ask, future) -> list:
 
 
 def _pages_of(answer) -> list:
+    """The pages (each with a url) a web_answer listed."""
     return [p for p in (answer or {}).get("pages", []) if p.get("url")]
 
 
@@ -254,6 +261,7 @@ def mark(kind: str, started: float, **extra) -> None:
 
 
 def _cache_key(*parts) -> str:
+    """A stable cache key over all `parts`."""
     return hashlib.sha256("\x00".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
 
@@ -429,7 +437,6 @@ def _passages(text: str, query: str) -> str:
     Snippet-sized on purpose. A whole page as one "result" would make "the program and the company
     co-occur in a single result" true of any long page that mentions both anywhere, which is the
     looseness every grounding gate exists to refuse."""
-    import re
     words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
     if not text or not words:
         return ""
@@ -450,6 +457,7 @@ def _passages(text: str, query: str) -> str:
 
 
 def _grounding_client():
+    """The process-wide LLMClient grounded searches go through (created on first use)."""
     global _grounded_llm
     with _grounded_llm_lock:
         if _grounded_llm is None:
@@ -760,7 +768,6 @@ def _strip_html(html: str) -> str:
     text with zero program names and the ecosystem section came back empty. Order matters —
     the script/style blocks are removed first so an alt= inside inline JS is never harvested.
     """
-    import re
     import html as _htmlmod
     global _TAG_RE, _ATTR_RE
     if _TAG_RE is None:
@@ -896,7 +903,6 @@ def fetch_site_text(domain: str, paths: tuple = _FETCH_PATHS,
         return {}
     # Normalise to a bare host, then rebuild canonical https URLs per path.
     from urllib.parse import urlparse
-    import re
     host = urlparse(domain if "//" in domain else "https://" + domain).hostname or ""
     if not host or not _is_public_host(host):
         return {}

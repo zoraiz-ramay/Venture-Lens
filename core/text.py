@@ -1,4 +1,8 @@
-"""Shared text-processing helpers and the stopword set used across the engine."""
+"""Shared text-processing helpers and the stopword set used across the engine.
+
+Pure functions, no I/O: funding/money/headcount parsing (read by profile, traction, score and
+market), the customer-name and source-URL gates, and person-name identity for deduplicating
+founders and team across sources."""
 from __future__ import annotations
 
 import re
@@ -36,7 +40,6 @@ def is_revenue_estimate(quote: str, url: str) -> bool:
     """A revenue statement that is a data broker's model or worded as an estimate: never revenue."""
     host = re.sub(r"^https?://(www\.)?", "", str(url or "").lower()).split("/")[0]
     return any(h in host for h in _ESTIMATE_HOSTS) or bool(_ESTIMATE_WORDS.search(str(quote or "")))
-
 
 
 def has_funding_signal(value) -> bool:
@@ -155,6 +158,7 @@ def _money_number(s: str, has_magnitude: bool) -> float | None:
 
 
 def _currency_of(token: str | None) -> str:
+    """ISO code for a currency symbol, code or word ('' when unrecognised); RMB reads as CNY."""
     t = (token or "").strip()
     if not t:
         return ""
@@ -272,9 +276,8 @@ def parse_funding_stage(value) -> str:
     text = str(value or "")
     if not text.strip():
         return ""
-    import re as _re
     for stage, pattern in _STAGE_PATTERNS:
-        if _re.search(pattern, text, _re.I):
+        if re.search(pattern, text, re.I):
             return stage
     return ""
 
@@ -315,14 +318,17 @@ def is_named_org(value) -> bool:
 
 
 def _norm(s: str) -> str:
+    """Lower-case alphanumerics separated by single spaces."""
     return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
 
 
 def _keywords(text: str) -> set[str]:
+    """Distinct meaningful words: longer than two letters and not in _STOP."""
     return {w for w in _norm(text).split() if len(w) > 2 and w not in _STOP}
 
 
 def _split_list(s: str) -> list[str]:
+    """Split a free-text list on `;`, `,` or `/`, dropping blanks."""
     return [x.strip() for x in re.split(r"[;,/]", str(s)) if x.strip()]
 
 

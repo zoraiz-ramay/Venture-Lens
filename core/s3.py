@@ -1,8 +1,9 @@
 """S3 helpers for persistent PDF storage.
 
-PDFs are stored in the S3 bucket defined by S3_BUCKET (env var).
-When a PDF is needed but not present locally, _fetch_from_s3 downloads it
-to a container-local cache dir so pypdf can read it without changes elsewhere.
+PDFs are stored in the S3 bucket defined by S3_BUCKET (env var). When a pitch deck is needed but
+not present locally, `fetch_pdf` (called from `data._resolve_pdf`) downloads it to a
+container-local cache dir so pypdf can read it without changes elsewhere. The upload/list/delete/
+presign helpers back the API's PDF endpoints. The runs.db sync lives in `api/store.py`, not here.
 """
 from __future__ import annotations
 

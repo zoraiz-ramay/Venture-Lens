@@ -36,10 +36,12 @@ def _api_key() -> str:
 
 
 def configured() -> bool:
+    """Whether a Directory API key is set; without one contacts report "not configured"."""
     return bool(_api_key())
 
 
 def _person(raw) -> dict | None:
+    """{name, department, email} from one person record, or None when it has neither name nor email."""
     if not isinstance(raw, dict):
         return None
     if "attributes" in raw:
@@ -74,6 +76,8 @@ def _page(body) -> tuple[list, str]:
 
 
 class DirectoryClient:
+    """Reads people by department; `session` is injectable so tests can drive it with a fake."""
+
     def __init__(self, api_key: str = "", session=None):
         self.api_key = api_key or _api_key()
         self.base = config.SIEMENS_DIRECTORY_API_BASE
@@ -126,6 +130,7 @@ class DirectoryClient:
         return []
 
     def _read(self, department: str) -> list[dict]:
+        """One pass over at most SIEMENS_DIRECTORY_MAX_PAGES pages; raises InvalidCursor."""
         out, cursor = [], ""
         base = {config.SIEMENS_DIRECTORY_DEPARTMENT_PARAM: department,
             config.SIEMENS_DIRECTORY_LIMIT_PARAM: max(1, min(100, config.SIEMENS_DIRECTORY_LIMIT))}

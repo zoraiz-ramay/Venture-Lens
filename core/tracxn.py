@@ -18,7 +18,7 @@ TIMEOUT = 12
 
 
 class TracxnError(RuntimeError):
-    pass
+    """Any Tracxn failure, with a message safe to show (never a response body or token)."""
 
 
 def companies_from_payload(payload) -> list[dict]:
@@ -68,6 +68,9 @@ def _payload_text(payload, limit: int = 12000) -> str:
 
 
 class TracxnClient:
+    """One reviewer's Tracxn MCP session. `cache_identity` hashes the token so cached results
+    are scoped to the account without storing the token itself."""
+
     def __init__(self, access_token: str, llm=None):
         self.llm = llm
         self.cache_identity = hashlib.sha256(access_token.encode()).hexdigest()
@@ -108,7 +111,7 @@ class TracxnClient:
                 if message.get("error") or message.get("id") != self.sequence:
                     raise TracxnError("Tracxn request failed")
                 return message.get("result", {})
-        except (requests.RequestException, ValueError) as exc:
+        except (requests.RequestException, ValueError):
             # Never propagate response bodies or token-bearing request objects to the UI/log.
             raise TracxnError("Tracxn is unavailable; reconnect or try again later") from None
 
@@ -145,6 +148,7 @@ class TracxnClient:
                                   re.sub(r"[_\-]", " ", tool.get("name", "").lower())))
 
     def search(self, problem: str) -> list[dict]:
+        """Companies matching `problem`, via the server's read-only company search tool."""
         try:
             tools = self._open()
             eligible = []
@@ -237,7 +241,7 @@ class TracxnClient:
         finally:
             self._close()
 
-    def company_row(self, query):
+    def company_row(self, query: str):
         """Only exact names/domains may seed an evaluation; ambiguous hits fall back."""
         from urllib.parse import urlsplit
         import pandas as pd

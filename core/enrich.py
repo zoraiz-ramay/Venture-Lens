@@ -1,31 +1,21 @@
-"""Fact collection (with provenance) from the DB row and, optionally, the web."""
+"""Fact collection (with provenance) from the DB row and, optionally, the web.
+
+First research stage of `core/pipeline.py::evaluate`: the row's own facts and pitch deck
+(`enrich_local`), one concurrent DuckDuckGo wave (`search_web`) and the company's own pages
+(`fetch_site`), merged by `combine`. Verification reads the result; the other branches start on
+`enrich_local` alone."""
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import pandas as pd
 
 from .provenance import Fact
-from .web import ddg_search, _ddg_many, fetch_site_text
+from .web import _ddg_many, fetch_site_text
 from .data import extract_pdf_text, _resolve_pdf
 from .text import _split_list
 
 log = logging.getLogger(__name__)
-
-
-def _verify_claim(claim: str, company: str) -> Optional[Fact]:
-    """Light verification: corroborate a claim via a DDG query."""
-    if not claim.strip():
-        return None
-    hits = ddg_search(f"{company} {claim}", max_results=3)
-    if hits:
-        top = hits[0]
-        return Fact(key=f"verify:{claim}", value=top.get("title", ""),
-                    source_url=top.get("href", ""), method="ddg_search",
-                    confidence=0.7, verified=True)
-    return Fact(key=f"verify:{claim}", value="no corroboration found",
-                method="ddg_search", confidence=0.3, verified=False)
 
 
 def enrich(row: pd.Series, do_web: bool = True) -> dict:

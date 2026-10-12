@@ -13,7 +13,8 @@
    used, and its words and figures must be in what the search returned.
 
 Tracxn goes first when the reviewer has connected it; the model's own web search second; never
-the model's memory. Informs the reader; feeds no score.
+the model's memory. Informs the reader; feeds no score. Fetched on request by the API (stored as
+an enrichment and merged across refreshes by `merge_signals`), not part of `pipeline.evaluate`.
 """
 from __future__ import annotations
 
@@ -106,6 +107,7 @@ def market_brief(run: dict, llm) -> dict:
 # --------------------------------------------------------------------------- 2. per-domain search
 
 def _domain_prompt(domain: str, brief: dict, company: str, site: str) -> str:
+    """The web-search prompt for one domain, framed by the market brief."""
     parts = [f"Market: {brief['market']}"]
     if brief["terms"]:
         parts.append("Also called: " + "; ".join(brief["terms"]))
@@ -128,6 +130,7 @@ def _domain_prompt(domain: str, brief: dict, company: str, site: str) -> str:
 
 
 def _clean(domain: str, data: dict, text: str, cited) -> list[dict]:
+    """The extracted signals that are on-market, specific, held by `text` and cite a used source."""
     from .business_flow import _supported
     out = []
     for g in (data.get("signals") or [])[:10]:

@@ -4,6 +4,12 @@ Primary provider is the Siemens LLM gateway at llm.sdc.siemens.cloud, authentica
 OPENAI_API_KEY (sent as an 'x-api-key' header). If that key isn't set, falls back to
 Gemini's OpenAI-compatible endpoint using GEMINI_API_KEY — handy for local dev without
 gateway access.
+
+Every model call in the engine goes through `LLMClient` (`complete`, `web_answer`, `embed`). It
+also owns the per-run bookkeeping the pipeline reads back: the calling stage, failed calls and the
+token log. A reply cut off at its token ceiling is re-asked at up to LLM_MAX_BUDGET and never cached
+(see `complete`) — a truncated JSON reply would otherwise drop the caller to its offline fallback
+with no error recorded.
 """
 from __future__ import annotations
 
@@ -56,11 +62,15 @@ LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
 
 
 def _reasons(provider: str, model: str) -> bool:
+    """Whether this provider/model bills reasoning tokens (and so gets headroom and an effort)."""
     return provider in _THINKING_PROVIDERS or (provider == "openai" and bool(_REASONING_MODEL.match(model or "")))
 
 
 def _thinking_floor(model: str) -> bool:
+    """Whether this model cannot turn thinking off ("none" must be sent as "minimal")."""
     return bool(_THINKING_ALWAYS_ON.search(model or ""))
+
+
 # Deterministic by default. Unset, Gemini samples at 1.0 and four identical extraction calls
 # returned three different JSON spellings, so re-evaluating a startup never reproduced exactly.
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
@@ -92,6 +102,7 @@ _rate_gate = None
 
 
 def install_rate_limiter(gate) -> None:
+    """Install the shared throttle `gate()`, called before every uncached request."""
     global _rate_gate
     _rate_gate = gate
 
@@ -104,6 +115,7 @@ _failures: contextvars.ContextVar = contextvars.ContextVar("llm_failures", defau
 
 
 def set_stage(stage: str):
+    """Name the pipeline stage making calls in this context; returns the ContextVar token."""
     return _stage.set(stage)
 
 
@@ -335,6 +347,9 @@ def gemini_api_key() -> str:
 
 
 class LLMClient:
+    """One provider connection: the Siemens gateway when OPENAI_API_KEY is set, else Gemini, else
+    unavailable (`available` False, every call returns ''/None so callers take their offline path)."""
+
     def __init__(self, key: str = "", base_url: str = "", model: str = ""):
         oa_key = (key or openai_api_key()).strip().strip("<>").strip()
         ge_key = gemini_api_key()
@@ -663,6 +678,7 @@ class LLMClient:
 
     @staticmethod
     def parse_json(text: str) -> Optional[dict]:
+        """The JSON object in a model reply, or None when there is no whole object to read."""
         if not text:
             return None
         m = re.search(r"\{.*\}", text, re.DOTALL)
@@ -680,6 +696,7 @@ class LLMClient:
 
 
 def _truncated(resp) -> bool:
+    """Whether a chat completion stopped at its token ceiling (finish_reason "length")."""
     try:
         return getattr(resp.choices[0], "finish_reason", "") == "length"
     except (AttributeError, IndexError, TypeError):

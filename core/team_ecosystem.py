@@ -5,6 +5,9 @@ level is an integer on the scale and that anything above 0 cites a real record. 
 a finding the anchors define ("No founder information available") and needs no citation. A
 model that is unavailable or answers out of shape leaves the whole block unassessed — a missing
 score, never a zero, so the weighted total stays pending rather than being dragged down.
+
+Run by `core/pipeline.py` once research is settled; `core/assessment.py` weights the points (×5)
+at 20% of the total.
 """
 from __future__ import annotations
 
@@ -45,10 +48,12 @@ BANDS = ((17, "Exceptional"), (13, "Strong"), (9, "Moderate"), (5, "Weak"), (0, 
 
 
 def band(points: int) -> str:
+    """The label for a 0-20 total (BANDS, highest floor first)."""
     return next(label for floor, label in BANDS if points >= floor)
 
 
 def validate(raw, evidence: dict) -> dict:
+    """The assessed block from the model's JSON; raises ValueError on anything out of shape."""
     if not isinstance(raw, dict) or set(raw) != {k for k, _, _ in CRITERIA}:
         raise ValueError("criteria keys do not match")
     rows = []
@@ -73,6 +78,7 @@ def validate(raw, evidence: dict) -> dict:
 
 
 def assess_team(run: dict, llm: LLMClient) -> dict:
+    """Score the four criteria from the run's research records, or say why it is unassessed."""
     from .pillar_match import _evidence, _prompt_evidence
     if not llm or not llm.available:
         return {"version": VERSION, "status": "unassessed", "reason": "model_unavailable",

@@ -1,4 +1,7 @@
-"""The Fact dataclass — a single piece of evidence carrying full provenance."""
+"""The Fact dataclass — a single piece of evidence carrying full provenance.
+
+Research stages (enrich, profile, ...) emit Facts and a run stores them via `as_dict`;
+`source_type` classifies each as self-reported, public, private or inferred."""
 from __future__ import annotations
 
 import datetime as _dt

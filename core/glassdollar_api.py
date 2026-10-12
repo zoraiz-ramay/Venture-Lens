@@ -10,6 +10,10 @@ The bearer token is short-lived, so it is cached and transparently refreshed sho
 before it expires (and once more on a 401). Company objects returned by the API are
 mapped back onto the SAME column names the rest of the pipeline already expects, so
 enrich / verify / summarize / fit / score / route keep working unchanged.
+
+The FIRST source for a company (see .claude/rules/data-sources.md): `pipeline` resolves a name via
+`search_as_df` / `get_company_row`, then a domain via `get_company_by_domain`, before falling back to
+`data.web_profile_row`.
 """
 from __future__ import annotations
 
@@ -25,13 +29,15 @@ import pandas as pd
 import requests
 
 from .config import GLASSDOLLAR_API_BASE, GLASSDOLLAR_API_KEY, GLASSDOLLAR_API_TIMEOUT
+# Shared with the xlsx path, which carries the same kind of bare amount — see core/text.py.
+from .text import format_funding
 
 # Refresh the token this many seconds BEFORE its stated expiry, to avoid racing the boundary.
 _TOKEN_SKEW_SECONDS = 60
 # Page size for the paginated /v1/companies listing.
 _PAGE_SIZE = 100
 # The /v1/token endpoint is HEAVILY rate-limited (a handful of requests per window), so the
-# bearer token is cached to disk and shared across process restarts / Streamlit reruns.
+# bearer token is cached to disk and shared across processes and restarts.
 _TOKEN_CACHE_PATH = os.path.join(tempfile.gettempdir(), "glassdollar_token_cache.json")
 
 
@@ -217,8 +223,6 @@ class GlassDollarClient:
 
 
 # ----------------------------------------------------------------------------- mapping helpers
-# Shared with the xlsx path, which carries the same kind of bare amount — see core/text.py.
-from .text import format_funding as _fmt_funding    # noqa: E402  (kept at its original name)
 
 
 def _parse_customers(value) -> str:
@@ -265,7 +269,7 @@ def company_to_row(company: dict) -> pd.Series:
         "founded_year":      "" if founded in (None, "") else str(founded),
         "employee_band":     str(c.get("employee_count", "") or ""),
         "employees_count":   str(c.get("employee_count", "") or ""),
-        "funding":           _fmt_funding(c.get("funding")),
+        "funding":           format_funding(c.get("funding")),
         "linkedin_url":      str(c.get("linkedin_url", "") or ""),
         "crunchbase_url":    str(c.get("crunchbase_url", "") or ""),
         "customers":         _parse_customers(c.get("referenced_customers")),

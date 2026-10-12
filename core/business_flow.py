@@ -16,7 +16,8 @@ steps are asked for again with what those found as citable records under the sam
 holds little beyond its one-line summary — Radical Dot's flow had three or four of the five steps,
 never how it makes money, which its own site and the press do say.
 
-Cached on the research itself, so a profile read costs nothing after the first.
+Cached on the research itself, so a profile read costs nothing after the first. Served on request
+by the API's business-flow endpoint (stored per run), not part of `pipeline.evaluate`.
 """
 from __future__ import annotations
 
@@ -52,6 +53,7 @@ _STOP = {"and", "the", "for", "with", "from", "into", "that", "this", "its", "th
 
 
 def _words(text: str) -> list[str]:
+    """Content words: lower-cased, longer than two letters, stop words removed."""
     return [w for w in re.findall(r"[a-zäöüß0-9]+", str(text).lower()) if len(w) > 2 and w not in _STOP]
 
 
@@ -73,6 +75,7 @@ def _supported(sentence: str, quotes: str) -> bool:
 
 
 def _key(run: dict, records: list[dict]) -> str:
+    """Cache key over the version, the company and the exact research records."""
     body = json.dumps([[r["id"], r["text"]] for r in records], ensure_ascii=False)
     return web._cache_key(VERSION, str(run.get("company", "")), hashlib.sha256(body.encode()).hexdigest())
 
@@ -120,6 +123,7 @@ def business_flow(run: dict, llm: LLMClient | None) -> dict:
 
 
 def _ask(company: str, records: list[dict], steps, llm: LLMClient) -> dict:
+    """One model call for `steps`: {step id: {text, citations}}, unvalidated ({} when unreadable)."""
     shape = ",".join(f'"{sid}":{{"text":"","citations":["E1"]}}' for sid, _, _ in steps)
     prompt = (
         f"Explain how {company}'s business works to an informed business reader — a corporate "
@@ -174,13 +178,12 @@ def _supplement(run: dict, company: str, missing: list[str]) -> list[dict]:
     import concurrent.futures
     import contextvars
     from urllib.parse import urlparse
-    from .llm import LLMClient as _LLM
     profile = run.get("profile") or {}
     site = str(profile.get("website") or profile.get("domain") or "")
     host = urlparse(site if "//" in site else "https://" + site).hostname if site else ""
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
         pages = ex.submit(contextvars.copy_context().run, web.fetch_site_text, host) if host else None
-        found = ex.submit(contextvars.copy_context().run, _search_steps, company, site, missing, _LLM())
+        found = ex.submit(contextvars.copy_context().run, _search_steps, company, site, missing, LLMClient())
         try:
             pages = pages.result() if pages else {}
         except Exception:
@@ -267,4 +270,5 @@ def _read_pages(urls: set) -> dict:
 
 
 def _bare(url: str) -> str:
+    """A URL without query, fragment or trailing slash, lower-cased, for comparing citations."""
     return re.sub(r"[?#].*$", "", str(url or "")).rstrip("/").lower()

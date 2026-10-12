@@ -10,15 +10,24 @@ Everything here TRANSCRIBES evidence; nothing here judges. The Siemens Financial
 verdict used to be asked for in the middle of the main extraction prompt and is now decided in
 core/programs.py, which reads the commercial posture this module evidences. That split is the
 reason the answer stopped being "yes" for every company.
+
+Reading order: `research_profile` (the last function) is the pipeline's profile branch and calls
+the rest in order — main wave and extraction, the grounding gates, database seeding, the recall
+nets, commercial posture, the Siemens relationship, then the tail passes. `refresh_team`,
+`search_team_web` and `merge_team` serve the API's team-section Refresh. Section headers below
+mark each part.
 """
 from __future__ import annotations
 
 import concurrent.futures
 import contextvars
 import copy
+import datetime
 import functools
 import os
 import re
+import unicodedata
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -28,7 +37,9 @@ from .llm import LLMClient
 from .config import KNOWN_PROGRAM_TIERS
 from . import programs as programs_mod
 from .text import (_clean_source_url, _norm, dedupe_people, founders_first, has_funding_signal, is_named_org,
-                   is_revenue_estimate, same_person)
+                   is_revenue_estimate, parse_funding_stage, person_key, same_person)
+
+# ------------------------------------------------------------- the profile's shape
 # Known startup programs for offline detection (matched case-insensitively).
 KNOWN_PROGRAMS = {
     "siemens xcelerator": "corporate_program",
@@ -141,6 +152,7 @@ EMPTY_PROFILE = {
     "method": "none",
 }
 
+# ------------------------------------------------------------- the evidence corpus
 # Site paths whose text actually bears on commercial posture, and the enrichment query keys that
 # search for the same thing. The commercial extraction reads ONLY these rather than sharing the
 # general corpus: the two extractions want different evidence, and one 24k budget split between
@@ -211,6 +223,7 @@ def _corpus(results: dict) -> str:
     return "\n".join(site_lines + _interleave(web_q, _CORPUS_CHARS - spent))
 
 
+# ------------------------------------------------------------- the main wave and value cleaners
 _HQ_NON_ANSWERS = {"", "unknown", "n/a", "na", "none", "not stated", "not available",
                    "not specified", "remote", "worldwide", "global", "-", "—"}
 
@@ -240,17 +253,20 @@ def _site_hint(row: pd.Series) -> str:
     raw = str(row.get("domain", "") or row.get("website", "")).strip()
     if not raw:
         return ""
-    from urllib.parse import urlparse
     host = urlparse(raw if "//" in raw else "https://" + raw).hostname or ""
     return host[4:] if host.startswith("www.") else host
 
 
 def _queries(company: str, row: pd.Series, llm: LLMClient) -> dict:
-    """The profile's whole wave: the fixed queries, then up to two the model suggests."""
+    """The profile's whole wave: the fixed queries, then up to two the model suggests.
+
+    research_profile searches the two halves separately (so the fixed ones start before the model
+    answers); this combined form is what tests/test_research_recall.py checks the wave through."""
     return {**_base_queries(company, row), **_suggested_queries(company, row, llm)}
 
 
 def _base_queries(company: str, row: pd.Series) -> dict:
+    """The fixed main-wave queries, keyed by what each looks for."""
     # Only the identity-sensitive queries take the domain hint. The founder/advisor/customer
     # searches already resolve well on the name alone, and the wave is budget-sensitive: see
     # _ddg_many, where an oversized wave gets throttled into silently empty results.
@@ -302,11 +318,13 @@ def _suggested_queries(company: str, row: pd.Series, llm: LLMClient) -> dict:
 
 
 def _startup_text(row: pd.Series) -> str:
+    """The startup's own words from its row: name, description, pitch, business model, customers."""
     return " ".join(str(row.get(c, "")) for c in
                     ("company_name", "short_description", "Your pitch", "Business model",
                      "customers", "Reference customers"))
 
 
+# ------------------------------------------------------------- programme memberships: grounding
 @functools.lru_cache(maxsize=512)
 def _word_match(needle: str) -> "re.Pattern":
     """Whole-word matcher for a program name.
@@ -451,15 +469,24 @@ def _dedupe_programs(programs: list) -> list[dict]:
     return list(best.values())
 
 
-def _offline_extract(company: str, row: pd.Series, results: dict) -> dict:
-    """Keyword-based fallback: detect known programs and SFS relevance without an LLM."""
-    prof = {k: (v.copy() if isinstance(v, (list, dict)) else v) for k, v in EMPTY_PROFILE.items()}
+# ------------------------------------------------------------- the main extraction
+def _blank(template: dict) -> dict:
+    """A copy of ``template`` whose list and dict values are copied one level deep."""
+    return {k: (v.copy() if isinstance(v, (list, dict)) else v) for k, v in template.items()}
+
+
+def _offline_extract(row: pd.Series, results: dict) -> dict:
+    """Keyword-based fallback without an LLM: an empty profile plus the grounded known programs."""
+    prof = _blank(EMPTY_PROFILE)
     prof["programs"] = _detect_programs(row, results)
     prof["method"] = "offline_keyword"
     return prof
 
 
 def _llm_extract(company: str, row: pd.Series, results: dict, llm: LLMClient) -> dict | None:
+    """The main extraction: one call over the corpus, cleaned field by field; None when unreadable.
+
+    Programmes and customers come back ungrounded — research_profile grounds them next."""
     corpus = _corpus(results)
     known = _startup_text(row)[:1200]
     prompt = (
@@ -515,7 +542,7 @@ def _llm_extract(company: str, row: pd.Series, results: dict, llm: LLMClient) ->
                                              max_tokens=1200, reasoning="none"))
     if not data:
         return None
-    prof = {k: (v.copy() if isinstance(v, (list, dict)) else v) for k, v in EMPTY_PROFILE.items()}
+    prof = _blank(EMPTY_PROFILE)
     for key in ("founders", "key_team", "advisors", "programs", "reference_customers"):
         if isinstance(data.get(key), list):
             prof[key] = [x for x in data[key] if x]
@@ -547,6 +574,7 @@ def _llm_extract(company: str, row: pd.Series, results: dict, llm: LLMClient) ->
     return prof
 
 
+# ------------------------------------------------------------- reference customers: grounding
 # Words that betray a generic customer *description* (a segment/scale) rather than a named
 # company. Such phrases belong in customer_segment, never in reference_customers.
 _GENERIC_CUSTOMER = re.compile(
@@ -623,6 +651,7 @@ def _clean_customers(items: list) -> list[str]:
     return out
 
 
+# ------------------------------------------------------------- recall nets, database seeding and Facts
 def _recover_founders(prof: dict, company: str, llm: LLMClient) -> None:
     """Safety net mirroring the programs scan: when the main extraction returns ZERO
     founders (throttled queries, truncated corpus, or the LLM simply omitting them),
@@ -995,6 +1024,7 @@ def _recall_hq_offline(prof: dict, company: str, row: pd.Series, llm: LLMClient)
         prof["hq_origin"] = "llm"
 
 
+# ------------------------------------------------------------- commercial posture
 _DEPLOYMENTS = ("cloud", "edge", "on_prem", "hardware")
 _REVENUE_SIGNALS = ("none", "customers", "contracted", "recurring")
 # Certifications the Xcelerator Marketplace governance actually names, plus the two adjacent ones
@@ -1053,12 +1083,10 @@ def _extract_commercial_posture(prof: dict, company: str, row: pd.Series,
     already grounded, and only falls to the model when that string is absent: re-deriving a fact
     already in hand would add a failure mode to recover nothing.
     """
-    commercial = {k: (v.copy() if isinstance(v, (list, dict)) else v)
-                  for k, v in EMPTY_PROFILE["commercial"].items()}
+    commercial = _blank(EMPTY_PROFILE["commercial"])
     prof["commercial"] = commercial
 
     # Deterministic first — this needs no model and cannot drift between runs.
-    from .text import parse_funding_stage
     commercial["funding_stage"] = parse_funding_stage(
         prof.get("funding") or row.get("funding") or "")
 
@@ -1238,6 +1266,7 @@ def _clean_segment_grade(raw, corpus: str) -> dict:
     return {"level": int(level), "quote": quote, "source_url": url}
 
 
+# ------------------------------------------------------------- programme prestige
 def _program_tier_offline(name: str) -> str:
     """Deterministic prestige tier from the known-program map; unknown -> tier3."""
     n = str(name).lower()
@@ -1289,6 +1318,7 @@ def _grade_programs(programs: list, company: str, llm: LLMClient) -> None:
             p["prestige"] = t
 
 
+# ------------------------------------------------------------- headcount history
 def _clean_employee_series(points: list) -> list[dict]:
     """Sanitise raw {year, count, source_url} points into a trustworthy time series.
 
@@ -1298,7 +1328,6 @@ def _clean_employee_series(points: list) -> list[dict]:
     (highest count wins) and the result is sorted ascending. Fewer than TWO cited points
     returns [] so the UI can honestly show 'insufficient data' instead of a misleading
     single dot or a fabricated line."""
-    import datetime
     max_year = datetime.date.today().year + 1
     by_year: dict[int, dict] = {}
     for p in points or []:
@@ -1327,7 +1356,6 @@ def _too_young(row: pd.Series) -> bool:
     not a heuristic about what is "probably" worth trying — it is the same arithmetic the gate
     downstream applies. It also returns three searches and a model call to the shared budget,
     which is what the companies that CAN answer are being starved of."""
-    import datetime
     try:
         founded = int(str(row.get("founded_year", "") or "")[:4])
     except (TypeError, ValueError):
@@ -1362,7 +1390,7 @@ def _history_wave(company: str, row: pd.Series, llm: LLMClient):
 
 
 def _employee_history(company: str, row: pd.Series, results: dict,
-                      llm: LLMClient, wave=None) -> list[dict]:
+                      llm: LLMClient, wave=None) -> tuple[list[dict], str]:
     """Best-effort headcount-over-time series, every point backed by a source URL.
 
     Runs a small dedicated wave of historical-headcount queries, then asks the LLM to pull
@@ -1402,6 +1430,7 @@ def _employee_history(company: str, row: pd.Series, results: dict,
     return [], ("unavailable" if stats.get("timed_out") else "not_found")
 
 
+# ------------------------------------------------------------- public profile links
 # Legal and vanity suffixes that show up in a profile slug but not in the company's own name, or
 # the other way round. Stripped from BOTH sides before comparing, so "bliro" matches "bliro-gmbh"
 # and "makkook-ai" matches "Makkook AI".
@@ -1501,7 +1530,6 @@ def _extract_links(company: str, row: pd.Series, *result_maps) -> dict:
             href = str(hit.get("href", ""))
             if not href.lower().startswith(("http://", "https://")):
                 continue
-            from urllib.parse import urlparse
             netloc = (urlparse(href).hostname or "").lower()
             if not netloc or any(d in netloc for d in _DIRECTORY_HOSTS):
                 continue
@@ -1626,6 +1654,7 @@ def _siemens_products(_catalog_checksum: str) -> tuple:
 
 
 def _product_matcher() -> tuple:
+    """`_siemens_products` for the current tool catalog, or the curated brands when it is missing."""
     try:
         from .catalogs import tools_catalog
         return _siemens_products(str(tools_catalog().get("checksum", "")))
@@ -1763,9 +1792,9 @@ def refresh_team(company: str, row: pd.Series, llm: LLMClient) -> dict:
 # an extraction naming the page behind each item. Every item is then checked against that page,
 # fetched in full: a founder's page must name the person and the company and carry the background
 # (_supported); a programme or partner must stand near the company on a page, or be the cohort page
-# that lists it. A page
-# that cannot be fetched supports nothing. LinkedIn URLs are never taken from here: the search
-# itself reports it cannot verify a profile's address, and a wrong one sends a reviewer elsewhere.
+# that lists it. A page that cannot be fetched supports nothing. LinkedIn URLs are never taken from
+# here: the search itself reports it cannot verify a profile's address, and a wrong one sends a
+# reviewer elsewhere.
 # Two searches, run side by side: one asked for founders, programmes and partners at once ran past
 # the 90s web-search timeout on one of two tries and answered nothing; each half answers in ~60s.
 _TEAM_WEB_PROMPTS = (
@@ -1860,6 +1889,7 @@ def search_team_web(company: str, website: str, llm: LLMClient) -> dict:
 
 
 def _urls_of(item) -> list[str]:
+    """An extracted item's http source URLs (``source_urls`` and ``source_url``), deduplicated."""
     if not isinstance(item, dict):
         return []
     raw = list(item.get("source_urls") or []) + [item.get("source_url")]
@@ -1884,7 +1914,7 @@ def _read_pages(urls) -> dict:
 
 
 def _host(url: str) -> str:
-    from urllib.parse import urlparse
+    """A URL's host without a leading www."""
     url = str(url or "")
     host = urlparse(url if "//" in url else "https://" + url).hostname or ""
     return host.removeprefix("www.")
@@ -1892,9 +1922,6 @@ def _host(url: str) -> str:
 
 def _names_in(person: str, page: str) -> bool:
     """Every part of the person's name (diacritics folded, honorifics dropped) appears on the page."""
-    import unicodedata
-    from .text import person_key
-
     def fold(text):
         text = unicodedata.normalize("NFKD", str(text))
         return "".join(c for c in text if not unicodedata.combining(c)).casefold()
@@ -1942,8 +1969,6 @@ _HONORIFICS = {"dr", "prof", "mr", "mrs", "ms", "sir", "dame", "herr", "frau"}
 
 def says_nothing(background, name: str = "") -> bool:
     """Filler, or nothing but the person's own name ("Dr. Andreas Wagner" was his "background")."""
-    import unicodedata
-
     def words(text):
         text = "".join(c for c in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(c))
         return set(re.findall(r"[a-z0-9]+", text.casefold()))
@@ -2007,6 +2032,7 @@ def merge_team(base: dict, *more: dict) -> dict:
     return out
 
 
+# ------------------------------------------------------------- the Siemens relationship, assembled
 def _siemens_as_customer(prof: dict) -> None:
     """Siemens among the reference customers when the relationship wave found it as one.
 
@@ -2077,6 +2103,7 @@ def _search_siemens(company: str) -> dict:
     return _ddg_many({k: q.format(c=company) for k, q in _SIEMENS_QUERIES.items()}, max_results=5)
 
 
+# ------------------------------------------------------------- entry point
 def _ready(value):
     """A value the caller may still be computing: a future is waited for, anything else is used as is."""
     return value.result() if hasattr(value, "result") else value
@@ -2144,7 +2171,7 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         if llm.available:
             prof = _llm_extract(company, row, results, llm)
         if prof is None:
-            prof = _offline_extract(company, row, results)
+            prof = _offline_extract(row, results)
         else:
             # Ground the LLM's programs against the evidence (it may name any program
             # worldwide, but each membership must be tied to THIS startup), then union
@@ -2171,8 +2198,13 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         # A row carrying a glassdollar_id came from the live REST API; one without it came
         # from the shipped application export. Both are GlassDollar, but only one of them is
         # the startup writing about itself, and provenance.py grades them differently.
-        db_method = ("tracxn_mcp" if str(row.get("tracxn_id", "")).strip() else "glassdollar_api" if str(row.get("glassdollar_id", "")).strip()
-                     not in ("", "nan") else "glassdollar_db")
+        # A Tracxn-seeded row is Tracxn's record, not GlassDollar's.
+        if str(row.get("tracxn_id", "")).strip():
+            db_method = "tracxn_mcp"
+        elif str(row.get("glassdollar_id", "")).strip() not in ("", "nan"):
+            db_method = "glassdollar_api"
+        else:
+            db_method = "glassdollar_db"
         if on_progress is not None:
             # A copy: the recall nets below keep writing into `prof` while the caller reads this.
             try:
@@ -2232,9 +2264,7 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         # net runs in the same pool as the commercial extraction, so a round it recovers lands
         # after that extraction has already read the field. Deterministic and free, so it simply
         # runs again rather than the two passes being ordered against each other.
-        from .text import parse_funding_stage
-        prof.setdefault("commercial", {k: (v.copy() if isinstance(v, (list, dict)) else v)
-                                       for k, v in EMPTY_PROFILE["commercial"].items()})
+        prof.setdefault("commercial", _blank(EMPTY_PROFILE["commercial"]))
         prof["commercial"]["funding_stage"] = parse_funding_stage(prof.get("funding", ""))
         # The last four passes all follow the recall nets and none follows another. Each writes
         # its own fields — programme tiers, founder backgrounds, headquarters, the two profile

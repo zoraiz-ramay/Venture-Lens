@@ -8,6 +8,7 @@ refinement that never searches again, and an application's internal status never
 from __future__ import annotations
 
 import json
+import threading
 from unittest.mock import Mock
 
 import pandas as pd
@@ -131,12 +132,25 @@ def test_interpretation_keeps_only_well_formed_facets():
 
 
 def test_applicants_reach_the_page_before_the_market_is_searched(catalog):
-    events = []
+    # The market search starts beside the applicants now, so "before" means the applicants never
+    # wait on it: a Tracxn search that will not answer until the ranked applicants are on the page
+    # would hang this test if anything on the applicants' path waited for the market.
+    events, ranked = [], threading.Event()
+
+    def on_partial(section, data):
+        events.append(section)
+        if data.get("applicants_ranked"):
+            ranked.set()
+
+    def search(q):
+        assert ranked.wait(5), "the applicants waited on the market search"
+        events.append("market answered")
+        return []
     tracxn = Mock()
-    tracxn.search.side_effect = lambda q: events.append("market") or []
+    tracxn.search.side_effect = search
     solve.solve_problem(PROBLEM, llm=FakeLLM(), do_web=False, use_glassdollar=False, applications=catalog,
-                        tracxn=tracxn, on_partial=lambda section, data: events.append(section))
-    assert events.index("applicants") < events.index("market")
+                        tracxn=tracxn, on_partial=on_partial)
+    assert events.index("applicants") < events.index("market answered")
     assert "interpretation" in events
 
 

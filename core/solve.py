@@ -30,6 +30,7 @@ import json
 import os
 import pathlib
 import re
+import time
 import concurrent.futures
 from contextvars import copy_context
 from datetime import datetime, timezone
@@ -416,43 +417,107 @@ def _merge(candidates: list[dict], exclude: set[str]) -> list[dict]:
     return list(unique.values())
 
 
-def _market(problem: str, keywords, llm: LLMClient, *, do_web: bool, use_glassdollar: bool,
-            tracxn, exclude: set[str]) -> tuple[list[dict], list[dict]]:
-    """Tracxn -> GlassDollar fallback -> web gaps. ``keywords`` is called only when needed: it
-    waits on the interpretation, which a complete Tracxn answer does not need."""
-    sources, candidates = [], []
-    if tracxn is not None:
-        try:
-            candidates = tracxn.search(problem)
-            sources.append({"provider": "tracxn", "status": "used" if candidates else "empty"})
-        except Exception:
-            sources.append({"provider": "tracxn", "status": "unavailable"})
-    else:
-        sources.append({"provider": "tracxn", "status": "not_connected"})
-    if not candidates and use_glassdollar:
-        candidates = _glassdollar_candidates(keywords())
-        sources.append({"provider": "glassdollar", "status": "used" if candidates else "empty_or_unavailable"})
-    else:
-        sources.append({"provider": "glassdollar", "status": "skipped" if candidates else "not_configured"})
-    candidates = _merge(candidates, exclude)[:15]
-    if do_web:
-        _fill_candidate_gaps(candidates)
-    ranked = rank(problem, candidates, llm)
-    if do_web and len(ranked) < 5:
-        seen = exclude | {c["name"].casefold() for c in candidates}
-        web = _merge(_web_candidates(keywords()[:3], llm), seen)
-        ranked += rank(problem, web, llm)
-        sources.append({"provider": "web", "status": "used" if web else "empty"})
-    else:
-        filled = any(v.get("provider") == "web" for c in candidates for v in c.get("field_sources", {}).values())
-        sources.append({"provider": "web", "status": "used" if filled else "skipped" if do_web else "disabled"})
+WEB_FALLBACK_BELOW = 5        # fewer ranked market candidates than this, and the web is searched too
+
+
+def _shown(ranked: list[dict]) -> list[dict]:
+    """The market as the page reads it: browser-safe records, best first, capped."""
     for c in ranked:
         c.pop("provider_record", None)       # raw vendor payloads are not part of the browser contract
         c.setdefault("id", _market_id(c))
         c.setdefault("facts", {})
         c.setdefault("why_quote", "")
-    ranked.sort(key=_market_order)
-    return ranked[:MARKET_LIMIT], sources
+    return sorted(ranked, key=_market_order)[:MARKET_LIMIT]
+
+
+def _market(problem: str, keywords, llm: LLMClient, *, do_web: bool, use_glassdollar: bool,
+            tracxn, exclude, on_progress=None) -> tuple[list[dict], list[dict]]:
+    """Tracxn -> GlassDollar fallback -> web gaps.
+
+    ``keywords`` and ``exclude`` are callables, each called only where its value is first read:
+    ``keywords`` waits on the interpretation, which a complete Tracxn answer does not need, and
+    ``exclude`` (the applicants' names) waits on the applicants' ranking, which only the merge
+    reads. So Tracxn is asked the moment the search starts, and the market's search runs beside
+    the applicants' ranking instead of after it. Every prompt is the one the sequential order
+    wrote — same candidates, same order — so a replay from cache is byte-identical.
+
+    ``on_progress(sources, market)`` reports each source's status as it resolves (``searching``
+    while in flight), and the first ranked market while the web is still being searched.
+    """
+    sources: list[dict] = []
+    report = on_progress or (lambda sources, market=None: None)
+
+    def status(provider: str, state: str):
+        entry = next((s for s in sources if s["provider"] == provider), None)
+        if entry is None:
+            sources.append({"provider": provider, "status": state})
+        else:
+            entry["status"] = state
+        report([dict(s) for s in sources])
+
+    candidates = []
+    if tracxn is not None:
+        status("tracxn", "searching")
+        try:
+            candidates = tracxn.search(problem)
+            status("tracxn", "used" if candidates else "empty")
+        except Exception:
+            status("tracxn", "unavailable")
+    else:
+        status("tracxn", "not_connected")
+    if not candidates and use_glassdollar:
+        status("glassdollar", "searching")
+        candidates = _glassdollar_candidates(keywords())
+        status("glassdollar", "used" if candidates else "empty_or_unavailable")
+    else:
+        status("glassdollar", "skipped" if candidates else "not_configured")
+
+    # The candidates above, once merged: the web's own candidates are told apart from them.
+    merged: concurrent.futures.Future = concurrent.futures.Future()
+
+    def web_branch():
+        found = _web_candidates(keywords()[:3], llm)
+        web = _merge(found, exclude() | {c["name"].casefold() for c in merged.result()})
+        return web, rank(problem, web, llm)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        web_f = None
+
+        def start_web():
+            # The web's branch reads only the keywords until its merge, so its search, extraction
+            # and ranking run beside the gap-filling and ranking of the candidates above. Started
+            # early only when the web is certain to be needed: fewer distinct candidates than the
+            # bar can never rank above it.
+            nonlocal web_f
+            if web_f is None:
+                status("web", "searching")
+                web_f = pool.submit(copy_context().run, web_branch)
+
+        try:
+            if do_web and len({c["name"].casefold() for c in candidates}) < WEB_FALLBACK_BELOW:
+                start_web()
+            excluded = exclude() if candidates else set()
+            candidates = _merge(candidates, excluded)[:15]
+            merged.set_result(candidates)
+        except BaseException as exc:
+            merged.set_exception(exc)                 # never leave the web branch waiting
+            raise
+        if do_web and len(candidates) < WEB_FALLBACK_BELOW:
+            start_web()
+        if do_web:
+            _fill_candidate_gaps(candidates)
+        ranked = rank(problem, candidates, llm)
+        if do_web and len(ranked) < WEB_FALLBACK_BELOW:
+            start_web()
+            if ranked and not web_f.done():
+                report([dict(s) for s in sources], _shown([dict(c) for c in ranked]))
+            web, web_ranked = web_f.result()
+            ranked += web_ranked
+            status("web", "used" if web else "empty")
+        else:
+            filled = any(v.get("provider") == "web" for c in candidates for v in c.get("field_sources", {}).values())
+            status("web", "used" if filled else "skipped" if do_web else "disabled")
+    return _shown(ranked), sources
 
 
 # ----------------------------------------------------------------- entry points
@@ -472,31 +537,48 @@ def solve_problem(problem: str, llm: LLMClient = None, do_web: bool = True,
                 "sources": [], "retrieval": {"method": "none", "reason": ""}, "method": "none"}
     llm = llm or LLMClient(model=os.getenv("SCOUTING_LLM_MODEL", ""))
     catalog = applications if applications is not None else catalogs.applications_catalog_from_df(local_df)
+    started = time.monotonic()
+    # Seconds from the start at which each stage landed: what the page waited for, per search.
+    timings: dict = {}
+
+    def lap(stage: str):
+        timings[stage] = round(time.monotonic() - started, 2)
 
     def applicants_stage():
         found, retrieval = match_applications(problem, catalog, llm)
+        lap("applicants_found")
         emit("applicants", {"applicants": found, "retrieval": retrieval, "applicants_ranked": False})
         judged = rank(problem, found, llm)
+        lap("applicants_ranked")
         emit("applicants", {"applicants": judged, "retrieval": retrieval, "applicants_ranked": True})
         return judged, retrieval
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    def market_progress(sources, market=None):
+        emit("market", {"sources": sources, **({"market": market, "market_complete": False} if market else {})})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         interpretation_f = pool.submit(copy_context().run, interpret, problem, llm)
         applicants_f = pool.submit(copy_context().run, applicants_stage)
+        # The market starts now, beside the other two, and waits on each only where it reads it.
+        # Applicants are still known before the market is merged, so a company that applied is
+        # listed once, as an applicant, and its pitch-form answers are what the reader sees.
+        market_f = pool.submit(copy_context().run, _market, problem,
+                               lambda: interpretation_f.result()["keywords"], llm, do_web=do_web,
+                               use_glassdollar=use_glassdollar, tracxn=tracxn,
+                               exclude=lambda: {c["name"].casefold() for c in applicants_f.result()[0]},
+                               on_progress=market_progress)
         interpretation = interpretation_f.result()
+        lap("interpretation")
         emit("interpretation", {"interpretation": interpretation})
         save_challenge(problem, interpretation["keywords"])
-        # Applicants are known before the market is searched, so a company that applied is listed
-        # once, as an applicant, and its pitch-form answers are what the reader sees.
         applicants, retrieval = applicants_f.result()
-    exclude = {c["name"].casefold() for c in applicants}
-    market, sources = _market(problem, lambda: interpretation["keywords"], llm, do_web=do_web,
-                              use_glassdollar=use_glassdollar, tracxn=tracxn, exclude=exclude)
+        market, sources = market_f.result()
+        lap("market")
     sources.insert(0, {"provider": "applications",
                        "status": "used" if applicants else "empty" if catalog.get("available") else "not_configured"})
     return {"problem": problem, "interpretation": interpretation, "keywords": interpretation["keywords"],
             "applicants": applicants, "market": market, "sources": sources, "retrieval": retrieval,
-            "method": "llm" if llm.available else "offline_keyword"}
+            "method": "llm" if llm.available else "offline_keyword", "timings": timings}
 
 
 def refined_brief(problem: str, interpretation: dict | None, answers: dict, note: str = "") -> tuple[str, dict]:

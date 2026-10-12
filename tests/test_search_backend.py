@@ -213,6 +213,7 @@ def test_a_search_cut_off_while_reading_pages_is_not_cached(gemini, monkeypatch)
     ("Acme number of employees headcount", "Acme acme.com number of employees company size linkedin"),
     ("Acme linkedin employees company size over time", "Acme crunchbase employee count history"),
     ("Acme customers clients case study", "Acme customer case study deployment client announcement"),
+    ("Acme partnership collaboration strategic partner", "Acme strategic partner alliance network"),
 ])
 def test_searches_asking_for_the_same_fact_share_a_signature(a, b):
     assert web.search_signature(a, "Acme") == web.search_signature(b, "Acme")
@@ -224,6 +225,7 @@ def test_searches_asking_for_the_same_fact_share_a_signature(a, b):
     ("Acme number of employees headcount", "Acme linkedin employees company size over time"),   # now vs history
     ("Acme funding round raised investors", "robotics startup funding round 2025"),            # company vs market
     ("Acme pricing plans license cost", "Acme API developer documentation SDK"),
+    ("Acme partnership collaboration strategic partner", "Acme marketplace listing reseller partner program"),
     # Market searches each ask about a different slice: sharing them cost Connect its market signals.
     ("robotic software market size billion CAGR report", "industrial robotics market size growth leading companies"),
     ("robotics software startup funding 2025", "industrial robot programming startup raised seed series A funding round"),
@@ -267,3 +269,82 @@ def test_an_empty_shared_search_does_not_stand_in_for_the_next_one(gemini):
     finally:
         web.stop_sharing_searches(token)
     assert len(client.asked) == 2 and state["reused"] == 0
+
+
+def test_after_an_empty_search_the_re_search_is_the_one_later_queries_share(gemini):
+    client, _ = gemini([], lambda url, **kw: (PAGE, url))
+    token, state = web.share_searches("Acme")
+    try:
+        web.ddg_search("Acme customers clients case study", 5)
+        client.pages = [{"title": "p", "url": "https://acme.example/customers"}]
+        web.ddg_search("Acme customer case study deployment", 5)
+        web.ddg_search("Acme client announcement case studies", 5)
+    finally:
+        web.stop_sharing_searches(token)
+    assert len(client.asked) == 2 and state["reused"] == 1
+
+
+class _SlowGateway(_Gemini):
+    """The first search answers after its deadline, as one in a burst does."""
+
+    def __init__(self, pages, delay):
+        super().__init__(pages)
+        self.delay = delay
+
+    def web_answer(self, prompt, **kw):
+        import time
+        first = not self.asked
+        self.asked.append(prompt)
+        if first:
+            time.sleep(self.delay)
+        return {"text": ANSWER, "sources": [], "queries": [], "pages": self.pages}
+
+
+def test_a_search_that_answers_late_still_serves_its_topic(gemini, monkeypatch):
+    """A timed-out search is billed anyway: its late pages must answer the next query on the topic,
+    and a query asking while it is still in flight must not pay for a second one."""
+    import threading
+    import time
+    _, _ = gemini([], lambda url, **kw: (TEAM_PAGE, url))
+    client = _SlowGateway([{"title": "p1", "url": "https://acme.example/team"}], delay=0.6)
+    monkeypatch.setattr(web, "_grounding_client", lambda: client)
+    monkeypatch.setattr(web, "GROUNDED_SEARCH_TIMEOUT", 0.3)
+    token, state = web.share_searches("Acme")
+    try:
+        first, waiting = [], []
+        t = threading.Thread(target=__import__("contextvars").copy_context().run,
+                             args=(lambda: first.extend(web.ddg_search("Acme founders team background", 5)),))
+        t.start()
+        time.sleep(0.05)
+        waiting = web.ddg_search("Acme founders co-founder CEO CTO LinkedIn", 5)   # gives up at its deadline
+        t.join()
+        time.sleep(0.5)                                                             # the late answer lands
+        later = web.ddg_search("Acme founder previous company career university", 5)
+    finally:
+        web.stop_sharing_searches(token)
+    assert first == [] and waiting == []
+    assert len(client.asked) == 1 and state["reused"] == 1
+    assert later and later[0]["href"] == "https://acme.example/team"
+
+
+def test_a_late_answer_is_handed_on_once_and_a_failed_one_as_none():
+    import time
+    got = []
+    web_timeout = web.GROUNDED_SEARCH_TIMEOUT
+    try:
+        web.GROUNDED_SEARCH_TIMEOUT = 0.1
+        assert web._first_answer(lambda: time.sleep(0.3) or {"pages": [1]}, got.append) is None
+        time.sleep(0.4)
+        assert got == [{"pages": [1]}]
+        got.clear()
+
+        def boom():
+            time.sleep(0.3)
+            raise RuntimeError("gateway 500")
+        assert web._first_answer(boom, got.append) is None
+        time.sleep(0.4)
+        assert got == [None]
+        got.clear()
+        assert web._first_answer(lambda: {"pages": [2]}, got.append) == {"pages": [2]} and got == [{"pages": [2]}]
+    finally:
+        web.GROUNDED_SEARCH_TIMEOUT = web_timeout

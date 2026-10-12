@@ -101,7 +101,12 @@ def run_offset_ms(t: float):
 #
 # Queries naming something in quotes (a founder, a programme list) and Siemens queries (each lists
 # different products) are only shared when worded identically. A shared search that found nothing
-# does not stand in for anyone: the later query runs its own.
+# does not stand in for anyone: the later query runs its own, and that becomes the topic's search.
+#
+# A search past its deadline is still billed — the gateway request runs on in the background — so
+# its late answer still fills the topic for later queries. Before that, a timed-out first search sent
+# every later query on its topic to search again, and under one evaluation's burst those timed out
+# too: one Wandelbots run billed four founder searches and read nothing from any of them.
 _shared: contextvars.ContextVar = contextvars.ContextVar("shared_searches", default=None)
 _TOPIC = lambda p: re.compile(p, re.I)
 # The first that matches names the topic. Only searches about the company itself are shared: market
@@ -115,6 +120,7 @@ _SEARCH_TOPICS = (
     ("founders", _TOPIC(r"\b(co-?founders?|founders?)\b")),
     ("customers", _TOPIC(r"\b(customers?|clients?|case stud(y|ies))\b")),
     ("programmes", _TOPIC(r"\b(accelerators?|incubators?|cohort|alumni|backed by)\b")),
+    ("partners", _TOPIC(r"\b(strategic partners?|partnerships?|alliances?)\b")),
     ("founded_hq", _TOPIC(r"\b(headquarters|founded|established|location)\b")),
     ("competitors", _TOPIC(r"\b(competitors?|alternatives?)\b")),
 )
@@ -166,27 +172,39 @@ def _search_pages(query: str, ask) -> tuple[list, bool]:
     if state is None:
         return _pages_of(_first_answer(ask)), False
     sig = search_signature(query, state["company"])
-    with state["lock"]:
-        future = state["searches"].get(sig)
-        owner = future is None
+    # Waiting for the topic's search is bounded by what a search of our own would take.
+    deadline = time.monotonic() + GROUNDED_SEARCH_TIMEOUT
+    while True:
+        with state["lock"]:
+            future = state["searches"].get(sig)
+            owner = future is None or (future.done() and not future.result())
+            if owner:
+                future = state["searches"][sig] = cf.Future()
         if owner:
-            future = state["searches"][sig] = cf.Future()
-    if owner:
-        pages = []
+            return _own_search(ask, future), False
         try:
-            pages = _pages_of(_first_answer(ask))
-        finally:
-            future.set_result(pages)
-        return pages, False
+            pages = future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except cf.TimeoutError:
+            # Still in flight at our own deadline. A second request now would most likely time out
+            # the same way and bill again; the late answer serves whoever asks next.
+            return [], False
+        if pages:
+            with state["lock"]:
+                state["reused"] += 1
+            return pages, True
+        # Searched and found nothing: loop round to search this wording ourselves.
+
+
+def _own_search(ask, future) -> list:
+    """Search for the topic, settling ``future`` with the pages whenever they arrive, late or not."""
+    def settle(answer):
+        if not future.done():
+            future.set_result(_pages_of(answer))
     try:
-        pages = future.result(timeout=GROUNDED_SEARCH_TIMEOUT + 5)
-    except cf.TimeoutError:
-        pages = []
-    if not pages:            # an empty search does not stand in for anyone: search for this query
-        return _pages_of(_first_answer(ask)), False
-    with state["lock"]:
-        state["reused"] += 1
-    return pages, True
+        return _pages_of(_first_answer(ask, settle))
+    except Exception:
+        settle(None)
+        raise
 
 
 def _pages_of(answer) -> list:
@@ -497,20 +515,32 @@ GROUNDED_SEARCH_TIMEOUT = float(os.getenv("GROUNDED_SEARCH_TIMEOUT", "7"))
 GROUNDED_FETCH_TIMEOUT = float(os.getenv("GROUNDED_FETCH_TIMEOUT", "3"))
 
 
-def _first_answer(ask):
+def _first_answer(ask, settle=None):
     """``ask()`` within GROUNDED_SEARCH_TIMEOUT, else None; raced by one duplicate when hedging.
 
     A request past the deadline is not cancelled (the client cannot): it finishes in the background
-    and its tokens are still recorded, since they were billed."""
+    and its tokens are still recorded, since they were billed. ``settle``, if given, is called once
+    with the answer that eventually arrives — at once when it is in time, later when it is late, and
+    with None when every request fails — so a late answer that was paid for is not thrown away."""
     import concurrent.futures as cf
+    settled = threading.Lock()
+
+    def once(answer):
+        if settle is not None and settled.acquire(blocking=False):
+            settle(answer)
+
+    def ok(f):
+        return f.done() and not f.exception() and f.result()
+
     deadline = time.monotonic() + GROUNDED_SEARCH_TIMEOUT
     hedge = GROUNDED_SEARCH_HEDGE if 0 < GROUNDED_SEARCH_HEDGE < GROUNDED_SEARCH_TIMEOUT else 0.0
     pool = cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="grounded-search")
     try:
         futures = [pool.submit(contextvars.copy_context().run, ask)]
         if hedge:
-            done, _ = cf.wait(futures, timeout=hedge)
-            if done and not futures[0].exception() and futures[0].result():
+            cf.wait(futures, timeout=hedge)
+            if ok(futures[0]):
+                once(futures[0].result())
                 return futures[0].result()
             futures.append(pool.submit(contextvars.copy_context().run, ask))
         pending = [f for f in futures if not f.done()]
@@ -518,13 +548,24 @@ def _first_answer(ask):
             done, _ = cf.wait(pending, timeout=max(0.0, deadline - time.monotonic()),
                               return_when=cf.FIRST_COMPLETED)
             if not done:
+                def late(_f):
+                    hit = next((f for f in futures if ok(f)), None)
+                    if hit is not None:
+                        once(hit.result())
+                    elif all(f.done() for f in futures):
+                        once(None)
+                for f in futures:
+                    f.add_done_callback(late)
                 return None
             for f in done:
-                if not f.exception() and f.result():
+                if ok(f):
+                    once(f.result())
                     return f.result()
             pending = [f for f in pending if f not in done]
         first = futures[0]
-        return first.result() if first.done() and not first.exception() else None
+        answer = first.result() if first.done() and not first.exception() else None
+        once(answer)
+        return answer
     finally:
         pool.shutdown(wait=False)
 

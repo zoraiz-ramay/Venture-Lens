@@ -895,7 +895,9 @@ def save_assessment(run_id, score, department_fit, routing=None):
 
 # ---------------------------------------------------------------------- stored research
 
-ENRICHMENT_KINDS = ("funding", "headcount", "signals", "business_flow")
+# "team" was missing, so the team lookup's save was a silent no-op: a Refresh's finds were lost,
+# and the next evaluation's carry-forward (latest_enrichment(name, "team")) never had one to read.
+ENRICHMENT_KINDS = ("funding", "headcount", "signals", "business_flow", "team")
 PER_RUN_KINDS = ("business_flow",)          # written from one run's research, so served per run
 
 

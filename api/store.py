@@ -13,8 +13,8 @@ exception: they ride along on the next upload.
 
 Sections, in order: S3 sync; schema and connection; web cache; saving a run (and its normalised
 children, token log, aliases); stored research (enrichments); one-time backfills; reading runs;
-per-reviewer searches & sessions; assistant conversations; saved views; deleting a run;
-reviewer overrides (read-only); admins.
+per-reviewer searches & sessions; assistant conversations; saved views; Solve a Problem searches;
+deleting a run; reviewer overrides (read-only); admins.
 """
 from __future__ import annotations
 
@@ -360,6 +360,19 @@ CREATE TABLE IF NOT EXISTS saved_views (
     updated_at   TEXT NOT NULL,
     UNIQUE (user_oid, name)
 );
+-- Solve a Problem searches a reviewer can come back to: the finished result (as refined last) and
+-- the startups they kept. The search job behind it lives a day in the session store and the list
+-- of jobs only in one browser tab, so without this a shortlist was lost with the tab.
+CREATE TABLE IF NOT EXISTS solve_searches (
+    user_oid       TEXT NOT NULL,
+    search_id      TEXT NOT NULL,
+    problem        TEXT NOT NULL,
+    result_json    TEXT NOT NULL,
+    shortlist_json TEXT NOT NULL DEFAULT '[]',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (user_oid, search_id)
+);
 -- Admins granted from inside the app. This is the SECOND source of admin rights, never the
 -- only one: ADMIN_UPNS stays the seed (see is_admin in api/auth.py), because a system with no
 -- "not configured, so allow" branch anywhere would otherwise have no way to make its first
@@ -469,6 +482,7 @@ CREATE INDEX IF NOT EXISTS idx_searches_user ON searches(user_oid, created_at);
 CREATE INDEX IF NOT EXISTS idx_searches_created ON searches(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_oid);
 CREATE INDEX IF NOT EXISTS idx_saved_views_user ON saved_views(user_oid);
+CREATE INDEX IF NOT EXISTS idx_solve_searches_user ON solve_searches(user_oid, updated_at);
 -- latest_run_for_company scans runs on every evaluate; it is the hot path of the cache.
 CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company);
 """
@@ -1505,6 +1519,94 @@ def delete_view(user_oid: str, name: str) -> bool:
         cur = con.execute("DELETE FROM saved_views WHERE user_oid=? AND name=?",
                           (str(user_oid), str(name).strip()))
         deleted = cur.rowcount > 0
+    if deleted:
+        _upload_to_s3()
+    return deleted
+
+
+# --------------------------------------------------------- Solve a Problem searches
+# Private like saved views: every read and write is keyed on the reviewer's oid, and nothing reads
+# across principals. The result is what the job returned (core/catalogs.py never copies an
+# application's status, contact or referral into a candidate, so none of them can be in it).
+SOLVE_KEEP = 50         # searches kept per reviewer; the oldest beyond this are dropped
+
+
+def _solve_summary(row) -> dict:
+    try:
+        result = json.loads(row[2])
+        shortlist = json.loads(row[3])
+    except ValueError:
+        result, shortlist = {}, []
+    refinement = result.get("refinement") or {}
+    return {"id": row[0], "problem": row[1], "created_at": row[4], "updated_at": row[5],
+            "applicants": len(result.get("applicants") or []), "market": len(result.get("market") or []),
+            "shortlisted": len(shortlist) if isinstance(shortlist, list) else 0,
+            "refined": bool(refinement.get("answers") or refinement.get("note"))}
+
+
+def list_solve_searches(user_oid: str, limit: int = SOLVE_KEEP) -> list[dict]:
+    """The reviewer's searches, most recently worked on first, as summaries."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT search_id, problem, result_json, shortlist_json, created_at, updated_at FROM solve_searches "
+            "WHERE user_oid=? ORDER BY updated_at DESC, created_at DESC LIMIT ?", (str(user_oid), int(limit))).fetchall()
+    return [_solve_summary(r) for r in rows]
+
+
+def get_solve_search(user_oid: str, search_id: str) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT search_id, problem, result_json, shortlist_json, created_at, updated_at FROM solve_searches "
+            "WHERE user_oid=? AND search_id=?", (str(user_oid), str(search_id))).fetchone()
+    if not row:
+        return None
+    try:
+        result, shortlist = json.loads(row[2]), json.loads(row[3])
+    except ValueError:
+        return None
+    return {"id": row[0], "problem": row[1], "result": result,
+            "shortlist": shortlist if isinstance(shortlist, list) else [], "created_at": row[4], "updated_at": row[5]}
+
+
+def keep_solve_search(user_oid: str, search_id: str, problem: str, result: dict) -> dict:
+    """Store a finished search once; a search already kept is returned as it is (its result may
+    have been refined since and its shortlist edited, and the job's copy must not undo either)."""
+    ts = _now()
+    with _conn() as con:
+        inserted = con.execute(
+            "INSERT OR IGNORE INTO solve_searches (user_oid, search_id, problem, result_json, shortlist_json, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (str(user_oid), str(search_id), str(problem)[:2000], json.dumps(result, default=str), "[]", ts, ts)).rowcount
+        if inserted:
+            con.execute(
+                "DELETE FROM solve_searches WHERE user_oid=? AND search_id NOT IN (SELECT search_id FROM solve_searches "
+                "WHERE user_oid=? ORDER BY updated_at DESC, created_at DESC LIMIT ?)",
+                (str(user_oid), str(user_oid), SOLVE_KEEP))
+    if inserted:
+        _upload_to_s3()
+    return get_solve_search(user_oid, search_id)
+
+
+def update_solve_search(user_oid: str, search_id: str, *, result: dict | None = None,
+                        shortlist: list[str] | None = None) -> bool:
+    """Replace a kept search's result (after a refinement) or its shortlist. False when not kept."""
+    sets, args = ["updated_at=?"], [_now()]
+    if result is not None:
+        sets.append("result_json=?"); args.append(json.dumps(result, default=str))
+    if shortlist is not None:
+        sets.append("shortlist_json=?"); args.append(json.dumps([str(x) for x in shortlist]))
+    with _conn() as con:
+        changed = con.execute(f"UPDATE solve_searches SET {', '.join(sets)} WHERE user_oid=? AND search_id=?",
+                              (*args, str(user_oid), str(search_id))).rowcount > 0
+    if changed:
+        _upload_to_s3()
+    return changed
+
+
+def delete_solve_search(user_oid: str, search_id: str) -> bool:
+    with _conn() as con:
+        deleted = con.execute("DELETE FROM solve_searches WHERE user_oid=? AND search_id=?",
+                              (str(user_oid), str(search_id))).rowcount > 0
     if deleted:
         _upload_to_s3()
     return deleted

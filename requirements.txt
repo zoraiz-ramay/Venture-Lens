@@ -10,7 +10,6 @@ fastapi>=0.111
 uvicorn[standard]>=0.30
 gunicorn
 boto3
-python-multipart
 msal>=1.31
 redis>=5.0
 # TestClient needs httpx. It is present transitively today, so a new API test passes

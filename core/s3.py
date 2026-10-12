@@ -1,9 +1,9 @@
-"""S3 helpers for persistent PDF storage.
+"""S3 downloads: pitch-deck PDFs and the GlassDollar data file.
 
 PDFs are stored in the S3 bucket defined by S3_BUCKET (env var). When a pitch deck is needed but
 not present locally, `fetch_pdf` (called from `data._resolve_pdf`) downloads it to a
-container-local cache dir so pypdf can read it without changes elsewhere. The upload/list/delete/
-presign helpers back the API's PDF endpoints. The runs.db sync lives in `api/store.py`, not here.
+container-local cache dir so pypdf can read it without changes elsewhere. `fetch_data_file` restores
+the GlassDollar export at API startup (`api/main.py`). The runs.db sync lives in `api/store.py`.
 """
 from __future__ import annotations
 
@@ -76,55 +76,7 @@ def fetch_pdf(basename: str) -> str:
         return ""
 
 
-def upload_pdf(local_path: str, basename: str | None = None) -> str:
-    """Upload a local PDF file to S3. Returns the S3 key on success, '' on failure."""
-    if not _available():
-        return ""
-    if basename is None:
-        basename = pathlib.Path(local_path).name
-    key = f"{S3_PREFIX}{basename}"
-    try:
-        _client().upload_file(local_path, S3_BUCKET, key)
-        log.info("Uploaded %s -> s3://%s/%s", local_path, S3_BUCKET, key)
-        return key
-    except Exception as exc:
-        log.error("S3 upload failed for %s: %s", local_path, exc)
-        return ""
 
-
-def list_pdfs() -> list[str]:
-    """Return basenames of all PDFs stored in S3."""
-    if not _available():
-        return []
-    try:
-        paginator = _client().get_paginator("list_objects_v2")
-        names = []
-        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=S3_PREFIX):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                basename = key[len(S3_PREFIX):]
-                if basename and basename.lower().endswith(".pdf"):
-                    names.append(basename)
-        return sorted(names)
-    except Exception as exc:
-        log.error("S3 list failed: %s", exc)
-        return []
-
-
-def delete_pdf(basename: str) -> bool:
-    """Delete a PDF from S3. Returns True on success."""
-    if not _available():
-        return False
-    key = f"{S3_PREFIX}{basename}"
-    try:
-        _client().delete_object(Bucket=S3_BUCKET, Key=key)
-        cached = _CACHE_DIR / basename
-        if cached.exists():
-            cached.unlink()
-        return True
-    except Exception as exc:
-        log.error("S3 delete failed for %s: %s", key, exc)
-        return False
 
 
 def fetch_data_file(s3_key: str, local_path: str) -> str:
@@ -140,20 +92,4 @@ def fetch_data_file(s3_key: str, local_path: str) -> str:
         return local_path
     except Exception as exc:
         log.debug("S3 fetch failed for %s: %s", s3_key, exc)
-        return ""
-
-
-def presigned_url(basename: str, expiry: int = 3600) -> str:
-    """Generate a pre-signed download URL for a PDF in S3."""
-    if not _available():
-        return ""
-    key = f"{S3_PREFIX}{basename}"
-    try:
-        return _client().generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": key},
-            ExpiresIn=expiry,
-        )
-    except Exception as exc:
-        log.error("S3 presign failed for %s: %s", key, exc)
         return ""

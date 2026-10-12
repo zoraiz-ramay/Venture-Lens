@@ -5,7 +5,6 @@ import pytest
 from api.auth import Principal, sessions
 from api import workspace, jobs
 from core.tracxn import TracxnClient
-from core.siemens_fit import assess_fit
 
 
 def user(oid):
@@ -59,26 +58,6 @@ def test_an_evaluation_batch_needs_no_department(monkeypatch):
 def test_batch_limit_is_enforced_server_side():
     with pytest.raises(ValueError):
         jobs.JobBody(names=[str(i) for i in range(11)],request_id="batch-validation")
-
-
-def test_rubric_rejects_fabricated_citations_and_caps_self_claims():
-    text="We provide industrial inspection software for production lines."
-    row=pd.Series({"short_description":text})
-    llm=Mock(available=True)
-    llm.parse_json.return_value={"criteria":[
-        {"criterion":"strategic","level":4,"evidence_id":"E0","quote":text,"rationale":"Specific use case"},
-        {"criterion":"impact","level":4,"evidence_id":"E0","quote":"Reduced costs by 40%"}]}
-    result=assess_fit(row,{},[],llm)
-    assert result["criteria"][0]["level"] == 3
-    assert next(c for c in result["criteria"] if c["id"]=="impact")["points"] == 0
-    assert result["score"] == sum(c["points"] for c in result["criteria"])
-
-
-def test_unknown_rubric_does_not_invent_evidence():
-    result=assess_fit(pd.Series(dtype=str),{},[],None)
-    assert result["score"] == 0
-    assert result["evidence_coverage"] == 0
-    assert all(not c["evidence"] for c in result["criteria"])
 
 
 def test_provider_row_skips_glassdollar_resolution(monkeypatch):

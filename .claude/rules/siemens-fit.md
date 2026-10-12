@@ -2,7 +2,6 @@
 paths:
   - "core/pillar_match.py"
   - "core/pillars.py"
-  - "core/siemens_fit.py"
   - "core/tool_check.py"
   - "core/tool_search.py"
   - "core/assessment.py"
@@ -11,7 +10,6 @@ paths:
   - "core/departments.py"
   - "core/catalogs.py"
   - "core/team_ecosystem.py"
-  - "core/collaborate_profile.py"
   - "api/assessments.py"
   - "scripts/build_tool_index.py"
   - "scripts/compare_tool_retrieval.py"

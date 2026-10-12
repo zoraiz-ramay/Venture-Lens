@@ -3,13 +3,9 @@
 `api/interests.py`'s ``DEMO`` carries five hand-picked keywords per department — a guess at what
 "Digital Industries" or "Siemens Mobility" cares about. `data/Startup_Evaluator_Departmental_
 Requirements.xlsx` is the real thing: rows of needs Siemens itself defined, each a capability
-(with its description and a semicolon-separated `Keywords` column) under a need category. This
-module reads it two ways:
-
-- `load_department_requirements()` — the structured needs per department, which the Collaborate
-  pillar is assessed against (core/catalogs.py), one catalog entry per capability;
-- `load_department_needs()` — the flattened keyword list per department, the same
-  `{department_id: [terms]}` shape the demo list produces, for keyword screening.
+(with its description and a semicolon-separated `Keywords` column) under a need category.
+`load_department_requirements()` reads it into the structured needs per department, which the
+Collaborate pillar is assessed against (core/catalogs.py), one catalog entry per capability.
 
 Read once per process (`lru_cache`) — the file does not change at runtime. Any failure (file
 missing, sheet renamed, openpyxl broken) degrades to an empty dict rather than raising, same as the
@@ -38,7 +34,8 @@ _DEPARTMENT_IDS = {
 }
 
 
-def _cell(row, col) -> str:
+def _cell(row: tuple, col: int | None) -> str:
+    """The cell at ``col`` as stripped text; "" for a missing column or an empty cell."""
     return str(row[col]).strip() if col is not None and col < len(row) and row[col] is not None else ""
 
 
@@ -83,13 +80,6 @@ def load_department_requirements() -> dict:
         return {}
 
 
-@functools.lru_cache(maxsize=1)
-def load_department_needs() -> dict:
-    """``{department_id: [keyword, ...]}``, de-duplicated per department in first-appearance order."""
-    return {dept: list(dict.fromkeys(k for n in data["needs"] for k in n["keywords"]))
-            for dept, data in load_department_requirements().items()}
-
-
 def clear_cache() -> None:
+    """Forget the workbook read, so the next call reads the file again (tests)."""
     load_department_requirements.cache_clear()
-    load_department_needs.cache_clear()

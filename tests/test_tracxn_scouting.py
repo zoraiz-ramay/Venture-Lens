@@ -13,7 +13,9 @@ from api.auth import Principal, sessions
 
 
 def candidate(name="Alpha", **kwargs):
-    return {"name": name, "description": "industrial inspection", "website": "https://alpha.example", "source": "tracxn", **kwargs}
+    # Each its own homepage: one host is one company to the merge (core/solve.py::_identity).
+    return {"name": name, "description": "industrial inspection", "website": f"https://{name.lower()}.example",
+            "source": "tracxn", **kwargs}
 
 
 @pytest.fixture

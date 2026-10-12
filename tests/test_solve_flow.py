@@ -175,6 +175,39 @@ def test_refine_never_searches_again(catalog, monkeypatch):
     assert [c["name"] for c in out["market"]] == ["A"]
 
 
+def test_one_company_spelt_differently_by_two_sources_is_listed_once():
+    merged = solve._merge([
+        {"name": "Acme Robotics GmbH", "source": "tracxn", "description": "", "website": "https://www.acme-robotics.de/"},
+        {"name": "Acme Robotics", "source": "glassdollar", "description": "Robot cells.", "website": ""},
+        {"name": "ACME-Robotics Inc.", "source": "web", "description": "", "website": "acme-robotics.de/en"},
+        {"name": "Beta", "source": "web", "description": "Other.", "website": "https://acme-robotics.de/news/2024/beta"},
+        {"name": "Gamma", "source": "web", "description": "Other.", "website": "https://www.linkedin.com/company/gamma"},
+        {"name": "Delta", "source": "web", "description": "Other.", "website": "https://www.linkedin.com/company/delta"},
+    ], set())
+    assert [c["name"] for c in merged] == ["Acme Robotics GmbH", "Beta", "Gamma", "Delta"]
+    # The first source's record is kept; a later one only fills its blanks, labelled as such.
+    assert merged[0]["description"] == "Robot cells."
+    assert merged[0]["field_sources"]["description"] == {"provider": "glassdollar"}
+
+
+def test_an_applicant_is_never_repeated_in_the_market_under_another_spelling():
+    applicants = [{"name": "Sensei Labs", "website": "https://sensei.example", "source": "applications"}]
+    market = [{"name": "Sensei Labs GmbH", "source": "tracxn", "description": "x", "website": ""},
+              {"name": "SenseiAI", "source": "web", "description": "x", "website": "https://www.sensei.example"},
+              {"name": "sensei.example", "source": "web", "description": "x", "website": ""},
+              {"name": "Sensei Robotics", "source": "web", "description": "x", "website": ""}]
+    assert [c["name"] for c in solve._merge(market, solve._identities(applicants))] == ["Sensei Robotics"]
+
+
+def test_a_company_that_applied_twice_is_one_applicant(catalog):
+    df = pd.concat([_df(), pd.DataFrame([{"startup_id": 9, "company_name": "Sensei Labs GmbH", "short_description": "",
+                                          "Your pitch": "Breakdown prediction from machine anomalies."}])]).fillna("")
+    found, _ = solve.match_applications(PROBLEM, catalogs.applications_catalog_from_df(df), FakeLLM(embeds=False),
+                                        limit=8)
+    names = [c["name"] for c in found]
+    assert len([n for n in names if n.startswith("Sensei")]) <= 1
+
+
 def test_shortlist_facts_name_their_source_and_honour_the_selection():
     result = {"applicants": [{"id": "app:1", "name": "Sensei Labs", "source": "applications", "description": "Anomaly detection.",
                               "band": "strong", "reason": "Fits.",

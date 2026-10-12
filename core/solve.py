@@ -300,10 +300,14 @@ def match_applications(text: str, catalog: dict, llm: LLMClient,
     out, companies = [], set()
     for name in ranked:
         entry = by_name.get(name)
-        # One company can have applied more than once; the best-matching pitch speaks for it.
-        if entry is None or entry["company"].casefold() in companies:
+        if entry is None:
             continue
-        companies.add(entry["company"].casefold())
+        # One company can have applied more than once, under more than one spelling; the
+        # best-matching pitch speaks for it.
+        ids = _identity({"name": entry["company"], "website": entry.get("website", "")})
+        if ids & companies:
+            continue
+        companies |= ids
         out.append(_applicant(entry, words))
         if len(out) == limit:
             break
@@ -411,22 +415,81 @@ def _fill_candidate_gaps(candidates: list[dict], stats: dict | None = None) -> N
                 break
 
 
+# A legal form says nothing about which company it is: "Sensei Labs GmbH" applied, and Tracxn lists
+# "Sensei Labs". Only these trailing tokens are dropped — never a word like "Technologies" that
+# can be what tells two companies apart.
+_LEGAL_FORMS = {"gmbh", "mbh", "ag", "kg", "ug", "se", "inc", "incorporated", "corp", "corporation", "co",
+                "llc", "llp", "lp", "ltd", "limited", "plc", "pvt", "private", "pte", "pty", "sa", "sas",
+                "sarl", "sl", "srl", "spa", "bv", "nv", "oy", "oyj", "ab", "as", "asa", "aps", "kft", "sro"}
+# Hosts many companies share: equal hosts there say nothing about identity.
+_SHARED_HOSTS = _SOCIAL + ("github.", "google.", "notion.", "wix", "linktr.ee", "bit.ly", "about.me")
+
+
+def _company_key(name: str) -> str:
+    """A company's name with case, punctuation, a trailing legal form and a domain ending removed."""
+    text = str(name or "").casefold().strip()
+    if " " not in text and re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", text):
+        text = text.split(".")[0]                       # "controlis.io", "GreenFactory.AI"
+    words = re.sub(r"[^\w]+", " ", text).split()
+    while len(words) > 1 and words[-1] in _LEGAL_FORMS:
+        words.pop()
+    return " ".join(words) or text
+
+
+def _home_host(url: str) -> str:
+    """The host of a company's own homepage, or '' when the URL may be anyone's page.
+
+    Only a URL at the root (or one path segment, like /en) counts: a model-extracted "website" is
+    sometimes a news article, and two companies sharing techcrunch.com are not one company."""
+    from urllib.parse import urlsplit
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw if "//" in raw else "//" + raw)
+    host = (parts.hostname or "").removeprefix("www.")
+    segments = [p for p in parts.path.split("/") if p]
+    if "." not in host or len(segments) > 1 or parts.query or any(s in host for s in _SHARED_HOSTS):
+        return ""
+    return host
+
+
+def _identity(c: dict) -> set[str]:
+    """Every key that names this company: its normalised name and its homepage's host — or its
+    name, when the name is itself a domain ("controlis.io" applied under its web address)."""
+    name = str(c.get("name") or "").strip()
+    hosts = {_home_host(c.get("website", "")),
+             _home_host(name) if " " not in name and re.fullmatch(r"[\w-]+(\.[\w-]+)+", name) else ""}
+    return {f"name:{_company_key(name)}"} | {f"host:{h}" for h in hosts if h}
+
+
+def _identities(candidates) -> set[str]:
+    return set().union(*(_identity(c) for c in candidates)) if candidates else set()
+
+
 def _merge(candidates: list[dict], exclude: set[str]) -> list[dict]:
-    """One record per company. Source priority is kept; a lower-priority duplicate only fills blanks."""
-    unique: dict = {}
+    """One record per company — by normalised name or homepage host (``_identity``), so a company
+    two sources spell differently is listed once, and an applicant is never repeated in the market.
+    Source priority is kept; a lower-priority duplicate only fills blanks."""
+    unique: list[dict] = []
+    owner: dict = {}                                      # identity key -> index into unique
     for c in candidates:
-        key = c["name"].casefold()
-        if key in exclude:
+        ids = _identity(c)
+        if ids & exclude:
             continue
-        if key not in unique:
-            unique[key] = c
+        at = next((owner[k] for k in ids if k in owner), None)
+        if at is None:
+            at = len(unique)
+            unique.append(c)
             c["field_sources"] = {k: {"provider": c["source"]} for k in ("description", "website") if c.get(k)}
         else:
+            kept = unique[at]
             for field in ("description", "website"):
-                if not unique[key].get(field) and c.get(field):
-                    unique[key][field] = c[field]
-                    unique[key]["field_sources"][field] = {"provider": c["source"]}
-    return list(unique.values())
+                if not kept.get(field) and c.get(field):
+                    kept[field] = c[field]
+                    kept["field_sources"][field] = {"provider": c["source"]}
+        for k in ids:
+            owner.setdefault(k, at)
+    return unique
 
 
 WEB_FALLBACK_BELOW = 5        # fewer ranked market candidates than this, and the web is searched too
@@ -522,7 +585,7 @@ def _market_search(problem, keywords, llm, *, do_web, use_glassdollar, tracxn, e
 
     def web_branch():
         found = _web_candidates(keywords()[:3], llm, stats=web_stats)
-        web = _merge(found, exclude() | {c["name"].casefold() for c in merged.result()})
+        web = _merge(found, exclude() | _identities(merged.result()))
         return web, rank(problem, web, llm)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -539,7 +602,7 @@ def _market_search(problem, keywords, llm, *, do_web, use_glassdollar, tracxn, e
                 web_f = pool.submit(copy_context().run, web_branch)
 
         try:
-            if do_web and len({c["name"].casefold() for c in candidates}) < WEB_FALLBACK_BELOW:
+            if do_web and len({_company_key(c["name"]) for c in candidates}) < WEB_FALLBACK_BELOW:
                 start_web()
             excluded = exclude() if candidates else set()
             candidates = _merge(candidates, excluded)[:15]
@@ -644,7 +707,7 @@ def solve_problem(problem: str, llm: LLMClient = None, do_web: bool = True,
         market_f = pool.submit(copy_context().run, _market, problem,
                                lambda: interpretation_f.result()["keywords"], llm, do_web=do_web,
                                use_glassdollar=use_glassdollar, tracxn=tracxn,
-                               exclude=lambda: {c["name"].casefold() for c in applicants_f.result()[0]},
+                               exclude=lambda: _identities(applicants_f.result()[0]),
                                on_progress=market_progress)
         interpretation = interpretation_f.result()
         lap("interpretation")

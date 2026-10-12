@@ -21,3 +21,32 @@
 .grid-shell .dtable tbody tr:hover .sticky-col {
   background: var(--surface-2);
 }
+
+/* Databases: the tab strip shared by the runs grid and the source browser (pages/databases/). */
+.db-tabs { margin-bottom: 10px; }
+.db-tabs .error-box { margin-top: 6px; }
+
+.source-facts { margin-bottom: 10px; }
+/* IxKeyValue's value box is single-line with an ellipsis; a sentence cut to "Pitch-form answ…"
+   on a phone says nothing, so the slotted text wraps instead. */
+.source-facts [slot="custom-value"],
+.source-detail [slot="custom-value"] { white-space: normal; overflow-wrap: anywhere; }
+/* A SHA-256 is one 64-character word; let it wrap rather than widen the page on a phone. */
+.source-checksum { font-family: ui-monospace, Consolas, monospace; font-size: var(--fs-meta); word-break: break-all; }
+.source-search { flex: 1 1 260px; max-width: 420px; }
+.source-count { font-size: var(--fs-meta); }
+.source-loading { padding: 12px; }
+
+/* Text columns wrap and clamp: a pitch runs to pages, and a grid of single endless lines cannot
+   be read. The row's details show each cell whole. */
+.dtable.source-table td { white-space: normal; vertical-align: top; min-width: 110px; max-width: 360px; }
+.source-table tbody tr { cursor: default; }
+.source-table .source-toggle-col { width: 30px; min-width: 30px; }
+.source-text {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.source-text-full { white-space: pre-wrap; overflow-wrap: anywhere; }
+.source-link { color: var(--accent); overflow-wrap: anywhere; }
+.grid-shell .source-table tbody tr.source-detail td,
+.grid-shell .source-table tbody tr.source-detail:hover td { background: var(--surface-2); }
+.source-pages { margin-top: 8px; }

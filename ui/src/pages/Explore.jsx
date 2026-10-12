@@ -10,6 +10,8 @@ import { departmentScore } from "../scoring/department.js";
 import DepartmentPicker from "../components/DepartmentPicker.jsx";
 import { COLUMNS, DEFAULT_COLS, SORTABLE } from "./exploreColumns.jsx";
 import ColumnDrawer from "./ColumnDrawer.jsx";
+import DatabaseTabs from "./databases/DatabaseTabs.jsx";
+import SourceBrowser from "./databases/SourceBrowser.jsx";
 
 // MIG-12: the one category this filter row ever offered is the pillar, so it maps onto
 // IxCategoryFilter's single-category-hash shape (components.md) with one entry. Free text still
@@ -58,6 +60,16 @@ export default function Explore() {
     if (v) next.set(k, v); else next.delete(k);
     setParams(next, { replace: true });
   };
+
+  // `?source=` picks a data source to browse instead of the runs grid; the grid's own params are
+  // left alone, so going back to "Evaluated startups" returns to the same filters and view.
+  const source = params.get("source") || "";
+  const pickSource = (id) => setParams((prev) => {
+    const next = new URLSearchParams(prev);
+    if (id) next.set("source", id); else next.delete("source");
+    next.delete("search"); next.delete("page");
+    return next;
+  }, { replace: true });
 
   /* Opening a saved view.
    *
@@ -168,6 +180,19 @@ export default function Explore() {
     appliedRef.current = name; setParam("view", name); setDrawer(false);
   };
 
+  // The crumb, header and tabs sit at the same positions as in the grid's tree below, so React
+  // keeps DatabaseTabs mounted across a switch and the tab strip never empties while it refetches.
+  if (source) {
+    return (
+      <div>
+        <div className="crumb">Workspace &gt; Database</div>
+        <IxContentHeader headerTitle="Database" headerSubtitle="Data sources the evaluation reads, read-only" />
+        <DatabaseTabs value={source} onChange={pickSource} />
+        <SourceBrowser key={source} sourceId={source} />
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="crumb">Workspace &gt; Database</div>
@@ -184,6 +209,7 @@ export default function Explore() {
           </span>
         )}
       </IxContentHeader>
+      <DatabaseTabs value="" onChange={pickSource} />
 
       {stats && (
         <div className="stats-strip">

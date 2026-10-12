@@ -26,6 +26,7 @@ vi.mock("../api.js", () => ({
     views: vi.fn(async () => ({ views: [] })),
     saveView: vi.fn(async (name, columns, filters) => ({ name, columns, filters })),
     deleteView: vi.fn(async () => ({ deleted: true })),
+    sources: vi.fn(async () => ({ sources: [] })),
   },
 }));
 

@@ -232,6 +232,19 @@
     {
       "method": "status",
       "args": []
+    },
+    {
+      "method": "sources",
+      "args": []
+    },
+    {
+      "method": "source",
+      "args": [
+        "id",
+        "{ q = \"\"",
+        "offset = 0",
+        "limit = 25 } = {}"
+      ]
     }
   ],
   "design_tokens": [
@@ -691,8 +704,56 @@
       "css_classes": []
     },
     {
+      "path": "ui/src/pages/databases/DatabaseTabs.jsx",
+      "lines": 45,
+      "exports": [
+        "DatabaseTabs",
+        "RUNS_TAB"
+      ],
+      "css_classes": [
+        "db-tabs"
+      ]
+    },
+    {
+      "path": "ui/src/pages/databases/SourceBrowser.jsx",
+      "lines": 174,
+      "exports": [
+        "PAGE_SIZE",
+        "SourceBrowser"
+      ],
+      "css_classes": [
+        "dtable",
+        "filter-row",
+        "grid-shell",
+        "kebab",
+        "muted",
+        "panel",
+        "skel",
+        "skel-row",
+        "source-browser",
+        "source-count",
+        "source-detail",
+        "source-facts",
+        "source-full",
+        "source-grid",
+        "source-link",
+        "source-loading",
+        "source-pages",
+        "source-search",
+        "source-table",
+        "source-toggle-col",
+        "sr-only"
+      ]
+    },
+    {
+      "path": "ui/src/pages/databases/SourceBrowser.test.jsx",
+      "lines": 180,
+      "exports": [],
+      "css_classes": []
+    },
+    {
       "path": "ui/src/pages/Explore.jsx",
-      "lines": 329,
+      "lines": 355,
       "exports": [
         "Explore"
       ],
@@ -719,7 +780,7 @@
     },
     {
       "path": "ui/src/pages/Explore.test.jsx",
-      "lines": 241,
+      "lines": 242,
       "exports": [],
       "css_classes": []
     },
@@ -1754,9 +1815,9 @@
   ],
   "totals": {
     "routes": 9,
-    "api_methods": 34,
+    "api_methods": 36,
     "design_tokens": 70,
-    "jsx_files": 102,
-    "jsx_lines": 10611
+    "jsx_files": 105,
+    "jsx_lines": 11037
   }
 }

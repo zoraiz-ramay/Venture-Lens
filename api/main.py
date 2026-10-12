@@ -5,7 +5,8 @@ Run history persists in SQLite (api/store.py). Every /api route is behind the se
 api/security.py unless it is named in PUBLIC_PATHS there.
 
 This module builds the app and holds the core routes; smaller route groups have their own
-routers (api/auth.py, jobs.py, routes_solve.py, interests.py, assessments.py, tracxn.py).
+routers (api/auth.py, jobs.py, routes_solve.py, interests.py, assessments.py, tracxn.py,
+sources.py).
 Sections below, in order: startup wiring, request bodies, health & search, evaluation (cached,
 fresh, streamed), the reviewer's own lists, Solve a Problem, admin, runs and their on-request
 lookups, challenges, the assistant, static SPA serving.
@@ -175,6 +176,8 @@ from api.interests import router as interests_router
 app.include_router(interests_router)
 from api.assessments import router as assessments_router
 app.include_router(assessments_router)
+from api.sources import router as sources_router
+app.include_router(sources_router)
 
 
 # ================================================================ request bodies

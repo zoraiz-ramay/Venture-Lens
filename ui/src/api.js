@@ -132,5 +132,11 @@ export const api = {
   me: () => request("/api/auth/me"),
   logout: () => request("/api/auth/logout", { method: "POST" }),
   status: () => request("/api/status"),
+  // Databases: the files the engine reads (api/sources.py), read-only. Columns are allow-listed
+  // and contact details scrubbed on the server; search and paging happen there too, and there is
+  // deliberately no call that downloads a file.
+  sources: () => request("/api/sources"),
+  source: (id, { q = "", offset = 0, limit = 25 } = {}) =>
+    request(`/api/sources/${encodeURIComponent(id)}?${new URLSearchParams({ q, offset: String(offset), limit: String(limit) })}`),
 };
 export { ApiError };

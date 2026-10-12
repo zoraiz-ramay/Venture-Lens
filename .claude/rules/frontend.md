@@ -21,9 +21,10 @@ Icons are Siemens iX, via `ui/src/components/Icon.jsx`. It inlines the SVG and r
 `currentColor` because the shipped glyphs carry `fill='none'` and expect the host to paint them —
 an `<img>` or a CSS mask renders them blank. Do not reintroduce Unicode or emoji glyphs in chrome.
 
-The six weight sliders (`ui/src/components/WeightSliders.jsx`) and the single
-`se.whatIfWeights.v1` behind them are shared by the profile what-if and Explore's portfolio
-re-weighting on purpose: "my weighting" is something a reviewer has, not a per-screen setting.
+The what-if weight sliders are gone from every page. `ui/src/scoring/` (`index.js`, `routing.js`)
+is no longer imported by a page; it is kept because `tests/test_whatif_*_parity.py` and
+`scripts/golden_runs.py` pin it as the JS mirror of the engine's scoring. Do not wire it back into
+a page without re-reading `.claude/rules/pillars-and-routing.md`.
 
 `ui/src/tokens.css` is the **single source of truth for design tokens** — chrome (product shell),
 canvas (data surface), text, semantic, pillar ramp, type scale. Components reference tokens, never
@@ -118,11 +119,12 @@ Consequences worth knowing before changing any of it:
 
 Three numbers have to stay in step, and there is one source for each:
 
-- `--profile-sticky-h` is *measured at runtime* by `useStickyOffset`, because `.profile-head` is
-  itself sticky and its height depends on how long the company's summary is. On a real profile it
-  is ~408px, which is why the scroll-spy's activation band is a fraction of the space *below* the
-  chrome and not of the viewport: a percentage of the viewport produced a negative root rect and
-  the observer silently stopped firing.
+- `--profile-sticky-h` is *measured at runtime* by `useStickyOffset`. `.profile-head` is currently
+  **not** sticky (it scrolls away, see the comment above it in `styles.css`), so the measured
+  offset is 0; the hook stays because a pinned header's height depends on the company's summary
+  (it was ~408px when it was sticky). The scroll-spy's activation band is a fraction of the space
+  *below* the chrome, not of the viewport: a percentage of the viewport produced a negative root
+  rect and the observer silently stopped firing.
 - `.profile-section { scroll-margin-top }` puts a clicked section a few pixels below that line;
   `CROSS_TOLERANCE_PX` in `useScrollSpy.js` must cover that gap, or a section scrolled to by a
   click counts as not yet reached and the marker snaps back to its neighbour.

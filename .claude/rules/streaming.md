@@ -38,9 +38,10 @@ Anything a streaming run has not produced yet must say so rather than render its
 pillar pill with no pillar reads as a verdict of nothing; a Fit Score of 0 reads as a bad company.
 Both are the `employees_history_status` mistake one level up.
 
-`EventSource` is not usable here — it is GET-only and this must be a POST carrying the session
-cookie and CSRF header — so the client is `fetch` plus a stream reader, falling back to
-`api.evaluate` on any stream failure.
+The UI no longer reads the SSE endpoint. An evaluation runs as a research job (`api/jobs.py`):
+`merge_partial` writes each partial into the job record and the UI polls it (`ui/src/research.jsx`
+→ `api.job`), so the same partials arrive without a held-open connection. `POST
+/api/evaluate/stream` and its byte-identical test remain as the streaming contract.
 
 ## Where a run's time goes, and what may start early
 

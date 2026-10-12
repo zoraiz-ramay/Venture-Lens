@@ -10,6 +10,9 @@ the traction rubric: the model supplies words, never numbers. Only when no figur
 the model judge size or growth from the evidence, and then at most 2: a large market needs a
 source. Strategic relevance is a judgment and is always the model's, against the Siemens
 Xcelerator industries and topics, and a "strong" or "core" answer must name one of them.
+
+Assessed once per evaluation after the trend lands (`pipeline._start_fit_free_scoring`), and
+weighted 15% in the department total (core/assessment.py).
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ BANDS = ((13, "Highly Attractive Market"), (10, "Attractive Market"), (7, "Moder
 
 
 def band(points: int) -> str:
+    """The 0–15 total's label, e.g. "Attractive Market"."""
     return next(label for floor, label in BANDS if points >= floor)
 
 
@@ -78,6 +82,7 @@ def growth_level(value) -> tuple[int, float] | None:
 
 
 def _figures(result: dict) -> dict:
+    """The trend stage's cited size and CAGR, banded; each None unless it parses and has a source."""
     trend = result.get("trend") or {}
     size = ((trend.get("landscape") or {}).get("market_size")) or {}
     url = _clean_source_url(size.get("source_url"))
@@ -96,6 +101,7 @@ def _figures(result: dict) -> dict:
 
 
 def _strategic_areas() -> list[str]:
+    """The Xcelerator industries and topics a strong strategic-relevance rating must name."""
     from .catalogs import xcelerator_catalog
     x = xcelerator_catalog()
     return [e["name"] for e in x.get("industries", []) + x.get("topics", [])] if x.get("available") else []
@@ -148,6 +154,7 @@ def validate(raw, figures: dict, evidence: dict, areas: list[str]) -> dict:
 
 
 def assess_market(result: dict, llm: LLMClient) -> dict:
+    """The three Market criteria for a run: cited figures banded in Python, the rest by the model."""
     from .pillar_match import _evidence, _prompt_evidence
     figures = _figures(result)
     base = {"version": VERSION, "industry": figures["niche"],

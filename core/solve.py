@@ -49,6 +49,7 @@ _SOCIAL = ("linkedin.", "crunchbase.", "wikipedia.", "facebook.", "twitter.", "x
 
 # ----------------------------------------------------------------- challenge library
 def load_challenges() -> list[dict]:
+    """Every recorded problem (any status); [] when the library is missing or unreadable."""
     try:
         with open(CHALLENGES_PATH, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -136,6 +137,8 @@ def _glassdollar_candidates(keywords: list[str], limit_per_kw: int = 5) -> list[
 
 
 def _web_candidates(keywords: list[str], llm: LLMClient) -> list[dict]:
+    """Companies named in a web search for the keywords: extracted by the model from the results,
+    or offline, the result domains themselves."""
     queries = {f"kw_{i}": f"startup {kw} solution company" for i, kw in enumerate(keywords[:6])}
     results = _ddg_many(queries, max_results=5)
     hits = [h for hs in results.values() for h in (hs or [])]
@@ -370,7 +373,8 @@ MARKET_LIMIT = 10
 _SOURCE_ORDER = {"tracxn": 0, "glassdollar": 1, "web": 2}
 
 
-def _market_order(c: dict):
+def _market_order(c: dict) -> tuple[int, int]:
+    """Band first, then source priority (Tracxn, GlassDollar, web)."""
     return BANDS.index(c["band"]), _SOURCE_ORDER.get(c["source"], 3)
 
 

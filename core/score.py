@@ -1,4 +1,10 @@
-"""Weighted six-dimension scoring with data-confidence capping."""
+"""Weighted six-dimension heuristic scoring with data-confidence capping.
+
+The deterministic predecessor of `core/judgment.score_research`, which is what a live evaluation
+scores with. `score_startup` and `ROUTE_WEIGHTS` remain the decision layer `benchmarks/replay.py`
+re-runs over stored evidence and that `core/route.py` (and the browser what-if mirror) route from,
+so the grounding rules in here — notably programme memberships — still have to hold.
+"""
 from __future__ import annotations
 
 import re
@@ -100,7 +106,7 @@ def _known(row: pd.Series, profile: dict, field: str) -> bool:
     values that the profile header displays are merged in by `backfill_profile` *after* this
     point in the pipeline. A company whose HQ, founding year, headcount, funding and customers
     had all been found and cited could still be scored as a thin profile and lose a third of
-    its score to the confidence multiplier. Line 43 below already applies this row-then-profile
+    its score to the confidence multiplier. `score_startup` already applied this row-then-profile
     fallback to funding; completeness never got the same fix.
     """
     if any(_txt(row.get(c, "")) for c in _ROW_EQUIVALENTS.get(field, (field,))):
@@ -117,6 +123,7 @@ def _known(row: pd.Series, profile: dict, field: str) -> bool:
 
 def score_startup(row: pd.Series, enrichment: dict, verification: dict, fit: dict,
                   profile: dict = None, trend: dict = None) -> dict:
+    """Six 0–100 dimensions, the confidence-scaled final score and the per-route scorecards."""
     profile = profile or {}
     trend = trend or {}
     facts = enrichment["facts"]
@@ -184,6 +191,8 @@ def score_startup(row: pd.Series, enrichment: dict, verification: dict, fit: dic
     # A challenge match can now only pull fit UP, and only insofar as it beats the tool match.
     ch = fit.get("challenge_match", {}) or {}
     ch_score = float(ch.get("score", 0) or 0) if ch.get("library_size") else 0.0
+    # `fit.rubric` (siemens-fit-v1) is no longer produced; runs stored while it was carry it, and a
+    # replay of one must score them as they were scored.
     dims["siemens_fit"] = (fit["rubric"]["score"] if fit.get("rubric", {}).get("version") == "siemens-fit-v1"
                             else min(100.0, tool_fit + 0.3 * max(0.0, ch_score - tool_fit)))
     # product: how far the solution has actually got. The pitch form's three Stage checkboxes

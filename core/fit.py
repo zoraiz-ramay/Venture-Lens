@@ -1,4 +1,9 @@
-"""Siemens portfolio fit — two-stage LLM tool matching with an offline fallback."""
+"""Siemens portfolio fit — two-stage LLM tool matching with an offline fallback.
+
+The `fit` branch of `pipeline.evaluate`, run concurrently with verify, summarize, profile and
+trend. Its top matches feed the portfolio stance and SFS at the route step, the Empower pillar's
+shortlist and context (core/pillar_match.py), and the model score (core/judgment.py).
+"""
 from __future__ import annotations
 
 import concurrent.futures

@@ -1,4 +1,9 @@
-"""LLM-confirmed verification: check every self-reported claim against web evidence."""
+"""LLM-confirmed verification: check every self-reported claim against web evidence.
+
+The `verification` branch of `pipeline.evaluate`: the only research branch that waits for
+enrichment's search wave and site fetch, because those are the evidence it checks against. Its
+claim statuses feed scoring, traction's customer sourcing and carry-forward.
+"""
 from __future__ import annotations
 
 import os
@@ -80,6 +85,7 @@ def verify_facts(row: pd.Series, enrichment: dict, llm: "LLMClient") -> dict:
 
 
 def _heuristic_verify(claims: list[dict], evidence: list[dict]) -> dict:
+    """Offline fallback: a claim is verified when half its words appear in the evidence."""
     blob = " ".join((e["title"] + " " + e["body"]).lower() for e in evidence)
     out = []
     for c in claims:

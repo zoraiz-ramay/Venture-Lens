@@ -1,4 +1,9 @@
-"""The three catalogs Siemens Fit matches a startup against, loaded with their checksums.
+"""The catalogs a startup is matched against, loaded with their checksums.
+
+Siemens Fit's three — the Siemens tools CSV (Empower, and the fit stage), the Xcelerator sellers
+workbook (Connect) and a department's stated needs (Collaborate) — plus the needs index all
+departments are ranked from, and the applications workbook the problem search reads
+(core/solve.py).
 
 Each pillar in core/pillars.py asks "which of THESE entries does the startup fit", and the answer
 is only reproducible if we know exactly which entries existed. So every loader returns the SHA-256
@@ -52,9 +57,12 @@ def _slug(text: str) -> str:
 
 
 def _unavailable(name: str, reason: str) -> dict:
+    """A catalog that could not be read — reported as such, never as an empty catalog."""
     return {"name": name, "available": False, "reason": reason, "checksum": "", "entries": []}
 
 
+# `mtime` is unused in the body on purpose: it is part of the lru_cache key, so editing a catalog
+# file on disk is picked up without a restart.
 @functools.lru_cache(maxsize=4)
 def _tools(path: str, mtime: float) -> dict:
     import pandas as pd
@@ -82,6 +90,7 @@ def _tools(path: str, mtime: float) -> dict:
 
 
 def tools_catalog(path: str = DEFAULT_TOOLS_CSV) -> dict:
+    """siemens_tools.csv as `tool:` entries (de-duplicated by name), cached until the file changes."""
     if not os.path.exists(path):
         return _unavailable("siemens_tools", "tools catalog file not found")
     return _tools(path, os.path.getmtime(path))
@@ -158,6 +167,7 @@ def _xcelerator(path: str, mtime: float) -> dict:
 
 
 def xcelerator_catalog(path: str = XCELERATOR_XLSX) -> dict:
+    """The Xcelerator sellers plus the closed industry/topic vocabularies, cached until the file changes."""
     if not os.path.exists(path):
         return _unavailable("xcelerator", "Xcelerator workbook not found")
     return _xcelerator(path, os.path.getmtime(path))
@@ -209,6 +219,7 @@ def _cell_text(value) -> str:
 
 
 def _application_fact(key: str, value) -> str:
+    """One workbook cell as the text a candidate's fact shows; "" when the export holds no value."""
     from .text import format_funding
     s = _cell_text(value)
     if key == "hq":                                  # the export writes "null, null" for an unknown HQ
@@ -278,6 +289,7 @@ def _applications(path: str, mtime: float) -> dict:
 
 
 def applications_catalog(path: str = DEFAULT_GLASSDOLLAR) -> dict:
+    """The applications workbook as problem-search entries, cached until the file changes."""
     if not path or not os.path.exists(path):
         return _unavailable("applications", "applications file not found")
     return _applications(path, os.path.getmtime(path))

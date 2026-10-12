@@ -90,6 +90,7 @@ _KINDS = ("xcelerator", "department_needs_index", "applications")
 
 
 def _kind(catalog: dict) -> str:
+    """Which catalog this is; one without a known ``name`` is the tools catalog."""
     name = catalog.get("name")
     return name if name in _KINDS else "siemens_tools"
 
@@ -107,6 +108,8 @@ def _missing_reason(catalog: dict) -> str:
 
 
 class Index:
+    """A loaded embedding index: one L2-normalised vector per catalog entry, ranked by dot product."""
+
     def __init__(self, names: list[str], vectors, meta: dict):
         self.names = names                      # catalog names, in vector-row order
         self.row = {n.casefold(): i for i, n in enumerate(names)}

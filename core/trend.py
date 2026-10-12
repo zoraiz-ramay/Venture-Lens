@@ -1,4 +1,10 @@
-"""Market trend analysis — AI generates queries, DuckDuckGo fetches, AI synthesizes a verdict."""
+"""Market trend analysis — AI generates queries, DuckDuckGo fetches, AI synthesizes a verdict.
+
+The `trend` branch of `pipeline.evaluate`, run concurrently with the other research branches and
+usually the last to land. Besides the momentum verdict it extracts the market landscape
+(competitors, funded peers, market size, investors) that core/market.py bands and Connect's
+Market signals count. See .claude/rules/market-landscape.md.
+"""
 from __future__ import annotations
 
 import concurrent.futures
@@ -35,7 +41,8 @@ MOMENTUM_TIMEOUT = float(os.getenv("TREND_MOMENTUM_TIMEOUT", "90"))
 MOMENTUM_HEDGE = float(os.getenv("TREND_MOMENTUM_HEDGE", "45"))
 
 
-def _trend_label(score: int):
+def _trend_label(score: int) -> tuple[str, str]:
+    """(label, colour) for a momentum score."""
     for (lo, hi), (label, color) in _TREND_LABELS.items():
         if lo <= score <= hi:
             return label, color
@@ -227,6 +234,9 @@ def analyze_trend(row: "pd.Series", summary: str, niche_terms: list[str],
       2. DuckDuckGo fetches live results for those queries.
       3. AI synthesizes a verdict + momentum score + signal bullets + citations.
     Returns a dict with keys: label, color, momentum, niche, summary, signals, evidence, method.
+
+    ``summary`` is not read; it stays for callers' positional signature. ``niche_terms`` seed the
+    fallback queries when stage 1 cannot run.
     """
     if not _TREND_ENABLED:
         return {"label": "—", "color": "#5f6368", "momentum": 0,

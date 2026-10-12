@@ -26,6 +26,10 @@ Filling this in is data, not code. One entry per department:
 
 Once entries exist, `assess_departments` needs no change: it matches on `domains` and `criteria`
 exactly as written here. Pure data and pure predicates; no I/O, no imports from api/.
+
+Not to be confused with the per-department Collaborate assessment the pipeline runs today
+(core/department_needs.py, core/pillar_match.py, core/assessment.py). This registry's only caller
+is the scorecard router, `core/route.route` (the `departments` key of its result).
 """
 from __future__ import annotations
 

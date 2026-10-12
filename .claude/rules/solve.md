@@ -43,3 +43,14 @@ shows them while the market is still being searched.
   answers (self-reported), the profile columns GlassDollar filled into the workbook, or an earlier
   evaluation of the same company (`api/routes_solve.attach_runs`, a read, never a search). A fact
   nobody stated is "—".
+- **A search is kept, per reviewer.** `api/jobs.py` stores a finished solve job in `solve_searches`
+  (`api/store.py`, newest 50 per reviewer, readable only by its owner); the page keeps it again on
+  open. A kept copy is never overwritten by the job's older one, so a refinement or a shortlist
+  survives, and refine/ask fall back to it once the job record has expired. The shortlist is saved
+  as the reviewer picks; follow-ups are kept in the assistant's thread table under `solve:<id>`.
+- **The market runs beside the applicants, and no source can fail the search.** Tracxn starts with
+  the search; the web runs alongside the market only when fewer than 5 candidates make it certain to
+  be needed. A source that errors or times out reports `unavailable` with a `reason`, never "no
+  matches". Each ranked candidate says `judged_by` (`model | words | meaning`); a company found by
+  several sources is listed once (name without legal form, or root homepage host). Prompts are
+  unchanged by the concurrency, so a cached replay stays byte-identical (`tests/test_solve_speed.py`).

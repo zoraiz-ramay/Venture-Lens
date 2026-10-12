@@ -163,3 +163,19 @@ def test_the_routes_answer_over_http_and_keep_their_order(monkeypatch):
     assert client.get("/api/solve/searches").json()["searches"][0]["shortlisted"] == 1
     assert client.delete("/api/solve/searches/abc123", headers=csrf).status_code == 200
     assert client.post("/api/solve/searches/abc123", headers={}).status_code == 403     # CSRF still guards it
+
+
+def test_a_search_is_kept_when_its_job_finishes_even_if_the_page_never_shows_it(monkeypatch):
+    # A reviewer who starts a search and leaves before it finishes used to lose it with the job
+    # record: the page was the only thing that kept it.
+    from api import main
+    user = _user("left-early")
+    sessions().put(jobs._key(user.oid, "s-left"), {"id": "s-left", "kind": "solve", "query": PROBLEM,
+                                                   "status": "queued"}, 60)
+    monkeypatch.setattr(main, "run_solve", lambda body, who, on_partial: RESULT)
+    jobs._slots.acquire()
+    jobs._execute(user.oid, "s-left", jobs.JobBody(kind="solve", problem=PROBLEM, request_id="left-early-request"), user)
+    _expire(user.oid, "s-left")
+    listed = routes_solve.my_solve_searches(user)["searches"]
+    assert [s["problem"] for s in listed] == [PROBLEM]
+    assert routes_solve.my_solve_searches(_user("someone-else"))["searches"] == []

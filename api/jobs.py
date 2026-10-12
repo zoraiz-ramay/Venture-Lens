@@ -73,6 +73,15 @@ def _execute(oid, job_id, body, user):
             if result is None:
                 result = _run_evaluation(record["query"], request, user.as_reviewer(), partial, user)
         update(status="complete", result=result, partial=None)
+        if body.kind == "solve":
+            # Kept now rather than when the page first shows it: a reviewer who starts a search and
+            # leaves would otherwise lose it when the job record expires. Keeping is best-effort —
+            # the search itself succeeded, and the page keeps it again on open if this failed.
+            try:
+                from api import store
+                store.keep_solve_search(oid, job_id, record["query"], result)
+            except Exception:
+                pass
     except Exception as exc:
         # Do not expose vendor responses or credentials in job errors.
         detail = exc.detail if isinstance(exc, HTTPException) else "Research failed. Please retry this startup."

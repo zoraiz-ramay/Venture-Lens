@@ -1,0 +1,27 @@
+/* Solve a Problem: the parts added for working with a search day to day — the reviewer's recent
+   problems, the result filter, a row's own action, and the shortlist's saved state. The page's
+   original rules stay in styles.css beside the rest of the app's; tokens only, as everywhere. */
+
+.solve-recent { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 24px; margin-bottom: 16px; }
+.solve-recent > p { margin: 8px 0 0; line-height: 1.6; }
+.solve-recent-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.solve-recent-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: center;
+  padding: 10px 0; border-top: 1px solid var(--border); }
+.solve-recent-list li:first-child { border-top: none; }
+.solve-recent-link { font-weight: 600; overflow-wrap: anywhere; line-height: 1.4; }
+.solve-recent-meta { grid-column: 1; font-size: var(--fs-meta); margin-top: 2px; }
+.solve-recent-list ix-icon-button { grid-column: 2; grid-row: 1 / span 2; }
+
+.solve-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; font-size: var(--fs-meta); }
+.solve-filter > .muted:first-child { margin-right: 4px; }
+
+.solve-row-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; justify-content: space-between; }
+.solve-row-foot .solve-details { flex: 1 1 auto; min-width: 0; }
+.solve-row-act { font-size: var(--fs-meta); font-weight: 600; margin-top: 8px; white-space: nowrap; }
+
+.solve-save-error { color: var(--danger); }
+
+@media (max-width: 600px) {
+  .solve-recent { padding: 16px; }
+}

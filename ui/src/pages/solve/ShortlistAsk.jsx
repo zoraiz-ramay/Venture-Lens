@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { IxButton } from "@siemens/ix-react";
 import { Answer } from "../../components/AssistantDock.jsx";
 import { Loading } from "../../components/widgets.jsx";
@@ -14,8 +14,13 @@ const HISTORY_TURNS = 8;
    descriptions, application answers and the reasons each was ranked, every one with its source —
    then the reviewer's Tracxn, then the model's web search (POST /api/solve/{job}/ask). With
    startups selected, the question is about those; otherwise about everything listed. */
-export default function ShortlistAsk({ ask, selectedNames }) {
-  const [turns, setTurns] = useState([]);
+export default function ShortlistAsk({ ask, selectedNames, savedTurns }) {
+  const [turns, setTurns] = useState(() => savedTurns || []);
+  // The thread kept with the search (the server stores each answered turn) arrives after the page
+  // opens; it fills an empty conversation and never replaces one already under way.
+  useEffect(() => {
+    if (savedTurns?.length) setTurns((t) => (t.length ? t : savedTurns));
+  }, [savedTurns]);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const scope = selectedNames.length

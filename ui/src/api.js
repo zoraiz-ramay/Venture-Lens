@@ -95,6 +95,14 @@ export const api = {
     request(`/api/solve/${encodeURIComponent(jobId)}/refine`, { method: "POST", body: { answers, note }, timeoutMs: 90000 }),
   solveAsk: (jobId, question, history = [], ids = []) =>
     request(`/api/solve/${encodeURIComponent(jobId)}/ask`, { method: "POST", body: { question, history, ids }, timeoutMs: 120000 }),
+  // The searches a reviewer keeps, server-side and private to them: the list, opening one (kept the
+  // first time its job is seen finished; returns its result, shortlist and follow-up thread), the
+  // shortlist, and forgetting one.
+  solveSearches: () => request("/api/solve/searches"),
+  solveKeep: (jobId) => request(`/api/solve/searches/${encodeURIComponent(jobId)}`, { method: "POST" }),
+  solveShortlist: (jobId, ids) =>
+    request(`/api/solve/searches/${encodeURIComponent(jobId)}/shortlist`, { method: "PUT", body: { ids } }),
+  solveForget: (jobId) => request(`/api/solve/searches/${encodeURIComponent(jobId)}`, { method: "DELETE" }),
   // The reviewer's own list. `runs` is the same row shape but spans everyone, so it is
   // admin-only — a non-admin calling it gets a 403, by design.
   myRuns: () => request("/api/my/searches"),

@@ -4,8 +4,8 @@ import { ExtLink, Loading } from "../../components/widgets.jsx";
 import { BANDS, FACT_ROWS, FACT_SOURCES, PROVIDERS, evaluateHref, fact, quoteOf } from "./labels.js";
 
 /* One group of results — the startups that applied to Siemens, or the market. A row reads as
-   "name, how well it fits, the words that say so"; everything else waits behind Details, so a
-   reviewer can scan eight rows without reading eight pitches. */
+   "name, how well it fits, the words that say so, what to do next"; everything else waits behind
+   Details, so a reviewer can scan eight rows without reading eight pitches. */
 
 function Band({ band, ranked }) {
   if (!ranked) return <span className="solve-band pending">Checking fit…</span>;
@@ -31,10 +31,7 @@ function Details({ c }) {
           ))}
         </dl>
       )}
-      <div className="solve-row-actions">
-        <Link to={evaluateHref(c)}>{c.run_id ? "Open its evaluation →" : "Evaluate in depth →"}</Link>
-        {c.website && <ExtLink href={c.website} />}
-      </div>
+      {c.website && <div className="solve-row-actions"><ExtLink href={c.website} /></div>}
     </details>
   );
 }
@@ -42,6 +39,7 @@ function Details({ c }) {
 function Row({ c, ranked, checked, onToggle }) {
   const quote = quoteOf(c);
   const box = `pick-${c.id}`;
+  const act = c.run_id ? "Open its evaluation" : "Evaluate in depth";
   return (
     <li className="solve-row">
       <input id={box} type="checkbox" className="solve-pick" checked={checked} onChange={() => onToggle(c.id)}
@@ -55,21 +53,28 @@ function Row({ c, ranked, checked, onToggle }) {
         </div>
         {c.reason && <p className="solve-reason">{c.reason}</p>}
         {quote && <blockquote className="solve-quote"><p>“{quote.text}”</p><footer className="muted">{quote.from}</footer></blockquote>}
-        <Details c={c} />
+        <div className="solve-row-foot">
+          <Details c={c} />
+          {/* Outside Details on purpose: acting on a row is why it was read, and should not take two
+              clicks. Named for the startup, so eight rows are not eight identical links. */}
+          <Link to={evaluateHref(c)} className="solve-row-act" aria-label={`${act}: ${c.name}`}>{act} →</Link>
+        </div>
       </div>
     </li>
   );
 }
 
-export default function CandidateList({ id, title, intro, items, pending, pendingText, ranked, emptyText, selected, onToggle }) {
+export default function CandidateList({ id, title, intro, items, total, pending, pendingText, ranked, emptyText,
+  filteredText, selected, onToggle }) {
+  const count = !items ? "" : total != null && total !== items.length ? ` (${items.length} of ${total})` : ` (${items.length})`;
   return (
     <section className="solve-group" aria-labelledby={id}>
       <div className="solve-group-head">
-        <h2 id={id}>{title}{items ? ` (${items.length})` : ""}</h2>
+        <h2 id={id}>{title}{count}</h2>
         {intro && <span className="muted">{intro}</span>}
       </div>
       {pending && <div role="status"><Loading text={pendingText} /></div>}
-      {!pending && items && items.length === 0 && <p className="muted solve-empty">{emptyText}</p>}
+      {!pending && items && items.length === 0 && <p className="muted solve-empty">{total ? filteredText : emptyText}</p>}
       {items && items.length > 0 && (
         <ul className="solve-list">
           {items.map((c) => <Row key={c.id} c={c} ranked={ranked} checked={selected.includes(c.id)} onToggle={onToggle} />)}

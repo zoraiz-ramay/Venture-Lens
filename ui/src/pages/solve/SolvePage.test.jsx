@@ -10,7 +10,8 @@ import { findShadowRole } from "../../test/shadow.js";
 
 vi.mock("../../api.js", () => ({ api: {
   tracxnStatus: vi.fn(), tracxnConnect: vi.fn(), tracxnDisconnect: vi.fn(), startJobs: vi.fn(), job: vi.fn(),
-  solveRefine: vi.fn(), solveAsk: vi.fn(),
+  solveRefine: vi.fn(), solveAsk: vi.fn(), solveSearches: vi.fn(), solveKeep: vi.fn(), solveShortlist: vi.fn(),
+  solveForget: vi.fn(),
 } }));
 
 const ixButton = (name) => [...document.querySelectorAll("ix-button")].find((b) => b.textContent === name);
@@ -51,6 +52,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
   api.tracxnStatus.mockResolvedValue({ connected: false });
+  api.solveSearches.mockResolvedValue({ searches: [] });
+  // By default the server keeps the job's own result, with nothing shortlisted and no thread yet.
+  api.solveKeep.mockImplementation(async (id) => {
+    const job = await api.job(id).catch(() => null);
+    if (!job?.result) throw Object.assign(new Error("gone"), { status: 404 });
+    return { id, problem: job.query, result: job.result, shortlist: [], thread: [] };
+  });
+  api.solveShortlist.mockImplementation(async (id, ids) => ({ shortlist: ids }));
 });
 
 describe("Solve a Problem", () => {

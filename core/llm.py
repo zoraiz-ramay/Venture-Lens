@@ -1,9 +1,10 @@
 """OpenAI-compatible LLM client.
 
 Primary provider is the Siemens LLM gateway at llm.sdc.siemens.cloud, authenticated via
-OPENAI_API_KEY (sent as an 'x-api-key' header). If that key isn't set, falls back to
-Gemini's OpenAI-compatible endpoint using GEMINI_API_KEY — handy for local dev without
-gateway access.
+OPENAI_API_KEY (also sent as an 'x-api-key' header). With LLM_BASE_URL=https://api.openai.com/v1
+the same key talks to OpenAI directly (local use outside the Siemens network; embeddings then use
+text-embedding-3-small). If OPENAI_API_KEY isn't set, falls back to Gemini's OpenAI-compatible
+endpoint using GEMINI_API_KEY.
 
 Every model call in the engine goes through `LLMClient` (`complete`, `web_answer`, `embed`). It
 also owns the per-run bookkeeping the pipeline reads back: the calling stage, failed calls and the
@@ -338,6 +339,11 @@ def _apply_effort_floor(extra: dict, model: str) -> None:
             extra.pop("temperature", None)
 
 
+def _is_gateway(base_url: str) -> bool:
+    """Whether ``base_url`` is the Siemens gateway rather than OpenAI itself (LLM_BASE_URL)."""
+    return "llm.sdc.siemens.cloud" in (base_url or "")
+
+
 def openai_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "").strip().strip("<>").strip()
 
@@ -374,9 +380,10 @@ class LLMClient:
         if self.available:
             try:
                 from openai import OpenAI
-                # The x-api-key header is Siemens-gateway-specific; Gemini's compat layer
-                # only wants the standard Authorization: Bearer header the client sets itself.
-                headers = {"x-api-key": self.key} if self.provider == "openai" else {}
+                # The x-api-key header is Siemens-gateway-specific. OpenAI itself and Gemini's compat
+                # layer only want the standard Authorization: Bearer header the client sets itself,
+                # so the key is not copied into a second header they would ignore.
+                headers = {"x-api-key": self.key} if self.provider == "openai" and _is_gateway(self.base_url) else {}
                 self._client = OpenAI(
                     api_key=self.key,
                     base_url=self.base_url,

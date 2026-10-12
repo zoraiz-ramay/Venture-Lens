@@ -113,9 +113,12 @@ splits across gunicorn workers, so a request landing on the other worker looks s
 
 The backend serves the API only — `/` returns 404 by design. The UI is `:5173` in dev.
 
-`.env` at the repo root holds `GEMINI_API_KEY` and, in the Siemens environment,
-`GLASSDOLLAR_API_KEY` (both gitignored). Without either the engine degrades — keyword-only
-extraction, xlsx + web instead of the live database — rather than failing.
+`.env` at the repo root (gitignored) holds the local model key — `GEMINI_API_KEY`, or
+`OPENAI_API_KEY` with `LLM_BASE_URL=https://api.openai.com/v1` to call OpenAI directly instead of
+the Siemens gateway (embeddings then use `text-embedding-3-small`, whose vector indexes are built
+locally with `scripts/build_tool_index.py`) — and, in the Siemens environment,
+`GLASSDOLLAR_API_KEY`. Without a model key the engine degrades — keyword-only extraction, xlsx +
+web instead of the live database — rather than failing.
 
 **One build, two environments; no code changes between them.** Production keys live in AWS
 Secrets Manager (`docker-apps/startup-evaluation-agent-hydra`, named in `.gitlab-ci.yml`). The CI

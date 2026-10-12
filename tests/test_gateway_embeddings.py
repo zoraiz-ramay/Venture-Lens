@@ -177,3 +177,14 @@ def test_gemini_and_gateway_indexes_live_side_by_side(tmp_path, monkeypatch):
     gateway = tool_search.load_index(catalog, "google/gemini-embedding-2", 2)
     assert local.meta["model"] == "gemini-embedding-001" and local.vectors[0][0] == 1.0
     assert gateway.meta["model"] == "google/gemini-embedding-2" and gateway.vectors[0][1] == 1.0
+
+
+def test_openai_direct_gets_the_key_only_as_a_bearer_token_and_its_own_embedding_model():
+    # The gateway reads the key from x-api-key; OpenAI itself does not, so the key is not copied
+    # into a header it would ignore.
+    direct = llm_mod.LLMClient(key="test-key", base_url="https://api.openai.com/v1")  # secret-scan:allow
+    assert "x-api-key" not in {k.lower() for k in direct._client._custom_headers}
+    assert direct.embedding_model() == "text-embedding-3-small"
+    gateway = gateway_client()
+    assert gateway._client._custom_headers.get("x-api-key") == "test-key"  # secret-scan:allow
+    assert gateway.embedding_model() == "google/gemini-embedding-2"

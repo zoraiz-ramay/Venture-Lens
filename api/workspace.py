@@ -1,4 +1,9 @@
-"""Private run storage and durable job snapshots in the existing Redis backend."""
+"""Private runs in the session store (Redis), plus the cross-worker lock the API shares.
+
+A run that read a reviewer's Tracxn connection is licensed to that reviewer, so it never enters
+runs.db: it is kept here for TTL (30 days) under the reviewer's oid, with a negative run id so the
+routes can tell it from a stored run (api/main.py::_run_for).
+"""
 import json
 import hashlib
 import secrets
@@ -11,14 +16,17 @@ _lock = threading.RLock()
 
 
 @contextmanager
-def locked(key, timeout=30, blocking_timeout=5):
+def locked(key: str, timeout: float = 30, blocking_timeout: float = 5):
+    """Hold a lock on ``key`` across both gunicorn workers (a Redis lock); a process-local RLock
+    when the session store is in memory."""
     backend = sessions()
     lock = backend._client.lock("workspace-lock:" + key, timeout=timeout, blocking_timeout=blocking_timeout) if hasattr(backend, "_client") else _lock
     with lock:
         yield
 
 
-def private_save(oid, name, result):
+def private_save(oid: str, name: str, result: dict) -> dict:
+    """Store a private run under a fresh negative id and index it for the reviewer's list."""
     run_id = -secrets.randbelow(2**52 - 1) - 1
     result = json.loads(json.dumps(result, default=str))
     result = {**result, "run_id": run_id, "private": True, "retention_days": 30}
@@ -38,7 +46,9 @@ def alias_key(oid, name, department_id=""):
     return f"private-alias:{oid}:{digest}" + (f":{department_id}" if department_id else "")
 
 
-def private_latest(oid, name, department_id="", assessment_key=None):
+def private_latest(oid: str, name: str, department_id: str = "", assessment_key: str | None = None) -> dict | None:
+    """The reviewer's newest private run of ``name`` ("*" = all-departments). With an
+    ``assessment_key``, only a run assessed under that key counts."""
     ref = sessions().get(alias_key(oid, name, department_id)) or {}
     run = private_get(oid, ref.get("id")) if ref else None
     stored = (run or {}).get("departments", {}).get("assessment_key") if department_id == "*" \
@@ -54,7 +64,8 @@ def private_get(oid, run_id):
     return hydrate(run) if run else run
 
 
-def private_list(oid):
+def private_list(oid: str) -> list[dict]:
+    """The reviewer's private runs as grid rows, the same shape as store.list_runs."""
     out = []
     for run_id in (sessions().get("private-runs:" + oid) or {}).get("ids", []):
         r = private_get(oid, run_id)
@@ -72,7 +83,8 @@ def private_list(oid):
     return out
 
 
-def private_assessment(oid, run_id, score, department_fit, routing=None):
+def private_assessment(oid: str, run_id: int, score: dict, department_fit: dict, routing: dict | None = None) -> dict | None:
+    """store.save_assessment for a private run."""
     from api.store import merge_assessment
     with locked(f"private-assessment:{oid}:{run_id}"):
         result = private_get(oid, run_id)

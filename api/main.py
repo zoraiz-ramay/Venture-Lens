@@ -1,10 +1,17 @@
 """FastAPI backend for the Siemens Startup Evaluation Agent.
 
-Wraps the existing core pipeline (evaluate / solve / search) behind a REST API so a
-proper frontend (React, Tracxn-style) can drive it. Run history persists in SQLite.
+Wraps the core pipeline (evaluate / solve / search) behind a REST API for the React SPA in ui/.
+Run history persists in SQLite (api/store.py). Every /api route is behind the session guard in
+api/security.py unless it is named in PUBLIC_PATHS there.
 
-Run locally:   uvicorn api.main:app --reload --port 8000
-In Docker:     see docker-compose.yml (service `api`)
+This module builds the app and holds the core routes; smaller route groups have their own
+routers (api/auth.py, jobs.py, routes_solve.py, interests.py, assessments.py, tracxn.py).
+Sections below, in order: startup wiring, request bodies, health & search, evaluation (cached,
+fresh, streamed), the reviewer's own lists, Solve a Problem, admin, runs and their on-request
+lookups, challenges, the assistant, static SPA serving.
+
+Run locally:   bash scripts/run_api.sh   (or: uvicorn api.main:app --reload --port 8000)
+In Docker:     start.sh (gunicorn, two workers)
 """
 from __future__ import annotations
 
@@ -45,12 +52,16 @@ from api import flight
 log = logging.getLogger(__name__)
 
 
+# ================================================================ startup wiring
+
 # ---------------------------------------------------------------- local applications file
-# The local Siemens applications Excel (pitch-form rows + pdfs/ of decks) is searched
-# ONLY in problem mode (/api/solve) — "which of our applicants could solve this problem?".
-# General name search and evaluation stay on the GlassDollar API.
+# The local Siemens applications Excel (pitch-form rows + pdfs/ of decks) is the catalog for
+# Solve a Problem — "which of our applicants could solve this problem?" — and the second source
+# of /api/search. Evaluation stays on the GlassDollar API when a key is set.
 # Set GLASSDOLLAR_XLSX or drop the file in DATA_DIR.
 def _find_local_xlsx() -> str:
+    """Path of the applications workbook: GLASSDOLLAR_XLSX, the default, any root xlsx, then S3.
+    "" when none can be found."""
     cand = os.getenv("GLASSDOLLAR_XLSX", "").strip()
     if cand and os.path.exists(cand):
         return cand
@@ -77,14 +88,14 @@ try:
 except Exception:
     pass
 
-# Give the engine its result cache. Injected rather than imported by core/ so nothing in core/
-# depends on api/ and the engine still runs (uncached) from tests, scripts.
 # A shared per-minute budget for model requests, set to the provider's quota. Off unless LLM_RPM
 # is set: the right number depends on the gateway or Gemini tier, and a guessed one either throttles
 # for nothing or protects nothing.
 if int(os.getenv("LLM_RPM", "0") or 0) > 0:
     core.llm.install_rate_limiter(flight.llm_gate(int(os.environ["LLM_RPM"])))
 
+# Give the engine its result cache. Injected rather than imported by core/ so nothing in core/
+# depends on api/ and the engine still runs (uncached) from tests, scripts.
 try:
     core.web.install_cache(store.cache_get, store.cache_put, store.cache_get_entry)
     store.cache_purge_expired()
@@ -93,6 +104,7 @@ except Exception:
 
 
 def _get_local_df() -> "pd.DataFrame | None":
+    """The applications workbook as a DataFrame, read once and kept; None when there is none."""
     global _local_df
     if not _LOCAL_XLSX:
         return None
@@ -165,6 +177,8 @@ from api.assessments import router as assessments_router
 app.include_router(assessments_router)
 
 
+# ================================================================ request bodies
+
 class EvaluateBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=200, description="Startup name to evaluate")
     do_web: bool = True
@@ -216,7 +230,10 @@ class SavedViewBody(BaseModel):
     filters: dict = Field(default_factory=dict)
 
 
+# ================================================================ health & search
+
 def _gd_key() -> bool:
+    """Whether a GlassDollar API key is configured (it only resolves inside the Siemens network)."""
     return bool(core.GLASSDOLLAR_API_KEY or os.getenv("GLASSDOLLAR_API_KEY", ""))
 
 
@@ -245,7 +262,7 @@ def status(user: Principal = Depends(current_user)) -> dict:
             "llm": _llm.available,
             "llm_provider": _llm.provider,
             "llm_model": _llm.model if _llm.available else "",
-            "glassdollar_key": bool(core.GLASSDOLLAR_API_KEY or os.getenv("GLASSDOLLAR_API_KEY", "")),
+            "glassdollar_key": _gd_key(),
             "data_source": "glassdollar_api",
             "applications_file": os.path.basename(_LOCAL_XLSX) if _LOCAL_XLSX else "",
             "applications_count": int(len(_get_local_df())) if _LOCAL_XLSX else 0,
@@ -317,12 +334,20 @@ def search(q: str, limit: int = 10) -> dict:
     return {"results": results[:limit]}
 
 
+# ================================================================ evaluation
+# /api/evaluate, /api/evaluate/stream and the job queue (api/jobs.py) all go through
+# _evaluation_cached, then _run_evaluation -> _fresh_evaluation -> _saved (a Tracxn-backed run is
+# saved to the reviewer's private workspace instead).
+
 # Cache-first: a stored evaluation younger than this is returned instead of re-running
 # the whole pipeline (external calls + LLM). Override with EVAL_TTL_DAYS; refresh=true bypasses.
 EVAL_TTL_DAYS = float(os.getenv("EVAL_TTL_DAYS", "7"))
+# How many background (scripts/prewarm.py) evaluations may run at once; see _run_evaluation.
+PREWARM_CONCURRENCY = int(os.getenv("PREWARM_CONCURRENCY", "2"))
 
 
 def _freshness(created_at: str) -> dict:
+    """Age of a stored run against EVAL_TTL_DAYS, as the UI shows it ("fresh" / "stale")."""
     from datetime import datetime, timezone
     try:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(created_at)).total_seconds() / 86400
@@ -359,9 +384,6 @@ def _department(department_id, user) -> dict:
     if dep is None:
         raise HTTPException(422, f"Unknown department '{department_id}'.")
     return dep
-
-
-PREWARM_CONCURRENCY = int(os.getenv("PREWARM_CONCURRENCY", "2"))
 
 
 def _all_departments(user) -> list[dict]:
@@ -460,6 +482,8 @@ def _run_evaluation(name: str, body: "EvaluateBody", principal, on_partial=None,
 
 def _fresh_evaluation(name, body, principal, on_partial, user, departments, tracxn,
                       started: float | None = None) -> dict:
+    """Run the pipeline (or re-assess recent research) and save the result; 404 when the
+    company cannot be found anywhere."""
     if departments and not body.refresh and not tracxn:
         # Recent research exists (a one-department run, or one assessed against older catalogs):
         # it is reused and only the department assessments are redone — as a NEW run, never a
@@ -470,10 +494,11 @@ def _fresh_evaluation(name, body, principal, on_partial, user, departments, trac
             res = assess_departments(research, departments, do_web=body.do_web)
             return _saved(res, name, body, principal, served_from="research", started=started)
     df = None if _gd_key() else _get_local_df()
-    # An explicit refresh must re-search: serving cached hits would replay the very evidence
-    # the caller asked to renew.
+    # Tracxn answers are licensed to this reviewer and must not enter the shared cache.
     token = core.web.set_cache_private(True) if tracxn else None
     try:
+        # An explicit refresh must re-search: serving cached hits would replay the very evidence
+        # the caller asked to renew.
         res = core.evaluate(name, None, core.DEFAULT_TOOLS_CSV, do_web=body.do_web, df=df,
                             use_web_cache=not body.refresh, on_partial=on_partial, tracxn=tracxn,
                             departments=departments, prior_runs=store.prior_runs_for(name),
@@ -492,11 +517,13 @@ def _fresh_evaluation(name, body, principal, on_partial, user, departments, trac
 
 
 def _elapsed_ms(started: float | None) -> int | None:
+    """Milliseconds since a time.monotonic() reading; None when it was not timed."""
     return None if started is None else int((time.monotonic() - started) * 1000)
 
 
 def _saved(res: dict, name: str, body: "EvaluateBody", principal, served_from: str = "fresh",
            started: float | None = None) -> dict:
+    """Store the run (when body.save), record the reviewer's search and stamp its freshness."""
     if body.save:
         # The typed query is filed as an alias so the next reviewer who types it the same
         # way is served from the database instead of re-running the pipeline.
@@ -576,6 +603,9 @@ def evaluate_stream(body: EvaluateBody, user: Principal = Depends(current_user))
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ================================================================ the reviewer's own lists
+# Private to the signed-in principal; nothing here takes another reviewer's id.
+
 @app.get("/api/my/searches")
 def my_searches(limit: int = 200, user: Principal = Depends(current_user)) -> dict:
     """The startups THIS reviewer has searched. Explore's data source.
@@ -606,6 +636,10 @@ def my_view_delete(name: str, user: Principal = Depends(current_user)) -> dict:
         raise HTTPException(status_code=404, detail=f"No saved view named {name!r}.")
     return {"deleted": name}
 
+
+# ================================================================ Solve a Problem
+# Started through the job queue (POST /api/jobs, kind "solve"), which calls run_solve; the
+# follow-ups on a finished search are in api/routes_solve.py.
 
 def applications_catalog() -> dict:
     """The applications workbook as Solve a Problem's search catalog (core/catalogs.py)."""
@@ -651,6 +685,8 @@ def run_solve(body: SolveBody, user: Principal, on_partial=None) -> dict:
         sessions().put(key, result, 600)
     return result
 
+
+# ================================================================ admin (require_admin)
 
 @app.get("/api/runs")
 def runs(limit: int = 100, user: Principal = Depends(require_admin)) -> dict:
@@ -737,15 +773,16 @@ def admin_revoke(upn: str, user: Principal = Depends(require_admin)) -> dict:
     return {"upn": target, "revoked": True}
 
 
+# ================================================================ runs and their on-request lookups
+
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: int, user: Principal = Depends(current_user)) -> dict:
-    res = workspace.private_get(user.oid, run_id) if run_id < 0 else store.get_run(run_id)
-    if res is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found.")
-    return res
+    return _run_for(run_id, user)
 
 
 def _run_for(run_id: int, user: Principal) -> dict:
+    """The run, or 404. A negative id is a private (Tracxn-backed) run in the caller's own
+    workspace (api/workspace.py); a positive one is a shared stored run."""
     res = workspace.private_get(user.oid, run_id) if run_id < 0 else store.get_run(run_id)
     if res is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found.")
@@ -969,6 +1006,8 @@ def _lookup_now(kind: str, res: dict, company: str, user: Principal, refresh: bo
     return out
 
 
+# ---------------------------------------------------------------- admin: cost and catalog checks
+
 @app.get("/api/admin/token-usage")
 def admin_token_usage(limit: int = 100, user: Principal = Depends(require_admin)) -> dict:
     """Tokens per evaluation, newest first: the cost side of every research run."""
@@ -987,6 +1026,8 @@ def admin_tool_checks(status: str | None = "not_found", user: Principal = Depend
     could NOT find, which are the catalog rows worth a reviewer's look."""
     return {"tools": store.list_tool_checks(status or None)}
 
+
+# ---------------------------------------------------------------- runs: departments, delete, audit
 
 @app.get("/api/runs/{run_id}/departments")
 def run_departments(run_id: int, user: Principal = Depends(current_user)) -> dict:
@@ -1054,19 +1095,21 @@ def run_delete(run_id: int) -> dict:
 @app.post("/api/runs/{run_id}/override")
 def override_run(run_id: int, body: OverrideBody,
                  user: Principal = Depends(current_user)) -> dict:
-    """Reviewer override of the routing decision. The automated result is preserved;
-    the change, its reason, and supporting evidence are logged for audit.
+    """Retired: answers 410 Gone, so a stale client gets an explicit answer and nothing is written.
 
-    The reviewer comes from the session, never from the body. This used to be a free-text
-    field, which meant a partnership decision could be attributed to anyone who had not
-    made it."""
+    Kept as a route (not deleted) on purpose: tests/test_override_attribution.py pins the 410, and
+    tests/test_auth.py uses it as its state-changing target for the CSRF checks. Past overrides
+    remain readable through /audit."""
     raise HTTPException(410, "Routing overrides have been retired.")
 
 
 @app.get("/api/runs/{run_id}/audit")
 def run_audit(run_id: int) -> dict:
+    """Overrides recorded for this run before they were retired (read-only history)."""
     return {"overrides": store.list_overrides(run_id)}
 
+
+# ================================================================ challenges
 
 @app.get("/api/challenges")
 def challenges() -> dict:
@@ -1084,14 +1127,14 @@ def challenge_status(index: int, body: ChallengeStatusBody,
     return rec
 
 
+# ================================================================ the assistant
+
 def _chat_thread(user: Principal, run_id: int | None) -> tuple[str, dict | None]:
     """(thread key, the run in focus). One conversation per company, not per run, so re-evaluating
     a startup resumes its thread; "" is the dock with no startup open."""
     if run_id is None:
         return "", None
-    res = workspace.private_get(user.oid, run_id) if run_id < 0 else store.get_run(run_id)
-    if res is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found.")
+    res = _run_for(run_id, user)
     return str(res.get("company", "")).strip().casefold(), res
 
 
@@ -1146,7 +1189,9 @@ def ask(body: AskBody, user: Principal = Depends(current_user)) -> dict:
     return out
 
 
-# ── Static file serving (single-container production mode) ───────────────────
+# ================================================================ static SPA serving
+# Production only: the Dockerfile copies the built UI into ./static. Without that directory (dev,
+# tests) nothing is mounted and / is a 404 — the UI is Vite on :5173.
 _STATIC_DIR = pathlib.Path(__file__).resolve().parent.parent / "static"
 if (_STATIC_DIR / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=str(_STATIC_DIR / "assets")), name="assets")

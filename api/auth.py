@@ -211,7 +211,7 @@ class Principal:
                 "email": self.email, "tid": self.tid, "source": self.source}
 
     def as_reviewer(self) -> dict:
-        """The shape api/store.py records against an override."""
+        """The shape api/store.py records against a search or a sign-in."""
         return {"name": self.name or self.upn or self.email,
                 "oid": self.oid, "upn": self.upn, "tid": self.tid, "source": self.source}
 
@@ -332,6 +332,9 @@ class MemorySessions:
 
 
 class RedisSessions:
+    """The production store: one JSON value per key, with a TTL. Also used beyond sign-in
+    sessions (jobs, lookups, private runs, Tracxn tokens), always through `sessions()`."""
+
     def __init__(self, url: str) -> None:
         import json
 
@@ -358,7 +361,8 @@ class RedisSessions:
 
 
 @lru_cache(maxsize=1)
-def sessions():
+def sessions() -> MemorySessions | RedisSessions:
+    """The process's key-value store, chosen by SESSION_BACKEND (redis unless "memory")."""
     cfg = settings()
     if cfg.session_backend == "memory":
         log.warning("SESSION_BACKEND=memory — sessions are process-local and will split "
@@ -408,8 +412,8 @@ def current_user(request: Request) -> Principal:
     """The authenticated principal, resolved by SecurityMiddleware earlier in the stack.
 
     Performs no I/O: it reads what the guard already established, so it cannot disagree
-    with the guard about who is signed in. Role gating, when it arrives, belongs here as a
-    sibling dependency rather than as a second lookup.
+    with the guard about who is signed in. Role gating is its sibling dependency,
+    `require_admin`, rather than a second lookup.
     """
     user = request.scope.get("state", {}).get("user")
     if not isinstance(user, Principal):

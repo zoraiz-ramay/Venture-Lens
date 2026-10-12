@@ -15,7 +15,8 @@ router = APIRouter(prefix="/api/runs", tags=["assessments"])
 
 @router.post("/{run_id}/assessment/{department_id}")
 def assess(run_id: int, department_id: str, user: Principal = Depends(current_user)):
-    run = workspace.private_get(user.oid, run_id) if run_id < 0 else store.get_run(run_id)
+    """The model score and one department's fit for a run's existing research, cached for 24h."""
+    run =workspace.private_get(user.oid, run_id) if run_id < 0 else store.get_run(run_id)
     if not run: raise HTTPException(404, "Evaluation not found in your workspace.")
     if run.get("department"):
         # A department run is scored at evaluation time; merging a department_fit score into it
@@ -54,6 +55,7 @@ def assess(run_id: int, department_id: str, user: Principal = Depends(current_us
 
 @router.post("/{run_id}/decision")
 def decide(run_id: int, user: Principal = Depends(current_user)):
+    """The routing decision for a run's existing research, cached for 24h."""
     from core.judgment import DECISION_VERSION, decision_research
     run = workspace.private_get(user.oid, run_id) if run_id < 0 else store.get_run(run_id)
     if not run: raise HTTPException(404, "Evaluation not found in your workspace.")

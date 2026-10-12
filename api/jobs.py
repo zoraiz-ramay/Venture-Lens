@@ -37,6 +37,7 @@ def _key(oid, job_id):
 
 
 def _execute(oid, job_id, body, user):
+    """Run one queued job on the pool, writing status and partials to its record as they land."""
     from api.main import EvaluateBody, SolveBody, _run_evaluation, run_solve
     key = _key(oid, job_id)
     record = sessions().get(key)
@@ -82,6 +83,8 @@ def _execute(oid, job_id, body, user):
 
 @router.post("")
 def start(body: JobBody, user: Principal = Depends(current_user)):
+    """Queue one job per startup name (or one for a problem). Idempotent per ``request_id``: a
+    retried request gets the jobs it already started."""
     values = [body.problem.strip()] if body.kind == "solve" else [v.strip() for v in body.names]
     values = list({v.casefold(): v for v in values}.values())
     if not values or any(not v or len(v) > (2000 if body.kind == "solve" else 200) for v in values):
@@ -116,6 +119,7 @@ def start(body: JobBody, user: Principal = Depends(current_user)):
 
 @router.get("/{job_id}")
 def get_job(job_id: str, user: Principal = Depends(current_user)):
+    """The caller's own job record; one silent for 30 minutes is reported as interrupted."""
     record = sessions().get(_key(user.oid, job_id))
     if not record:
         raise HTTPException(404, "This job has expired or is not in your workspace.")

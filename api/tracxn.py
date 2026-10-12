@@ -99,7 +99,9 @@ def disconnect(user: Principal = Depends(current_user)):
     return {"connected": False}
 
 
-def client_for(user, llm=None):
+def client_for(user, llm=None) -> TracxnClient | None:
+    """A Tracxn client on this reviewer's own connection, or None when they have not connected
+    (or the token expired). Callers treat None as "no Tracxn"."""
     record = sessions().get(_key(user)) or {}
     if record.get("access_token") and record.get("expires_at", 0) > time.time():
         return TracxnClient(record["access_token"], llm=llm)

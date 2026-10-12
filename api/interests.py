@@ -35,6 +35,7 @@ def _seed():
 
 
 def _db():
+    """A runs.db connection with department_profiles created and (re)seeded."""
     con = store._conn()
     con.executescript('''CREATE TABLE IF NOT EXISTS department_profiles (
       id TEXT PRIMARY KEY, label TEXT NOT NULL, interests TEXT NOT NULL, is_demo INTEGER NOT NULL DEFAULT 1);''')
@@ -55,6 +56,7 @@ class ProfileBody(BaseModel):
 
 @router.get("")
 def profiles(user: Principal = Depends(current_user)):
+    """Every department with its interests, stated needs and where they came from (`source`)."""
     with _db() as con:
         rows = con.execute("SELECT * FROM department_profiles ORDER BY CASE id WHEN 'di' THEN 0 WHEN 'si' THEN 1 WHEN 'mobility' THEN 2 ELSE 3 END, id").fetchall()
     book = load_department_requirements()
@@ -69,6 +71,7 @@ def profiles(user: Principal = Depends(current_user)):
 
 @router.put("/{department_id}")
 def configure(department_id: str, body: ProfileBody, user: Principal = Depends(require_admin)):
+    """Admin-set label and interests; marks the row is_demo=0 so no reseed overwrites it."""
     terms = list(dict.fromkeys(t.strip() for t in body.interests if t.strip()))
     if not terms or any(len(t) > 100 for t in terms):
         raise HTTPException(422, "Provide interests of 1–100 characters.")

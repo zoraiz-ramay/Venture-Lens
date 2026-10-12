@@ -1,13 +1,20 @@
 """SQLite persistence for evaluation runs with S3 backup.
 
-Stored per run: summary columns for fast listing + the full result JSON blob.
-DB lives at DATA_DIR/runs.db (override with RUNS_DB).
+Stored per run: summary columns for fast listing + the full result JSON blob (`result_json`,
+the record of a run), plus the same data normalised row by row. DB lives at DATA_DIR/runs.db
+(override with RUNS_DB). What is stored and why: .claude/rules/storage.md.
 
 On first connection the DB is restored from S3 if a remote copy exists and no
 local file is present; a restore that fails for any reason but "no copy yet" turns uploads off
-for the container, so an empty database never replaces the stored one. After every write (save_run, delete_run, ...)
-the DB is uploaded back to S3 (debounced, see _upload_to_s3) so it survives container
-restarts and redeployments.
+for the container, so an empty database never replaces the stored one. After every write
+(save_run, save_enrichment, record_search, ...) the DB is uploaded back to S3 (debounced, see
+_upload_to_s3) so it survives container restarts and redeployments. Web-cache writes are the
+exception: they ride along on the next upload.
+
+Sections, in order: S3 sync; schema and connection; web cache; saving a run (and its normalised
+children, token log, aliases); stored research (enrichments); one-time backfills; reading runs;
+per-reviewer searches & sessions; assistant conversations; saved views; deleting a run;
+reviewer overrides (read-only); admins.
 """
 from __future__ import annotations
 
@@ -219,6 +226,9 @@ def _flush_pending_upload() -> None:
 
 atexit.register(_flush_pending_upload)
 
+
+# ----------------------------------------------------------------- schema and connection
+# CREATE ... IF NOT EXISTS on every connection; columns added later are ALTERed in by _conn.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -465,6 +475,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_company ON runs(company);
 
 
 def _conn() -> sqlite3.Connection:
+    """A new connection with the schema applied (restoring from S3 first, once per process)."""
     _restore_from_s3()
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     con = sqlite3.connect(DB_PATH)
@@ -545,30 +556,19 @@ def _cache_conn() -> sqlite3.Connection:
 
 def cache_get(kind: str, key: str) -> "object | None":
     """Cached payload for this key, or None when absent or older than the TTL."""
-    try:
-        with _cache_lock, _cache_conn() as con:
-            row = con.execute(
-                "SELECT payload, created_at FROM web_cache WHERE key=? AND kind=?",
-                (key, kind)).fetchone()
-        if not row:
-            return None
-        age = (datetime.now(timezone.utc)
-               - datetime.fromisoformat(row[1])).total_seconds() / 86400
-        if age > _ttl_days(kind) or age < 0:
-            return None
-        return json.loads(row[0])
-    except Exception:
-        return None            # a cache fault must never break an evaluation
+    entry = cache_get_entry(kind, key)
+    return entry[0] if entry is not None else None
 
 
 def cache_get_entry(kind: str, key: str) -> "tuple | None":
     """``(payload, created_at)`` for a live cache row, or None.
 
-    Same lookup as `cache_get`, which already reads `created_at` to apply the TTL and then throws
-    it away. Handing it back is what lets a Fact record when its evidence was ACTUALLY retrieved
-    rather than when the run that replayed it happened to execute — a re-run served from cache is
-    reasoning over results up to WEB_CACHE_TTL_DAYS old, and nothing said so.
+    `cache_get` without the timestamp thrown away. Handing it back is what lets a Fact record when
+    its evidence was ACTUALLY retrieved rather than when the run that replayed it happened to
+    execute — a re-run served from cache is reasoning over results up to WEB_CACHE_TTL_DAYS old,
+    and nothing said so.
     """
+    # Every failure is a miss: a cache fault must never break an evaluation.
     try:
         with _cache_lock, _cache_conn() as con:
             row = con.execute(
@@ -617,6 +617,10 @@ def cache_purge_expired() -> int:
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+
+# ---------------------------------------------------------------------- saving a run
+# save_run writes the runs row, then _upsert_company and _replace_children fill the normalised
+# tables from the same result; the token log, criteria, tool checks and aliases go in alongside.
 
 def _upsert_company(con: sqlite3.Connection, result: dict, run_id: int) -> int:
     """Create/update the canonical company row from an evaluation result."""
@@ -868,7 +872,9 @@ def save_run(result: dict, aliases: Iterable[str] = ()) -> int:
     return run_id
 
 
-def merge_assessment(result, score, department_fit, routing=None):
+def merge_assessment(result: dict, score: dict, department_fit: dict, routing: dict | None = None) -> dict:
+    """A copy of ``result`` with each assessed part laid over it; unassessed parts are ignored.
+    The first replaced score is kept as ``original_score``."""
     result = json.loads(json.dumps(result, default=str))
     if score.get("status") == "assessed":
         if result.get("score") and result["score"] != score:
@@ -881,7 +887,9 @@ def merge_assessment(result, score, department_fit, routing=None):
     return result
 
 
-def save_assessment(run_id, score, department_fit, routing=None):
+def save_assessment(run_id: int, score: dict, department_fit: dict, routing: dict | None = None) -> dict | None:
+    """Merge a later assessment into a stored run (merge_assessment) and update its summary
+    columns. None when the run does not exist."""
     with _conn() as con:
         con.execute("BEGIN IMMEDIATE")
         row = con.execute("SELECT result_json FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -979,6 +987,9 @@ def list_tool_checks(status: str | None = None) -> list[dict]:
     return [dict(zip(keys, r)) for r in rows]
 
 
+# ---------------------------------------------------------------------- one-time backfills
+# Run at API startup (api/main.py); both are idempotent.
+
 def backfill_entities() -> int:
     """Idempotent migration: populate the normalized tables from runs saved before
     the schema existed. Returns the number of runs backfilled."""
@@ -1028,6 +1039,10 @@ def backfill_assessment_records() -> int:
                 continue
     return n
 
+
+# ---------------------------------------------------------------------- reading runs
+# Every full run read here goes through core.assessment.hydrate (see the import at the top),
+# except run_ref_for and prior_runs_for, which only need the stored research.
 
 def list_runs(limit: int = 100) -> list[dict]:
     """Summary rows enriched with explore-grid columns parsed from the stored result JSON
@@ -1099,6 +1114,7 @@ def list_runs(limit: int = 100) -> list[dict]:
 
 
 def get_run(run_id: int) -> dict | None:
+    """One stored run, hydrated, with run_id and run_created_at; None when it does not exist."""
     with _conn() as con:
         row = con.execute("SELECT result_json, created_at FROM runs WHERE id=?", (run_id,)).fetchone()
     if not row:
@@ -1118,12 +1134,7 @@ def latest_run_for_company(company: str) -> dict | None:
         row = con.execute(
             "SELECT id, created_at, result_json FROM runs WHERE LOWER(company)=LOWER(?) "
             "ORDER BY id DESC LIMIT 1", (company.strip(),)).fetchone()
-    if not row:
-        return None
-    res = hydrate(json.loads(row[2]))
-    res["run_id"] = row[0]
-    res["run_created_at"] = row[1]
-    return res
+    return _run_row(row) if row else None
 
 
 def run_ref_for(name: str) -> dict | None:
@@ -1185,6 +1196,7 @@ def _company_id_for(name: str) -> int | None:
 
 
 def _run_row(row) -> dict:
+    """A hydrated run from an ``(id, created_at, result_json)`` row."""
     res = hydrate(json.loads(row[2]))
     res["run_id"] = row[0]
     res["run_created_at"] = row[1]
@@ -1248,12 +1260,7 @@ def latest_run_for_alias(name: str) -> dict | None:
             "JOIN companies c ON c.id = a.company_id "
             "JOIN runs r ON r.id = c.latest_run_id "
             "WHERE a.alias = ?", (key,)).fetchone()
-    if row:
-        res = hydrate(json.loads(row[2]))
-        res["run_id"] = row[0]
-        res["run_created_at"] = row[1]
-        return res
-    return latest_run_for_company(name)
+    return _run_row(row) if row else latest_run_for_company(name)
 
 
 # ------------------------------------------------- per-reviewer searches & sessions
@@ -1422,6 +1429,7 @@ CHAT_KEEP = 40          # messages kept per thread; the prompt only ever reads t
 
 
 def get_chat(user_oid: str, thread_key: str) -> list[dict]:
+    """The thread's stored messages, oldest first; [] when there are none or the row is unreadable."""
     with _conn() as con:
         row = con.execute("SELECT messages_json FROM chat_threads WHERE user_oid=? AND thread_key=?",
                           (str(user_oid), str(thread_key))).fetchone()
@@ -1502,7 +1510,10 @@ def delete_view(user_oid: str, name: str) -> bool:
     return deleted
 
 
+# ------------------------------------------------------------------- deleting a run
 def delete_run(run_id: int) -> bool:
+    """Delete the runs row only. Its normalised child rows and the searches that point at it stay
+    (searches.run_id is nullable for exactly this); False when there was no such run."""
     with _conn() as con:
         cur = con.execute("DELETE FROM runs WHERE id=?", (run_id,))
         deleted = cur.rowcount > 0

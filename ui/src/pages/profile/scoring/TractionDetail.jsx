@@ -9,6 +9,7 @@ import { divisionDisplay } from "./presentation.js";
    headcount comes from — and every figure carries its source or says it has none. */
 
 export const barId = (id) => `traction-bar-${id}`;
+// Up to two decimals: 7.5 and 11.25 are real rubric values; "7.50" and "11" would each misstate one.
 export const pts = (n) => (Number.isFinite(n) ? String(Math.round(n * 100) / 100) : "—");
 export const flagsOf = (d) => [
   d.basis === "stage_only" && "stage only, amount undisclosed",

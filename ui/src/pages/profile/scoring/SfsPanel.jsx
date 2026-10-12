@@ -4,7 +4,8 @@ import { ExtLink } from "../../../components/widgets.jsx";
 /* Which SFS line applies, not merely whether one does.
    `unassessed` is a real state: a run from before the commercial posture was extracted knows
    nothing either way, and showing that as "not relevant" would be a negative finding the evidence
-   does not support. */
+   does not support. Rendered whole inside the SFS box on Scoring & Fit (ScoreCards.SfsCard). */
+
 /* The verdict in one word and its badge class. */
 function sfsStatus(rt) {
   const lines = rt.sfs_lines || [];

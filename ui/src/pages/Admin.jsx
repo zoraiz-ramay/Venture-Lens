@@ -19,6 +19,7 @@ import { Loading, duration } from "../components/widgets.jsx";
  * The nav entry is hidden for non-admins, but that is cosmetic: every endpoint below is
  * behind require_admin, so a reviewer who types /admin gets the forbidden state, not data.
  */
+
 function pct(x) {
   return `${Math.round((x || 0) * 100)}%`;
 }

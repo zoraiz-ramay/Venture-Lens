@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * The Overview's panels differ in height by an order of magnitude: Reference customers can be two
  * chips, Team & ecosystem can be a screenful. "Whichever section is 50% visible" therefore tracks
  * panel size rather than reading position, and a short panel can never win against a tall
- * neighbour. Instead a horizontal band sits just below the sticky tab bar, and the section that
+ * neighbour. Instead a horizontal band sits just below any sticky chrome, and the section that
  * owns that band is current — which is where a reader's eye actually is.
  *
  * The band is expressed as a rootMargin that crops the viewport to a strip starting just below
@@ -60,9 +60,9 @@ const CLICK_SETTLE_MS = 700;
 export default function useScrollSpy(ids, topOffset) {
   const [activeId, setActiveId] = useState("");
   const [presentIds, setPresentIds] = useState([]);
+  const rootRef = useRef(null);
   // Set by a rail click; while it holds, observer updates are ignored. A ref rather than state:
   // changing it must not re-render, and the observer callback needs to read it synchronously.
-  const rootRef = useRef(null);
   const pinnedUntil = useRef(0);
   const pinnedId = useRef("");
 
@@ -76,11 +76,10 @@ export default function useScrollSpy(ids, topOffset) {
     const viewportHeight = root?.clientHeight || window.innerHeight;
     const line = (root?.getBoundingClientRect().top || 0) + activationBand(topOffset, viewportHeight).top;
     if (Date.now() < pinnedUntil.current) {
-      // The target has arrived — release early rather than sitting out the full window.
-      const el = pinnedId.current && document.getElementById(pinnedId.current);
-      // Released once the target has essentially arrived. The window is generous because the
+      // Released early once the target has essentially arrived. The window is generous because the
       // anchor lands the section at its scroll-margin — a little below the band line — and smooth
       // scrolling settles with a pixel or two of overshoot.
+      const el = pinnedId.current && document.getElementById(pinnedId.current);
       if (!el || Math.abs(el.getBoundingClientRect().top - line) > CROSS_TOLERANCE_PX + 8) return;
       pinnedUntil.current = 0;
     }

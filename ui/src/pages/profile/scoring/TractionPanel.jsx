@@ -7,7 +7,6 @@ import TractionDetail, { barId, flagsOf, pts } from "./TractionDetail.jsx";
 import { divisionDisplay } from "./presentation.js";
 
 const VERSION = "traction-rubric-v3";
-// pts: 7.5 and 11.25 are real rubric values; "7.50" and "11" would each misstate one.
 
 /* A division with no evidence is excluded from the total, and the row has to say so in words:
    "0 / 30" beside it would read as a finding that the company has no revenue, when nobody found

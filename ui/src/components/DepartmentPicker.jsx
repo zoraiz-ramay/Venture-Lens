@@ -1,11 +1,11 @@
 import React from "react";
 import { IxSelect, IxSelectItem } from "@siemens/ix-react";
 
-/* The one department selector: search, the profile's department switch and the Database grid
-   all use it, so the list, its order and its labels cannot drift apart between screens.
+/* The one department selector: the profile's department switch (legacy one-department runs) and
+   the Database grid both use it, so the list, its order and its labels cannot drift apart.
 
-   `allowAll` adds an "All departments" entry for filtering; a search never offers it, because
-   every evaluation is for exactly one department. */
+   `allowAll` adds an "All departments" entry for filtering; the profile's switch never offers it,
+   because it opens the run assessed for one department. */
 export default function DepartmentPicker({ departments, value, onChange, disabled, allowAll = false,
   label = "Department", placeholder = "Choose a department" }) {
   return (

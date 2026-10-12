@@ -41,34 +41,15 @@
   ],
   "api_methods": [
     {
-      "method": "health",
-      "args": []
-    },
-    {
       "method": "search",
       "args": [
         "q"
       ]
     },
     {
-      "method": "evaluate",
-      "args": [
-        "name",
-        "doWeb = true",
-        "refresh = false"
-      ]
-    },
-    {
       "method": "decideRun",
       "args": [
         "id"
-      ]
-    },
-    {
-      "method": "assessRun",
-      "args": [
-        "id",
-        "department"
       ]
     },
     {
@@ -207,16 +188,6 @@
       ]
     },
     {
-      "method": "deleteRun",
-      "args": [
-        "id"
-      ]
-    },
-    {
-      "method": "challenges",
-      "args": []
-    },
-    {
       "method": "runBusinessFlow",
       "args": [
         "runId"
@@ -248,19 +219,6 @@
       "method": "clearChat",
       "args": [
         "runId = null"
-      ]
-    },
-    {
-      "method": "audit",
-      "args": [
-        "runId"
-      ]
-    },
-    {
-      "method": "setChallengeStatus",
-      "args": [
-        "index",
-        "status"
       ]
     },
     {
@@ -351,7 +309,7 @@
   "files": [
     {
       "path": "ui/src/App.jsx",
-      "lines": 306,
+      "lines": 289,
       "exports": [
         "App"
       ],
@@ -377,7 +335,7 @@
     },
     {
       "path": "ui/src/App.test.jsx",
-      "lines": 154,
+      "lines": 153,
       "exports": [],
       "css_classes": []
     },
@@ -431,14 +389,13 @@
     },
     {
       "path": "ui/src/components/charts.jsx",
-      "lines": 142,
+      "lines": 126,
       "exports": [
         "BandScale",
         "HeatStrip",
         "MiniBar",
         "RadarChart",
-        "RingGauge",
-        "StackedBar"
+        "RingGauge"
       ],
       "css_classes": [
         "band-marker",
@@ -450,15 +407,12 @@
         "radar-chart",
         "ring-gauge",
         "ring-sub",
-        "ring-value",
-        "stacked-axis",
-        "stacked-bar",
-        "stacked-track"
+        "ring-value"
       ]
     },
     {
       "path": "ui/src/components/charts.test.jsx",
-      "lines": 88,
+      "lines": 77,
       "exports": [],
       "css_classes": []
     },
@@ -626,31 +580,22 @@
     },
     {
       "path": "ui/src/components/widgets.jsx",
-      "lines": 188,
+      "lines": 97,
       "exports": [
         "ExtLink",
         "Loading",
         "PillarPill",
-        "PillarPills",
-        "Radar",
-        "ScoreBar",
         "Spec",
-        "duration",
-        "toHref"
+        "duration"
       ],
       "css_classes": [
-        "bar-fill",
-        "bar-label",
-        "bar-track",
         "muted",
-        "pill",
-        "sfs",
         "spec-value"
       ]
     },
     {
       "path": "ui/src/components/widgets.test.jsx",
-      "lines": 174,
+      "lines": 91,
       "exports": [],
       "css_classes": []
     },
@@ -662,7 +607,7 @@
     },
     {
       "path": "ui/src/pages/Admin.jsx",
-      "lines": 366,
+      "lines": 367,
       "exports": [
         "Admin"
       ],
@@ -884,7 +829,7 @@
     },
     {
       "path": "ui/src/pages/profile/OverviewTab.jsx",
-      "lines": 207,
+      "lines": 206,
       "exports": [
         "OverviewTab"
       ],
@@ -934,8 +879,7 @@
       "path": "ui/src/pages/profile/ReferenceCustomers.jsx",
       "lines": 64,
       "exports": [
-        "ReferenceCustomers",
-        "namedCustomers"
+        "ReferenceCustomers"
       ],
       "css_classes": [
         "cust-body",
@@ -1247,7 +1191,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/SfsPanel.jsx",
-      "lines": 53,
+      "lines": 54,
       "exports": [
         "SfsPanel"
       ],
@@ -1345,7 +1289,6 @@
         "EvidencePreview",
         "TeamEvidence",
         "layout",
-        "onRecord",
         "resolveEvidence"
       ],
       "css_classes": [
@@ -1403,7 +1346,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/TractionDetail.jsx",
-      "lines": 192,
+      "lines": 193,
       "exports": [
         "TractionDetail",
         "barId",
@@ -1438,7 +1381,6 @@
         "HeadcountLookup",
         "Lookup",
         "Sources",
-        "hostOf",
         "useLookup"
       ],
       "css_classes": [
@@ -1474,7 +1416,7 @@
     },
     {
       "path": "ui/src/pages/profile/scoring/TractionPanel.jsx",
-      "lines": 110,
+      "lines": 109,
       "exports": [
         "TractionPanel"
       ],
@@ -1512,7 +1454,7 @@
     },
     {
       "path": "ui/src/pages/profile/TeamSection.jsx",
-      "lines": 90,
+      "lines": 102,
       "exports": [
         "TeamSection"
       ],
@@ -1528,7 +1470,7 @@
     },
     {
       "path": "ui/src/pages/profile/TeamSection.test.jsx",
-      "lines": 41,
+      "lines": 52,
       "exports": [],
       "css_classes": []
     },
@@ -1540,7 +1482,7 @@
     },
     {
       "path": "ui/src/pages/Profile.jsx",
-      "lines": 261,
+      "lines": 260,
       "exports": [
         "Profile"
       ],
@@ -1573,13 +1515,13 @@
     },
     {
       "path": "ui/src/pages/Profile.test.jsx",
-      "lines": 457,
+      "lines": 452,
       "exports": [],
       "css_classes": []
     },
     {
       "path": "ui/src/pages/ProgrammeCriteria.test.jsx",
-      "lines": 195,
+      "lines": 192,
       "exports": [],
       "css_classes": []
     },
@@ -1600,10 +1542,9 @@
     },
     {
       "path": "ui/src/pages/SearchHome.jsx",
-      "lines": 85,
+      "lines": 94,
       "exports": [
-        "SearchHome",
-        "parseStartups"
+        "SearchHome"
       ],
       "css_classes": [
         "batch-search",
@@ -1670,7 +1611,7 @@
     },
     {
       "path": "ui/src/pages/solve/CandidateList.jsx",
-      "lines": 82,
+      "lines": 81,
       "exports": [
         "CandidateList"
       ],
@@ -1795,7 +1736,7 @@
     },
     {
       "path": "ui/src/state.jsx",
-      "lines": 163,
+      "lines": 160,
       "exports": [
         "AppProvider",
         "AuthProvider",
@@ -1807,9 +1748,9 @@
   ],
   "totals": {
     "routes": 9,
-    "api_methods": 41,
+    "api_methods": 34,
     "design_tokens": 70,
     "jsx_files": 101,
-    "jsx_lines": 10795
+    "jsx_lines": 10596
   }
 }

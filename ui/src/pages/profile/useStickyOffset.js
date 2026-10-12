@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 
 /* How much sticky chrome sits above the readable content, in pixels.
  *
- * This cannot be a constant. `.profile-head` is itself `position: sticky` and contains the company
- * title, its description, the meta row, optional tags, the action buttons, the pipeline ribbon and
- * the tab strip — so its height depends on the company being viewed and on the viewport width. A
- * hard-coded offset would put the heading under the header for exactly the companies with the
- * longest summaries.
+ * This cannot be a constant. When `.profile-head` is pinned (`position: sticky`/`fixed`), its
+ * height depends on the company being viewed (how long its summary is) and on the viewport width,
+ * so a hard-coded offset would put the heading under the header for exactly the companies with the
+ * longest summaries. While the header is not pinned — the current stylesheet lets it scroll away —
+ * the measured offset is 0.
  *
  * The measurement is published as a CSS custom property as well as returned, because three things
  * need the same number and they must not drift: the rail's `top` and the sections'

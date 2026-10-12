@@ -24,7 +24,8 @@ def no_duckduckgo(monkeypatch):
         raise AssertionError("the assistant must not use DuckDuckGo")
     monkeypatch.setattr(web, "ddg_search", refuse)
     monkeypatch.setattr(web, "_ddg_many", refuse)
-    monkeypatch.setattr(chat, "ddg_search", refuse)
+    # chat no longer imports ddg_search; patched anyway so a future direct import is still caught.
+    monkeypatch.setattr(chat, "ddg_search", refuse, raising=False)
 
 
 def model(web_result=None, text="From memory."):

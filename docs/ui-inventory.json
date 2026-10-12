@@ -113,6 +113,29 @@
       ]
     },
     {
+      "method": "solveSearches",
+      "args": []
+    },
+    {
+      "method": "solveKeep",
+      "args": [
+        "jobId"
+      ]
+    },
+    {
+      "method": "solveShortlist",
+      "args": [
+        "jobId",
+        "ids"
+      ]
+    },
+    {
+      "method": "solveForget",
+      "args": [
+        "jobId"
+      ]
+    },
+    {
       "method": "myRuns",
       "args": []
     },
@@ -1678,7 +1701,7 @@
     },
     {
       "path": "ui/src/pages/solve/CandidateList.jsx",
-      "lines": 81,
+      "lines": 86,
       "exports": [
         "CandidateList"
       ],
@@ -1698,7 +1721,9 @@
         "solve-quote",
         "solve-reason",
         "solve-row",
+        "solve-row-act",
         "solve-row-actions",
+        "solve-row-foot",
         "solve-row-head",
         "solve-row-main",
         "solve-source"
@@ -1754,8 +1779,36 @@
       ]
     },
     {
+      "path": "ui/src/pages/solve/RecentSearches.jsx",
+      "lines": 66,
+      "exports": [
+        "RecentSearches"
+      ],
+      "css_classes": [
+        "muted",
+        "solve-recent",
+        "solve-recent-link",
+        "solve-recent-list",
+        "solve-recent-meta"
+      ]
+    },
+    {
+      "path": "ui/src/pages/solve/ResultFilter.jsx",
+      "lines": 42,
+      "exports": [
+        "NO_FILTER",
+        "ResultFilter",
+        "applyFilter",
+        "filtering"
+      ],
+      "css_classes": [
+        "muted",
+        "solve-filter"
+      ]
+    },
+    {
       "path": "ui/src/pages/solve/ShortlistAsk.jsx",
-      "lines": 69,
+      "lines": 74,
       "exports": [
         "ShortlistAsk"
       ],
@@ -1771,8 +1824,20 @@
       ]
     },
     {
+      "path": "ui/src/pages/solve/ShortlistBar.jsx",
+      "lines": 43,
+      "exports": [
+        "MAX_COMPARE",
+        "MAX_EVALUATE",
+        "ShortlistBar"
+      ],
+      "css_classes": [
+        "solve-selection"
+      ]
+    },
+    {
       "path": "ui/src/pages/solve/SolvePage.jsx",
-      "lines": 121,
+      "lines": 137,
       "exports": [
         "SolvePage"
       ],
@@ -1782,13 +1847,18 @@
         "page-title",
         "solve-dev-notice",
         "solve-failed",
-        "solve-page",
-        "solve-selection"
+        "solve-page"
       ]
     },
     {
       "path": "ui/src/pages/solve/SolvePage.test.jsx",
-      "lines": 172,
+      "lines": 181,
+      "exports": [],
+      "css_classes": []
+    },
+    {
+      "path": "ui/src/pages/solve/SolveWorkspace.test.jsx",
+      "lines": 189,
       "exports": [],
       "css_classes": []
     },
@@ -1815,9 +1885,9 @@
   ],
   "totals": {
     "routes": 9,
-    "api_methods": 36,
+    "api_methods": 40,
     "design_tokens": 70,
-    "jsx_files": 105,
-    "jsx_lines": 11037
+    "jsx_files": 109,
+    "jsx_lines": 11412
   }
 }

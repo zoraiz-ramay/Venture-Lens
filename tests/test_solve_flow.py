@@ -121,6 +121,38 @@ def test_offline_ranking_never_claims_a_strong_match():
     assert [c["band"] for c in solve.rank(PROBLEM, cands, llm)] == ["good"]
 
 
+def test_offline_ranking_matches_word_forms_and_ignores_problem_filler():
+    cands = [{"name": "Pharma", "source": "web", "description": "What our customers need is therapy manufacturing."},
+             {"name": "Few", "source": "web", "description": "Inspects legacy machines."},
+             {"name": "Many", "source": "web", "description": "Predicts the failure of legacy PLC machines."}]
+    out = solve.rank(PROBLEM, cands, Mock(available=False))
+    # "need" says someone has a problem, not what it is; "predicts failure" meets "predict failures".
+    assert [c["name"] for c in out] == ["Many", "Few"]
+    assert out[0]["band"] == "good" and out[0]["reason"] == "Shared terms: failures, legacy, plc, predict."
+    assert all(c["judged_by"] == "words" for c in out)
+
+
+def test_within_a_band_more_shared_terms_rank_first():
+    cands = [{"name": "One", "source": "web", "description": "legacy systems"},
+             {"name": "Two", "source": "web", "description": "legacy plc systems"}]
+    assert [c["name"] for c in solve.rank(PROBLEM, cands, Mock(available=False))] == ["Two", "One"]
+
+
+def test_an_applicant_found_by_meaning_survives_a_ranking_the_model_could_not_give(catalog):
+    found, retrieval = solve.match_applications(PROBLEM, catalog, FakeLLM())
+    assert retrieval["method"] == "semantic" and found[0]["matched_by"] == "meaning"
+    out = solve.rank(PROBLEM, found, FakeLLM(["not json"]))            # the rank reply is unreadable
+    sensei = next(c for c in out if c["name"] == "Sensei Labs")
+    assert sensei["band"] == "possible" and sensei["judged_by"] == "meaning"   # never stronger than possible
+
+
+def test_the_word_index_is_built_once_and_never_written_into_the_catalog(catalog):
+    before = json.dumps(catalog, sort_keys=True)
+    solve.match_applications(PROBLEM, catalog, FakeLLM(embeds=False))
+    assert json.dumps(catalog, sort_keys=True) == before              # still serialisable, unchanged
+    assert solve._catalog_terms(catalog) is solve._catalog_terms(catalog)
+
+
 def test_interpretation_keeps_only_well_formed_facets():
     reply = json.dumps({"restatement": "Predictive maintenance for brownfield lines.", "keywords": ["predictive maintenance"],
                         "facets": [{"label": "Deployment", "options": ["On-prem", "Cloud", "On-prem"]},

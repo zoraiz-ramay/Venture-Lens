@@ -251,7 +251,41 @@ APPLICANT_LIMIT = 8
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def _why_quote(entry: dict, problem_words: set[str]) -> str:
+# Words that say someone has a problem, not what it is. "We need …" shared "need" with a pharma
+# pitch, which then ranked as a possible match on that word alone.
+_PROBLEM_FILLER = {"need", "needs", "needed", "want", "wants", "wanted", "looking", "look", "find", "finding",
+                   "search", "seek", "seeking", "would", "could", "should", "must", "like", "also", "currently",
+                   "today", "problem", "problems", "challenge", "challenges", "issue", "issues", "siemens",
+                   "startups", "solutions", "able", "way", "ways", "something", "someone", "anyone", "get"}
+
+
+def _stem(word: str) -> str:
+    """A light suffix strip, so "predicts failures" meets "predict failure" and "inspection" meets
+    "inspect". Deliberately crude — it only has to make the same word's forms agree."""
+    w = word
+    if len(w) > 4 and w.endswith("ies"):
+        w = w[:-3] + "y"
+    elif w.endswith("sses"):
+        w = w[:-2]
+    elif len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        w = w[:-1]
+    for suffix in ("ion", "ive", "ing", "ed"):
+        if w.endswith(suffix) and len(w) - len(suffix) >= 4:
+            w = w[:-len(suffix)]
+            break
+    return w[:-1] if len(w) > 4 and w.endswith("e") else w
+
+
+def _term_words(text: str) -> dict[str, str]:
+    """{stem: the word as written} for the meaningful words of ``text``."""
+    return {_stem(w): w for w in sorted(_keywords(text)) if w not in _PROBLEM_FILLER}
+
+
+def _terms(text: str) -> set[str]:
+    return set(_term_words(text))
+
+
+def _why_quote(entry: dict, problem_terms: set[str]) -> str:
     """The sentence of the application that shares most with the problem, verbatim, or ''."""
     best, best_score = "", 0
     for text in (entry.get("short_description"), entry.get("pitch"), entry.get("differentiation")):
@@ -259,7 +293,7 @@ def _why_quote(entry: dict, problem_words: set[str]) -> str:
             sentence = sentence.strip()
             if not 30 <= len(sentence) <= 320:
                 continue
-            score = len(problem_words & _keywords(sentence))
+            score = len(problem_terms & _terms(sentence))
             if score > best_score:
                 best, best_score = sentence, score
     return best
@@ -273,19 +307,44 @@ def _applicant(entry: dict, problem_words: set[str]) -> dict:
             "field_sources": {"description": {"provider": "applications"}}, "band": None}
 
 
+_TERMS_CACHE: dict = {}       # catalog checksum -> (terms per entry, idf per term)
+
+
+def _catalog_terms(catalog: dict) -> tuple[dict, dict]:
+    """Each entry's terms, and each term's inverse document frequency — once per catalog version.
+
+    Keyed on the checksum, which changes exactly when what is embedded and shown does, so the 428
+    pitches are read once per process rather than once per search. Held here, not on the catalog
+    dict: that dict is core/catalogs.py's cached return value, which other readers may serialise."""
+    key = catalog.get("checksum") or id(catalog)
+    cached = _TERMS_CACHE.get(key)
+    if cached is None:
+        import math
+        terms = {e["name"]: _terms(tool_search.application_text(e)) for e in catalog["entries"]}
+        df: dict = {}
+        for ts in terms.values():
+            for t in ts:
+                df[t] = df.get(t, 0) + 1
+        n = max(len(terms), 1)
+        cached = (terms, {t: math.log((n + 1) / (k + 0.5)) for t, k in df.items()})
+        if len(_TERMS_CACHE) > 4:
+            _TERMS_CACHE.clear()
+        _TERMS_CACHE[key] = cached
+    return cached
+
+
 def _word_ranking(text: str, catalog: dict) -> list[str]:
-    words = _keywords(text)
-    # The entries' own words are computed once per catalog, not once per search.
-    cache = catalog.setdefault("_words", {})
+    """Applications sharing at least two of the problem's terms, the rarest shared terms first:
+    "plc" and "failure" say more about a pitch than "factory" and "line", which half of them use."""
+    words = _terms(text)
+    terms, idf = _catalog_terms(catalog)
     scored = []
-    for e in catalog["entries"]:
-        if e["name"] not in cache:
-            cache[e["name"]] = _keywords(tool_search.application_text(e))
-        overlap = len(words & cache[e["name"]])
-        if overlap >= 2:
-            scored.append((overlap, e["name"]))
-    scored.sort(key=lambda x: -x[0])
-    return [n for _, n in scored]
+    for i, e in enumerate(catalog["entries"]):
+        shared = words & terms[e["name"]]
+        if len(shared) >= 2:
+            scored.append((-sum(idf[t] for t in shared), i, e["name"]))
+    scored.sort()
+    return [n for *_, n in scored]
 
 
 def match_applications(text: str, catalog: dict, llm: LLMClient,
@@ -294,9 +353,11 @@ def match_applications(text: str, catalog: dict, llm: LLMClient,
     if not catalog or not catalog.get("available"):
         return [], {"method": "none", "reason": (catalog or {}).get("reason", "no applications file")}
     semantic, why = tool_search.semantic_ranking(text, catalog, llm)
-    ranked = tool_search.fuse(_word_ranking(text, catalog), semantic, limit * 3)
+    by_words = _word_ranking(text, catalog)
+    ranked = tool_search.fuse(by_words, semantic, limit * 3)
     by_name = {e["name"]: e for e in catalog["entries"]}
-    words = _keywords(text)
+    words = _terms(text)
+    shares_words = set(by_words)
     out, companies = [], set()
     for name in ranked:
         entry = by_name.get(name)
@@ -308,7 +369,9 @@ def match_applications(text: str, catalog: dict, llm: LLMClient,
         if ids & companies:
             continue
         companies |= ids
-        out.append(_applicant(entry, words))
+        # How it was found, so a ranking that falls back to shared words does not drop an
+        # application the index found by meaning alone (see ``rank``).
+        out.append({**_applicant(entry, words), "matched_by": "words" if name in shares_words else "meaning"})
         if len(out) == limit:
             break
     return out, {"method": "semantic" if semantic else "words", "reason": why}
@@ -374,15 +437,25 @@ def rank(problem: str, candidates: list[dict], llm: LLMClient) -> list[dict]:
         log.warning("[solve] the ranking reply could not be read; ranking %d candidates on shared words",
                     len(candidates))
     # Offline: shared words can say "same domain", never "does the core of it".
-    words = _keywords(problem)
+    # Terms, not raw words: a word's forms agree ("failures"/"failure") and the words that only say
+    # someone has a problem ("need", "want") are not evidence of anything. Within a band, more
+    # shared terms first; ties keep the order they were found in.
+    words = _term_words(problem)
     judged = []
     for i, c in enumerate(candidates):
-        overlap = words & _keywords(f"{c['name']} {c.get('description', '')}")
+        overlap = sorted(words[t] for t in set(words) & _terms(f"{c['name']} {c.get('description', '')}"))
         if overlap:
             band = "good" if len(overlap) >= 4 else "possible"
-            judged.append((BANDS.index(band), i, {**c, "band": band, "quote": "", "judged_by": "words",
-                                                  "reason": "Shared terms: " + ", ".join(sorted(overlap)[:4]) + "."}))
-    return _by_band(judged)
+            judged.append((BANDS.index(band), -len(overlap), i, {
+                **c, "band": band, "quote": "", "judged_by": "words",
+                "reason": "Shared terms: " + ", ".join(overlap[:4]) + "."}))
+        elif c.get("matched_by") == "meaning":
+            # The applications index found it by meaning, sharing no word: "same domain" is all
+            # that can be said without a model, and the reason says how it was found.
+            judged.append((BANDS.index("possible"), 0, i, {
+                **c, "band": "possible", "quote": "", "judged_by": "meaning",
+                "reason": "Close in meaning to the problem in the applications index; no shared terms."}))
+    return [c for *_, c in sorted(judged, key=lambda x: x[:3])]
 
 
 # ----------------------------------------------------------------- the market

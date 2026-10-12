@@ -168,24 +168,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
   .search-hero-field input { padding-right: 20px; }
 }
 
-.icon-btn {
-  background: none; border: none; color: var(--text-2); cursor: pointer;
-  font-size: 15px; padding: 7px 9px; border-radius: var(--radius); line-height: 1;
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.icon-btn .label { font-size: 12px; font-weight: 600; }
-/* Unread/tracked count on the alerts bell. */
-.icon-btn { position: relative; }
-.icon-btn .dot {
-  position: absolute; top: 3px; right: 3px; min-width: 15px; height: 15px; padding: 0 3px;
-  border-radius: 8px; background: var(--accent); color: #fff;
-  font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
-}
-
-/* What-if weight sliders. accent-color paints the native control from the design tokens
-   instead of rebuilding it, which keeps its keyboard behaviour intact. */
-.wslider { flex: 1; min-width: 90px; accent-color: var(--accent); cursor: pointer; }
-
 /* ---------------- iX icons ----------------
    The iX SVGs declare fill='none' on their outer group and expect the host to paint them —
    this is the override <ix-icon> applies after inlining. Only `fill` is touched: some
@@ -193,27 +175,9 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .ix-i { display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .ix-i svg { width: 100%; height: 100%; display: block; }
 .ix-i svg, .ix-i svg * { fill: currentColor; }
-.icon-btn:hover { background: var(--surface-2); color: var(--text-1); }
-.icon-btn.ai { color: #c4b2f2; border: 1px solid #4b3d80; }
-.icon-btn.ai:hover { background: #322a55; }
-.avatar-btn {
-  width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
-  border: none; font-weight: 700; font-size: 12px; cursor: pointer;
-}
 
 /* MIG-08: the icon rail's own CSS (.rail/.rail-item) is gone — IxMenu (App.jsx's Rail) owns
    that chrome now, styled by iX itself rather than this stylesheet. */
-
-/* ---------------- secondary nav ---------------- */
-/* MIG-09: the old standalone <nav class="sidenav"> of <NavLink class="snav-item"> is gone —
-   "Quick access" and "Saved views" are now IxMenuCategory items nested inside the SAME IxMenu
-   as the rail (App.jsx's Rail), not a second menu instance. IxMenuCategory has no breakpoint
-   prop (verified against the compiled source — menu-category.js's only visibility state is its
-   own expand/collapse accordion, not viewport-driven), so the below-1180px hide still has to be
-   a CSS rule; it now targets the categories' own class instead of a wrapper <nav>. */
-@media (max-width: 1180px) {
-  .menu-secondary { display: none; }
-}
 
 /* ---------------- content ---------------- */
 /* MIG-06: the fixed-offset margin this used to force (topbar-h/rail-w/sidenav-w) assumed the
@@ -237,7 +201,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .page-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .page-title { font-size: var(--fs-title); font-weight: 700; margin: 0; }
 .page-meta { color: var(--text-2); font-size: var(--fs-body); }
-.section-title { font-size: var(--fs-section); font-weight: 700; margin: 0 0 8px; }
 
 /* ---------------- stats strip ---------------- */
 .stats-strip {
@@ -274,7 +237,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
   padding: 2px 10px; font-size: var(--fs-meta); font-weight: 600;
 }
 .fchip button { background: none; border: none; color: inherit; cursor: pointer; font-size: 12px; padding: 0; }
-.clear-link { background: none; border: none; color: var(--accent); font-size: 12px; cursor: pointer; }
 
 /* ---------------- data grid ---------------- */
 .grid-shell {
@@ -308,15 +270,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .kebab { background: none; border: none; cursor: pointer; color: var(--text-3); font-size: 14px; padding: 2px 6px; border-radius: 4px; }
 .kebab:hover { background: var(--surface-2); color: var(--text-1); }
 .num { font-variant-numeric: tabular-nums; font-weight: 700; }
-/* Recent-evaluations row: name, score and pillar are one headline line with the score pushed to
-   the right edge, the summary underneath. A long company name truncates rather than wrapping,
-   because a wrapped name would drag the score onto a second line — the defect this replaced. */
-.run-cell { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.run-row { display: flex; align-items: center; gap: 8px; width: 100%; }
-.run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-row .num { flex: none; margin-left: auto; }
-.run-row ix-pill { flex: none; }
-.run-desc { font-size: 12px; margin-top: 2px; }
 .desc-clip { max-width: 300px; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
 
 /* ---------------- pills / badges ---------------- */
@@ -335,9 +288,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
   display: inline-block; border: 1px solid var(--border-2); background: var(--surface-2);
   color: var(--text-2); font-size: 11px; padding: 1px 7px; border-radius: 4px; margin-left: 6px;
 }
-/* A badge for the one unmet criterion that ends the conversation, as opposed to the several a
-   startup could go and satisfy. Colour alone never carries it — the badge's own text does. */
-.badge.danger { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .chip { display: inline-block; background: var(--surface-2); border: 1px solid var(--border);
   padding: 2px 9px; border-radius: 999px; font-size: 12px; margin: 2px 4px 2px 0; }
 /* A value the engine could not evidence. Warning-coloured, not neutral: a reviewer scanning the
@@ -356,8 +306,7 @@ ix-menu:not(.expanded) .acct-name { display: none; }
    inset the header row from the border it is supposed to sit against. */
 .panel.flush { padding: 0; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-@media (max-width: 1000px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+@media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
 .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .metric { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 12px; }
 .metric .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--text-3); font-weight: 700; }
@@ -383,7 +332,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn.secondary { background: var(--surface); color: var(--accent); }
 .btn.secondary:hover { background: var(--accent-soft); }
-.btn.danger { background: var(--surface); color: var(--danger); border-color: var(--danger); }
 .btn.ai { background: var(--ai); border-color: var(--ai); }
 .btn.ai:hover { background: #5b3fae; }
 
@@ -396,60 +344,20 @@ ix-menu:not(.expanded) .acct-name { display: none; }
   border: 1px solid var(--border); border-radius: var(--radius);
   padding: 12px 16px 14px; margin-bottom: 12px;
 }
-/* The description, out of iX's truncating subtitle slot. max-width because a measure of ~90
-   characters is the readable limit and the content area is far wider than that. */
-.ph-summary {
-  color: var(--text-1); font-size: var(--fs-body); line-height: 1.55;
-  margin: 6px 0 10px; max-width: 78ch;
-}
-/* Each figure is a label + value pair rather than three phrases run together. The separator is a
-   rule between items, not punctuation, so the eye can count them. */
-.ph-meta > span { display: inline-flex; align-items: baseline; gap: 6px; }
-.ph-meta > span + span { border-left: 1px solid var(--border); padding-left: 14px; }
-.ph-meta .k { text-transform: uppercase; letter-spacing: .4px; font-size: 10.5px; font-weight: 700; color: var(--text-3); }
-.ph-meta strong { color: var(--text-1); font-size: 14px; }
 
 /* ---------------- profile section rail ----------------
    The rail is sticky and the page scrolls past it. `align-self: start` is what lets a sticky
    element work inside a grid track — a stretched track item is as tall as the column and has
    nothing to stick within. */
 .profile-body { display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 12px; align-items: start; }
-.profile-sections { min-width: 0; }
-.sec-nav {
-  position: sticky; top: 0; align-self: start;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 6px; max-height: calc(100vh - 90px); overflow-y: auto;
-}
-.sec-nav .sec-head {
-  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
-  background: none; border: none; cursor: pointer; border-radius: 4px;
-  padding: 7px 8px; font-size: 11.5px; font-weight: 700; letter-spacing: .6px;
-  text-transform: uppercase; color: var(--text-3);
-}
-.sec-nav .sec-head:hover { color: var(--text-1); background: var(--surface-2); }
-.sec-nav .sec-group.open .sec-head { color: var(--accent); background: var(--accent-soft); }
-.sec-nav .caret { font-size: 9px; }
-.sec-nav ul { list-style: none; margin: 0 0 4px; padding: 0 0 0 14px; border-left: 1px solid var(--border); margin-left: 13px; }
-.sec-nav .sec-item {
-  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
-  padding: 5px 8px; font-size: 12.5px; color: var(--text-2); border-radius: 4px;
-}
-.sec-nav .sec-item:hover { color: var(--text-1); background: var(--surface-2); }
-.sec-nav .sec-item.active { color: var(--text-1); font-weight: 700; background: var(--surface-2); }
 /* scroll-margin, not padding: it offsets where scrollIntoView() lands so a jumped-to card is not
    flush against the top edge of the scroll container. */
 .sub { scroll-margin-top: 12px; }
-.sec-title {
-  font-size: 11.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
-  color: var(--text-3); margin: 20px 0 8px; padding-top: 8px; border-top: 1px solid var(--border);
-}
 @media (max-width: 900px) {
   /* Below this a 216px column costs more width than it earns, so the rail stops being a column
      and becomes a block above the report. Not hidden: it is the only map of a page that is now
-     several screens long, and a narrow viewport needs that more than a wide one, not less.
-     Un-sticky here because pinning it would eat a third of a short viewport. */
+     several screens long, and a narrow viewport needs that more than a wide one, not less. */
   .profile-body { grid-template-columns: minmax(0, 1fr); }
-  .sec-nav { position: static; max-height: none; margin-bottom: 4px; }
 }
 .ph-row { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .ph-logo { width: 40px; height: 40px; border-radius: 8px; background: var(--accent); color: #fff;
@@ -475,9 +383,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .ph-badges:empty { display: none; }
 .ph-more { padding: 0; font-size: 12.5px; }
 .ph-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-/* Keeps a table header in view while reading a long list. Sits below the fixed top bar, and needs
-   its own background or the scrolling content shows through the gap. */
-.sticky-header { position: sticky; top: var(--topbar-h); z-index: 4; background: var(--surface); }
 
 .spec { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border); font-size: var(--fs-body); }
 .spec:last-child { border-bottom: none; }
@@ -489,15 +394,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .spec-value { white-space: normal; overflow-wrap: anywhere; }
 .reason { border-left: 3px solid var(--success); padding: 5px 10px; margin: 6px 0; background: var(--success-soft); border-radius: 0 4px 4px 0; font-size: var(--fs-body); }
 .risk { border-left: 3px solid var(--warning); padding: 5px 10px; margin: 6px 0; background: var(--warning-soft); border-radius: 0 4px 4px 0; font-size: var(--fs-body); }
-
-.bar-track { background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; height: 7px; overflow: hidden; }
-.bar-fill { height: 100%; background: var(--accent); }
-.bar-label { display: flex; justify-content: space-between; font-size: var(--fs-meta); color: var(--text-2); margin: 7px 0 3px; }
-/* Bars and radar inside one section. They are one question — the radar plots the bars — and in a
-   single-column reading order a second page-level column would have put a screen between them. */
-.score-split { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: start; }
-@media (max-width: 900px) { .score-split { grid-template-columns: minmax(0, 1fr); } }
-.score-big { font-size: 38px; font-weight: 800; line-height: 1; }
 
 /* ---------------- drawer (column customisation) ---------------- */
 /* MIG-14: the drawer's own chrome (mask, panel positioning/surface/shadow) moved onto IxPane
@@ -602,8 +498,6 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 .verdict.blocked { background: var(--danger-soft); color: var(--danger); }
 .verdict.unassessed { background: var(--surface-2); color: var(--text-3); }
 
-.info-box { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2);
-  border-radius: var(--radius); padding: 9px 13px; margin: 8px 0; font-size: var(--fs-body); }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border-2);
   border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -616,7 +510,7 @@ ix-menu:not(.expanded) .acct-name { display: none; }
   max-height: 300px; overflow: auto; box-shadow: 0 10px 28px rgba(16,24,40,.14); color: var(--text-1);
 }
 .suggest-item { padding: 8px 12px; cursor: pointer; font-size: 13px; }
-.suggest-item:hover, .suggest-item.hl { background: var(--accent-soft); }
+.suggest-item:hover { background: var(--accent-soft); }
 .suggest-item .sub { color: var(--text-3); font-size: 11.5px; }
 .list-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); }
 .list-row:last-child { border-bottom: none; }
@@ -837,17 +731,11 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 }
 
 .startup-home { max-width: 1100px; margin: 0 auto; }
-.connection-strip, .research-item, .department-add { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.connection-strip, .research-item { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .connection-strip { border: 1px solid var(--border); padding: 18px; margin: 24px 0; background: var(--surface); }
 .connection-strip p, .research-item p { margin: 6px 0 0; }
 .research-list { margin-top: 16px; }
 .research-item strong { overflow-wrap: anywhere; }
-.pillar-tabs { display: flex; gap: 8px; margin: 24px 0 0; border-bottom: 1px solid var(--border); }
-.pillar-tabs button { flex: 1; padding: 14px 8px; background: var(--surface); border: 1px solid var(--border); color: var(--text-1); cursor: pointer; }
-.pillar-tabs [aria-selected="true"] { border-bottom: 3px solid var(--accent); color: var(--accent); }
-.rubric-criterion { border-top: 1px solid var(--border); padding: 16px 0; }
-.rubric-criterion summary { display: flex; justify-content: space-between; gap: 12px; cursor: pointer; }
-.rubric-criterion blockquote { border-left: 2px solid var(--accent); padding-left: 12px; margin: 12px 0; font-size: 13px; }
 
 /* Keep the landing page focused on its original, single search field. */
 .startup-home.search-hero { max-width: none; }
@@ -874,22 +762,7 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 
 .tracxn-optional { flex-basis: 100%; font-size: 12px; }
 
-.department-selector { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-.department-selector ix-select { width: min(100%, 360px); }
 
-.department-needs { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0; }
-.department-summary { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin: 24px 0; }
-.department-summary > div { flex: 1; min-width: 200px; }
-.department-summary h2 { font-size: 21px; margin: 0 0 8px; }
-.fit-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.fit-card-grid ix-card { width: 100%; height: 100%; }
-.fit-card-grid ix-card-content { padding: 20px; }
-.fit-card-grid h3 { text-transform: none; color: var(--text-1); font-size: 16px; }
-.fit-card-grid details { margin-top: 16px; }
-.fit-card-grid summary { color: var(--accent); cursor: pointer; }
-.fit-card-grid blockquote { margin: 12px 0; border-left: 2px solid var(--border); padding-left: 12px; overflow-wrap: anywhere; }
-@media (max-width: 1100px) { .fit-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 650px) { .fit-card-grid { grid-template-columns: 1fr; } }
 
 /* Traction rubric. A read-only table: rows are not selectable, so the grid's pointer cursor and
    hover would promise an action that does not exist, and a row header reads as body text. */
@@ -1106,25 +979,6 @@ details.blind > summary { cursor: pointer; padding: 10px 14px; font-weight: 600;
 .evidence-list blockquote { margin: 0 0 4px; border-left: 2px solid var(--border); padding-left: 10px; overflow-wrap: anywhere; }
 .evidence-audit code { font-size: var(--fs-meta); overflow-wrap: anywhere; }
 
-/* Total */
-.contrib-head { margin: 8px 0 4px; }
-.contrib-total { font-size: 26px; margin: 0; }
-.contrib-pending { color: var(--warning); margin: 0; }
-.stacked-bar { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 16px; }
-.stacked-track { display: flex; height: 28px; border-radius: 4px; overflow: hidden; background: var(--chart-track); }
-.stacked-seg + .stacked-seg { border-left: 2px solid var(--surface); }
-.stacked-seg.pending { background: repeating-linear-gradient(135deg, var(--chart-track), var(--chart-track) 4px, transparent 4px, transparent 8px); }
-.stacked-axis { display: flex; justify-content: space-between; font-size: var(--fs-meta); color: var(--text-3); font-variant-numeric: tabular-nums; }
-.contrib-legend { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-.contrib-legend li { display: flex; flex-direction: column; font-size: var(--fs-table); }
-/* Each legend entry is a link to its component's section, styled as a card so it reads as one. */
-.contrib-link { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); color: inherit; text-decoration: none; transition: border-color .12s, background .12s; }
-.contrib-link:hover { border-color: var(--accent); background: var(--accent-soft); }
-.contrib-link, .contrib-link:hover, .contrib-link * { text-decoration: none; }
-.contrib-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.contrib-foot { display: flex; justify-content: space-between; gap: 8px; }
-.contrib-go { color: var(--accent); font-size: 12px; }
-.legend-name { display: flex; align-items: center; gap: 6px; }
 .mini-track { height: 10px; border-radius: 5px; background: var(--chart-track); overflow: hidden; }
 .mini-track > div { height: 100%; }
 .mini-track.pending { background: repeating-linear-gradient(135deg, var(--chart-track), var(--chart-track) 4px, transparent 4px, transparent 8px); border: 1px dashed var(--border); box-sizing: border-box; }
@@ -1187,11 +1041,6 @@ details.blind > summary { cursor: pointer; padding: 10px 14px; font-weight: 600;
 
 .save-view-form { display: grid; gap: 10px; margin-bottom: 24px; }
 .save-view-form .input { width: 100%; min-width: 0; box-sizing: border-box; }
-.score-tile { min-width: 170px; flex: 0 0 190px; }
-.score-tile-label { color: var(--theme-color-soft-text); font-size: 14px; }
-.score-tile-value { font-size: 36px; font-weight: 600; margin-top: 12px; line-height: 1.2; }
-.score-tile-value span { font-size: 14px; font-weight: 400; color: var(--theme-color-soft-text); }
-.decision-next-steps li { margin: 10px 0; }
 
 /* Profile: How this startup works (BusinessFlow.jsx). The business as five cards read left to
    right — one icon, one plain question, one sentence — joined by drawn arrows (no glyph). Each

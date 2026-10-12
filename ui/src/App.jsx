@@ -88,14 +88,6 @@ function CommandBar() {
   );
 }
 
-/* ------------------------------------------------ search landing (route "/")
- * "/" is a search page, not a dashboard: one centred field whose only job is to name a startup and
- * evaluate it. The scouting workspace it replaced now lives at /workspace ("Solve a Problem").
- * The command-bar row is hidden here (Shell) so the hero is the only search field on the page —
- * two identical inputs stacked would be a coin-flip for both a reviewer and a test locator. The
- * hero therefore has to carry the Ctrl/Cmd+K binding itself, or the shortcut would do nothing on
- * the one route where searching is the whole point.
- */
 /* ------------------------------------------------ mobile menu launcher
  * The reference Siemens shell has no top bar, so the header is hidden on every width where the
  * rail is visible (md and up — styles.css). It survives ONLY at the sm breakpoint, where iX's
@@ -128,7 +120,6 @@ const RAIL = [
   // duplicate has gone. The dock opens itself on a wide screen, so without a way back the
   // close button in its header would be one-way for the rest of the session.
   { action: "dock", label: "Ask AI", icon: iconAi },
-
 ];
 // Admin manages reviewers and access, so iconUserManagement names it; iconDashboard read as a
 // second, generic "overview" glyph next to Home.
@@ -188,10 +179,9 @@ function Rail() {
             aria-label={n.label} active={dockOpen} aria-expanded={String(dockOpen)}
             onClick={() => setDockOpen(!dockOpen)} />
         ) : (
-          // home: Home is the one item TopBar's comment says is "relocated, not lost" from the
-          // old clickable brand — the home slot (menu.js) renders unconditionally, ahead of the
+          // `home` on "/": iX's home slot (menu.js) renders unconditionally, ahead of the
           // isHiddenFromViewport() check that hides everything else behind the mobile toggle, so
-          // this is what actually keeps a click-to-home reachable without opening the menu first.
+          // this is what keeps Home one click away without opening the menu first.
           <IxMenuItem key={n.to} className={n.to === "/" ? "menu-first-destination" : undefined} icon={n.icon} label={n.label} active={isActive(n)}
             href={n.to} home={n.to === "/"} onClick={routeClick(nav, n.to)}
             notifications={n.to === "/alerts" && watchlist.length ? watchlist.length : undefined} />
@@ -211,17 +201,13 @@ function Rail() {
 }
 
 /* ------------------------------------------------ shell */
-// IxApplication is the single shell root (application-header/menu/content as children,
-// per CLAUDE.md's design contract), replacing the hand-rolled fixed-position siblings this
-// used to be. TopBar is now IxApplicationHeader (MIG-07); Rail is now IxMenu, and as of MIG-09
-// carries the old SideNav's content too, as IxMenuCategory groups inside the same menu rather
-// than a second one (MIG-08/09); AssistantDock is now IxPane (MIG-11). The command bar is the
-// one piece still rendered as its own row rather than through an iX primitive — that's MIG-10,
-// explicitly out of scope for this batch.
+// IxApplication is the single shell root (application header, menu and content as its children,
+// per the iX design contract in .claude/rules/frontend.md): MobileHeader is IxApplicationHeader,
+// Rail is IxMenu and AssistantDock is IxPane. The command bar is the one piece still rendered as
+// its own row rather than through an iX primitive (MIG-10, an open IA decision).
 function Shell() {
   const loc = useLocation();
   const { dockOpen } = useApp();
-  const noSidenav = loc.pathname.startsWith("/startup/");
   // "/" is itself a search page — its hero field is the same control, so the row would only
   // duplicate it (and make "the" search box ambiguous).
   const isSearchHome = loc.pathname === "/";
@@ -233,11 +219,8 @@ function Shell() {
         {/* The command bar is the app's own row at the top of the content area (the application
             header is hidden on every width where the rail shows). */}
         {!isSearchHome && <div className="cmdbar-row"><CommandBar /></div>}
-        {/* "with-dock" reserved margin for the old fixed dock; MIG-06 already deleted its CSS
-            (there was never layout to reserve once the shell stopped fixed-positioning things
-            by hand), so this dropped the now-inert class rather than keep threading dead state
-            through the className. */}
-        <main className={"content" + (noSidenav ? " no-sidenav" : "") + (dockOpen ? " with-dock" : "")}>
+        {/* `with-dock` reserves room beside the open assistant pane on wide screens (styles.css). */}
+        <main className={"content" + (dockOpen ? " with-dock" : "")}>
           <Routes>
             <Route path="/" element={<SearchHome />} />
             {/* "Solve a Problem". The route keeps its old name so links already shared resolve. */}

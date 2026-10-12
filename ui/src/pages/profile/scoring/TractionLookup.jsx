@@ -10,7 +10,7 @@ import { Loading } from "../../../components/widgets.jsx";
    panel does not repeat a lookup that costs a search. */
 const cache = new Map();
 
-export function hostOf(url) {
+function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
 }
 

@@ -16,7 +16,7 @@ const ORIGIN = { verified: "Verified claim", research: "Company research", web: 
 const initials = (name) => String(name).replace(/[^\p{L}\p{N} ]/gu, " ").split(/\s+/).filter(Boolean)
   .slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
 
-export function namedCustomers(res) {
+function namedCustomers(res) {
   const division = (res?.traction?.divisions || []).find((d) => d.id === "customers");
   const counted = (division?.items || []).filter((i) => i.counted);
   if (counted.length) {

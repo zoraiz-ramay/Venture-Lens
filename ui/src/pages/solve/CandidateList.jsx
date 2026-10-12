@@ -61,7 +61,7 @@ function Row({ c, ranked, checked, onToggle }) {
   );
 }
 
-export default function CandidateList({ id, title, intro, items, pending, pendingText, ranked, emptyText, selected, onToggle, footer }) {
+export default function CandidateList({ id, title, intro, items, pending, pendingText, ranked, emptyText, selected, onToggle }) {
   return (
     <section className="solve-group" aria-labelledby={id}>
       <div className="solve-group-head">
@@ -75,7 +75,6 @@ export default function CandidateList({ id, title, intro, items, pending, pendin
           {items.map((c) => <Row key={c.id} c={c} ranked={ranked} checked={selected.includes(c.id)} onToggle={onToggle} />)}
         </ul>
       )}
-      {footer}
     </section>
   );
 }

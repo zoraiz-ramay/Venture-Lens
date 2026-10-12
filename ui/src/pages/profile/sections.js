@@ -80,7 +80,3 @@ export function sectionLabel(id) {
 export function viewById(id) {
   return PROFILE_VIEWS.find((v) => v.id === id) || PROFILE_VIEWS[0];
 }
-
-// Kept for the Overview, which is the only view whose sections another module needs by name.
-export const PROFILE_SECTIONS = PROFILE_VIEWS[0].sections;
-export const PROFILE_SECTION_IDS = PROFILE_SECTIONS.map((s) => s.id);

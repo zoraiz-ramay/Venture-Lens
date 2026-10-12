@@ -32,22 +32,6 @@ export function RingGauge({ value, max = 100, size = 120, stroke = 10, color = "
   );
 }
 
-/** One bar split into parts of a whole (the weighted contributions that sum to the total). A part
-    that is not scored is a hatched block the width of what it could have added. */
-export function StackedBar({ segments, max = 100, label }) {
-  return (
-    <div className="stacked-bar" role="img" aria-label={label}>
-      <div className="stacked-track">
-        {segments.map((s) => (
-          <div key={s.key} className={`stacked-seg${s.value == null ? " pending" : ""}`}
-            style={{ width: `${(100 * (s.value == null ? s.capacity || 0 : s.value)) / max}%`, background: s.value == null ? undefined : s.color }} />
-        ))}
-      </div>
-      <div className="stacked-axis" aria-hidden="true">{[0, 25, 50, 75, 100].map((t) => <span key={t}>{Math.round((t * max) / 100)}</span>)}</div>
-    </div>
-  );
-}
-
 /** A thin 0–max bar with a colour; null is a hatched, empty track. */
 export function MiniBar({ value, max = 100, color = "var(--accent)", label }) {
   const v = num(value);

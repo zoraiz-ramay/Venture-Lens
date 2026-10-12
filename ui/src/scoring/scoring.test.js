@@ -3,7 +3,7 @@ import GOLDEN_FILE from "./golden-runs.json";
 
 const GOLDEN = GOLDEN_FILE.runs;
 import {
-  DEFAULT_WEIGHTS, DIMENSIONS, isDefaultWeights, normaliseWeights, reweight, sanitiseWeights,
+  DEFAULT_WEIGHTS, DIMENSIONS, normaliseWeights, reweight, sanitiseWeights,
 } from "./index.js";
 
 /**
@@ -90,16 +90,6 @@ describe("untrusted input", () => {
   it("reports a run with no dimensions as unscoreable rather than guessing", () => {
     expect(reweight({ dimensions: {}, data_completeness: 0.5 }, DEFAULT_WEIGHTS)).toBeNull();
     expect(reweight(null, DEFAULT_WEIGHTS)).toBeNull();
-  });
-});
-
-describe("isDefaultWeights", () => {
-  it("treats no override and the engine's own weights as the same state", () => {
-    expect(isDefaultWeights(null)).toBe(true);
-    expect(isDefaultWeights(DEFAULT_WEIGHTS)).toBe(true);
-    // Scaling every weight equally is the same weighting, so it must not read as modified.
-    expect(isDefaultWeights(Object.fromEntries(DIMENSIONS.map((k) => [k, DEFAULT_WEIGHTS[k] * 3])))).toBe(true);
-    expect(isDefaultWeights({ ...DEFAULT_WEIGHTS, siemens_fit: 40 })).toBe(false);
   });
 });
 

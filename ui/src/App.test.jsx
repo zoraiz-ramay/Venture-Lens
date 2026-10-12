@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { findShadowRole, getAllShadowRole, getShadowRole } from "./test/shadow.js";
@@ -12,7 +12,6 @@ vi.mock("./api.js", () => ({
     search: vi.fn(async () => ({ results: [] })),
     myRuns: vi.fn(async () => ({ runs: [] })),
     views: vi.fn(async () => ({ views: [] })),
-    challenges: vi.fn(async () => ({ challenges: [] })),
     logout: vi.fn(async () => ({ ok: true })),
     departments: vi.fn(async () => ({ departments: [] })),
   },

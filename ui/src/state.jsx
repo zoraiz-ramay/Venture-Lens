@@ -55,10 +55,8 @@ export function AppProvider({ children }) {
   // Views live on the server, keyed on the Entra oid, so they follow a reviewer between
   // machines instead of belonging to a browser profile. Loaded rather than persisted here.
   const [savedViews, setSavedViews] = useState([]);                         // {name, columns, filters}
-  const [pins, setPins] = usePersistent("se.pins", ["Explore startups", "Solve a problem"]);
-  // The department the reviewer is working for. Search, the Database grid and the profile's
-  // department switch all read this one value: "my department" is something a reviewer has, not
-  // a per-screen setting. Empty until they choose — a search cannot start without one.
+  // The department the Database grid is narrowed to, remembered across visits. Empty means every
+  // department.
   const [department, setDepartment] = usePersistent("se.department.v1", "");
   const [dockOpen, setDockOpenState] = useState(dockOpenByDefault);
   // Every open/close is a deliberate act (the rail toggle, the dock's close button, the Ask page),
@@ -116,7 +114,6 @@ export function AppProvider({ children }) {
     <AppCtx.Provider value={{
       watchlist, toggleWatch,
       savedViews, saveView, removeView,
-      pins, setPins,
       department, setDepartment,
       dockOpen, setDockOpen, dockCtx, setDockCtx,
     }}>

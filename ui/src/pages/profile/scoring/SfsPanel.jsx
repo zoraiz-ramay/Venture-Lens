@@ -15,18 +15,18 @@ function sfsStatus(rt) {
   };
 }
 
-export default function SfsPanel({ rt, verdictShown = false }) {
+export default function SfsPanel({ rt }) {
   const lines = rt.sfs_lines || [];
   const blockers = rt.sfs_blockers || [];
   const { status, verdict } = sfsStatus(rt);
   return (
     <>
-      {!verdictShown && <p style={{ margin: "0 0 8px" }}>
+      <p style={{ margin: "0 0 8px" }}>
         <span className={`verdict ${verdict}`}>
           {status}
         </span>
         {rt.sfs_line && <span className="pill sfs" style={{ marginLeft: 8 }}>{rt.sfs_line}</span>}
-      </p>}
+      </p>
       {lines.map((l, i) => (
         <div key={i} className="spec">
           <div className="k">{l.line}</div>

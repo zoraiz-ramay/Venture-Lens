@@ -61,85 +61,6 @@ async function request(path, { method = "GET", body, timeoutMs = 30000 } = {}) {
   }
 }
 
-/**
- * A fresh evaluation, delivered in pieces as the engine produces them.
- *
- * A run takes a minute or two and all of it used to arrive at once, so the page held a skeleton
- * until routing finished even though the company profile had been ready for most of that time.
- *
- * `fetch` + a stream reader rather than `EventSource`: that is GET-only, and this has to be a POST
- * carrying the session cookie and the CSRF header. Falls back to the plain endpoint on any stream
- * failure, so a proxy that buffers `text/event-stream` costs the progressive render and nothing
- * else — `onDone` still fires with the same complete result either way.
- *
- * @param {(section: string, data: any) => void} onPartial
- * @returns {Promise<object>} the complete evaluation, identical to `api.evaluate`
- */
-export async function evaluateStream(name, { doWeb = true, refresh = false, onPartial } = {}) {
-  let res;
-  try {
-    res = await fetch(`${BASE}/api/evaluate/stream`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": readCookie("sea_csrf") },
-      body: JSON.stringify({ name, do_web: doWeb, refresh }),
-    });
-  } catch {
-    return api.evaluate(name, doWeb, refresh);
-  }
-  if (res.status === 401) {
-    onUnauthorized();
-    throw new ApiError("Your session has ended.", 401);
-  }
-  if (!res.ok || !res.body) {
-    // A non-streaming error response still carries a JSON detail; surface that rather than
-    // re-running a minutes-long evaluation just to obtain the same message.
-    const data = await res.json().catch(() => ({}));
-    if ([404, 405].includes(res.status) && path === "/api/jobs") {
-      throw new ApiError("The search service needs an update. Restart the API with the latest code, then try again.", res.status);
-    }
-    if (!res.ok) throw new ApiError(data.detail || `Request failed (${res.status})`, res.status);
-    return api.evaluate(name, doWeb, refresh);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result = null;
-  let failure = null;
-
-  // SSE frames are separated by a blank line, and a frame can straddle two network chunks — so
-  // the buffer is only consumed up to the last complete separator.
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let split;
-    while ((split = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, split);
-      buffer = buffer.slice(split + 2);
-      const event = frame.match(/^event:\s*(.+)$/m)?.[1]?.trim();
-      const raw = frame.match(/^data:\s*([\s\S]*)$/m)?.[1];
-      if (!event || raw === undefined) continue;
-      let payload;
-      try {
-        payload = JSON.parse(raw);
-      } catch {
-        continue;                 // a frame we cannot read is skipped, never fatal
-      }
-      if (event === "partial") onPartial?.(payload.section, payload.data);
-      else if (event === "done") result = payload;
-      else if (event === "error") failure = payload;
-    }
-  }
-
-  if (failure) throw new ApiError(failure.detail || "Evaluation failed.", failure.status || 500);
-  // The stream ended without a verdict — the connection dropped mid-run. Ask for the result
-  // outright rather than leaving the caller with a half-filled profile and no error.
-  if (!result) return api.evaluate(name, doWeb, refresh);
-  return result;
-}
-
 // A profile lookup runs on the server and answers {pending: true} until it is done
 // (api/jobs.in_background): market signals alone took a minute measured, which one long request
 // could not be relied on to survive. Each poll is a short request; the lookup itself finishes on
@@ -158,12 +79,8 @@ export async function pollLookup(path, { everyMs = LOOKUP_POLL_MS, maxMs = LOOKU
 }
 
 export const api = {
-  health: () => request("/health"),
   search: (q) => request(`/api/search?q=${encodeURIComponent(q)}`),
-  evaluate: (name, doWeb = true, refresh = false) =>
-    request("/api/evaluate", { method: "POST", body: { name, do_web: doWeb, refresh }, timeoutMs: 240000 }),
   decideRun: (id) => request(`/api/runs/${encodeURIComponent(id)}/decision`, { method: "POST", timeoutMs: 180000 }),
-  assessRun: (id, department) => request(`/api/runs/${encodeURIComponent(id)}/assessment/${encodeURIComponent(department)}`, { method: "POST", timeoutMs: 180000 }),
   startJobs: (body) => request("/api/jobs", { method: "POST", body }),
   job: (id) => request(`/api/jobs/${encodeURIComponent(id)}`),
   departments: () => request("/api/departments"),
@@ -186,9 +103,9 @@ export const api = {
   adminOverview: () => request("/api/admin/overview"),
   adminSearches: () => request("/api/admin/searches"),
   adminList: () => request("/api/admin/admins"),
-  // Siemens catalog tools Empower recommended that a web search could not find.
   adminTokenUsage: (limit = 100) => request(`/api/admin/token-usage?limit=${limit}`),
   adminTokenUsageRun: (runId) => request(`/api/admin/token-usage/${encodeURIComponent(runId)}`),
+  // Siemens catalog tools Empower recommended that a web search could not find.
   adminToolChecks: (status = "not_found") => request(`/api/admin/tool-checks?status=${encodeURIComponent(status)}`),
   adminGrant: (upn, note = "") =>
     request("/api/admin/admins", { method: "POST", body: { upn, note } }),
@@ -199,8 +116,6 @@ export const api = {
     request("/api/my/views", { method: "POST", body: { name, columns, filters } }),
   deleteView: (name) =>
     request(`/api/my/views/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  deleteRun: (id) => request(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  challenges: () => request("/api/challenges"),
   // "How this startup works": five plain, cited sentences, written once per run and cached.
   runBusinessFlow: (runId) => pollLookup(`/api/runs/${encodeURIComponent(runId)}/business-flow`),
   // Lookups on request, Tracxn first, then web search: kind is "funding" (rounds and investor
@@ -214,11 +129,6 @@ export const api = {
   chat: (runId = null) => request(`/api/my/chat${runId != null ? `?run_id=${encodeURIComponent(runId)}` : ""}`),
   clearChat: (runId = null) =>
     request(`/api/my/chat${runId != null ? `?run_id=${encodeURIComponent(runId)}` : ""}`, { method: "DELETE" }),
-  audit: (runId) => request(`/api/runs/${encodeURIComponent(runId)}/audit`),
-  setChallengeStatus: (index, status) =>
-    request(`/api/challenges/${encodeURIComponent(index)}`, {
-      method: "PATCH", body: { status },
-    }),
   me: () => request("/api/auth/me"),
   logout: () => request("/api/auth/logout", { method: "POST" }),
   status: () => request("/api/status"),

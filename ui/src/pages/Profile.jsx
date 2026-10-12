@@ -3,9 +3,8 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { IxButton } from "@siemens/ix-react";
 import { iconArrowLeft, iconRefresh, iconStar, iconStarFilled } from "@siemens/ix-icons/icons";
 import { useResearch } from "../research.jsx";
-import { api, evaluateStream } from "../api.js";
+import { api } from "../api.js";
 import { useApp } from "../state.jsx";
-import ErrorBox from "../components/ErrorBox.jsx";
 import DegradedNotice from "../components/DegradedNotice.jsx";
 import ProfileLayout from "./profile/ProfileLayout.jsx";
 import OverviewTab from "./profile/OverviewTab.jsx";
@@ -58,7 +57,7 @@ export default function Profile() {
   const { id } = useParams();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
-  const { watchlist, toggleWatch, setDockCtx, setDockOpen } = useApp();
+  const { watchlist, toggleWatch, setDockCtx } = useApp();
   const [res, setRes] = useState(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -102,10 +101,10 @@ export default function Profile() {
     let active = true;
     setRes(null); setError("");
     if (id === "new" && evalName) {
-      /* Streamed, so the profile appears as soon as the engine has assembled it rather than
-         when routing finishes a minute later. Each partial merges into the same object the
-         non-streaming path produces, so every view below reads one shape and none of them know
-         this happened. `evaluateStream` falls back to api.evaluate on any stream failure. */
+      /* A new evaluation runs as a background research job (research.jsx): start one and put its
+         id in the URL. The job effect below then shows the job's partial profile as soon as the
+         engine has assembled it rather than when routing finishes a minute later. A partial has
+         the same shape as a finished run, so none of the views below know the difference. */
       if (!jobId) {
         research.start({ names: [evalName], refresh: params.get("refresh") === "1" })
           .then(([j]) => { if (active) nav(`/startup/new?name=${encodeURIComponent(evalName)}&job=${j.id}`, { replace: true }); })

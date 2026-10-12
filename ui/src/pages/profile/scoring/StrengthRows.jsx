@@ -5,7 +5,7 @@ import EvidenceList from "./EvidenceList.jsx";
 /* Criteria scored 0–5, as aligned rows: the anchor's own words, a five-step meter, and the
    reasoning behind the shared detail control. The meter carries the level for sighted readers
    and its label says it in words, so colour is never the only signal. */
-export default function StrengthRows({ criteria, extra, name }) {
+export default function StrengthRows({ criteria, name }) {
   return (
     <>
       <ul className="strength-rows" aria-label={`${name} criteria`}>
@@ -15,7 +15,7 @@ export default function StrengthRows({ criteria, extra, name }) {
             <span className="strength-meter" role="img" aria-label={`${c.label}: ${c.anchor}, level ${c.score} of 5`}>
               {[1, 2, 3, 4, 5].map((i) => <span key={i} className={i <= c.score ? "on" : ""} />)}
             </span>
-            <span className="strength-anchor">{c.anchor}{extra?.(c)}</span>
+            <span className="strength-anchor">{c.anchor}</span>
             <DetailToggle title={`${c.label}: reasoning and sources`}>
               {c.rationale ? <p>{c.rationale}</p> : <p className="muted">No rationale was recorded.</p>}
               <EvidenceList items={c.evidence} />

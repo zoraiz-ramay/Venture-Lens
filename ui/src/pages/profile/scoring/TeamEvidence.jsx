@@ -135,7 +135,7 @@ const nameOf = (item) => (typeof item === "string" ? item : item?.name || "");
 const entityKey = (kind, item, person) => (PEOPLE.includes(kind) ? `p:${person(item)}` : `o:${norm(nameOf(item))}`);
 
 /** Every entity of a kind on record, the cited ones first. */
-export function onRecord(dp, kind, cited) {
+function onRecord(dp, kind, cited) {
   const citedIdx = new Set(cited.map((e) => e.index));
   const others = listFor(dp, kind).map((item, index) => ({ index, item })).filter((e) => !citedIdx.has(e.index));
   return [...cited.map((e) => ({ ...e, cited: true })), ...others.map((e) => ({ ...e, cited: false }))];

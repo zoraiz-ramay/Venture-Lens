@@ -96,7 +96,7 @@ export default function FitComparison({ res, runId = null, detailed = false, inD
           question={CRITERION_QUESTIONS[open.pillar]?.[open.id]}
           notes={criterionNotes(pillars[open.pillar], criteria[index])} catalogLabel={CATALOG_LABEL[open.pillar]}
           similar={open.id === "offering" ? pillars[open.pillar]?.similar : null}
-          scaleHelp={scaleHelp(open.pillar, criteria[index])}
+          scaleHelp={scaleHelp(criteria[index])}
           // Tool fit ends with who at Siemens works on the matched tools, not a second evidence list.
           evidenceView={open.pillar === "Empower" && open.id === "tool_fit"
             ? <SiemensContacts runId={runId ?? res.run_id ?? null} /> : null} onClose={close} />

@@ -78,10 +78,7 @@ vi.mock("../api.js", () => ({
     departments: vi.fn(async () => ({departments:[{id:"di",label:"Digital Industries",interests:["automation"],demo:true}]})),
     runDepartments: vi.fn(async () => ({company:"x", department_id:null, legacy:true, departments:[{id:"di",label:"Digital Industries",demo:true,run_id:null,current:false}]})),
     assessDepartment: vi.fn(async () => ({})),
-    assessRun: vi.fn(async () => ({score:{status:"unavailable"},department_fit:{status:"unavailable",message:"Assessment unavailable"}})),
     run: vi.fn(async () => RUN),
-    evaluate: vi.fn(async () => RUN),
-    audit: vi.fn(async () => ({ overrides: [] })),
     ask: vi.fn(async () => ({ answer: "", evidence: [] })),
   },
 }));

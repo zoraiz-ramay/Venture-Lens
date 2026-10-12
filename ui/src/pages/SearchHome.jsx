@@ -7,7 +7,16 @@ import { useResearch } from "../research.jsx";
 import TracxnConnection from "../components/TracxnConnection.jsx";
 import ErrorBox from "../components/ErrorBox.jsx";
 
-export function parseStartups(text) {
+/* The search landing (route "/"): one centred field whose only job is to name a startup and
+   evaluate it, or up to ten in batch mode, plus this session's running research jobs. The
+   scouting workspace it replaced lives at /workspace ("Solve a Problem").
+
+   The shell hides its command-bar row here so the hero is the only search field on the page —
+   two identical inputs stacked would be a coin-flip for both a reviewer and a test locator. The
+   hero therefore carries the Ctrl/Cmd+K binding itself. */
+
+// Batch input: names split on commas, semicolons or new lines, de-duplicated case-insensitively.
+function parseStartups(text) {
   return [...new Map(text.split(/[\n;,]+/).map((s) => s.trim()).filter(Boolean).map((s) => [s.toLowerCase(), s])).values()];
 }
 export default function SearchHome() {

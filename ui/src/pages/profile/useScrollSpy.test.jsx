@@ -1,5 +1,5 @@
 import { act, render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import useScrollSpy, { activationBand } from "./useScrollSpy.js";
 
 /**
@@ -55,7 +55,7 @@ describe("useScrollSpy", () => {
   });
 
   it("comes back to the previous section when scrolling up", () => {
-    const { seen, rerender } = mount([-300, 40, 600]);
+    const { seen } = mount([-300, 40, 600]);
     fire();
     expect(seen.activeId).toBe("b");
 

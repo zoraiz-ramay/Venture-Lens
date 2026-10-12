@@ -9,7 +9,7 @@
 import { connectOpportunity } from "./connectOpportunity.js";
 
 export const PILLAR_ORDER = ["Empower", "Connect", "Collaborate"];
-export const COMPONENTS = [
+const COMPONENTS = [
   ["traction", "Traction"], ["siemens_fit", "Siemens Fit"],
   ["team_ecosystem", "Team & Ecosystem"], ["market", "Market"],
 ];
@@ -125,7 +125,7 @@ const CATALOG_KIND = { tool: "Siemens tool", need: "Department need", industry: 
 
 /* Every record the pillar criteria cited, by id. Concepts cite the same evidence ids, so a term
    can show the sentence it was grounded in without the page holding any evidence of its own. */
-export function evidenceIndex(res) {
+function evidenceIndex(res) {
   const out = new Map();
   for (const p of Object.values(res?.assessment?.pillars || {})) {
     for (const c of p?.criteria || []) for (const e of c.evidence || []) if (e?.id && !out.has(e.id)) out.set(e.id, e);
@@ -151,7 +151,7 @@ const entry = (e) => ({ text: e.name, tag: e.division || CATALOG_KIND[e.id?.spli
 
 /** The "?" beside a Siemens Fit criterion's scale: that the levels are the scoring and the
     numbers are scores. Kept to two short sentences on purpose — it is a reminder, not the rubric. */
-export function scaleHelp(pillar, criterion, max = 3) {
+export function scaleHelp(criterion, max = 3) {
   const base = `This is how ${criterion.label} is scored. Each level is a score from 0 to ${max}; the highlighted one is this startup's.`;
   return criterion.counted === false
     ? `${base} Not counted here: Connect is scored from the number of similar sellers.` : base;

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { BandScale, HeatStrip, MiniBar, RadarChart, RingGauge, StackedBar } from "./charts.jsx";
+import { BandScale, HeatStrip, MiniBar, RadarChart, RingGauge } from "./charts.jsx";
 
 /* Each chart states its numbers in its accessible name, and draws a missing value as missing. */
 describe("RingGauge", () => {
@@ -25,17 +25,6 @@ describe("RingGauge", () => {
     const [done, total] = screen.getByRole("img", { name: "over" }).querySelectorAll("circle")[1]
       .getAttribute("stroke-dasharray").split(" ").map(Number);
     expect(done).toBeCloseTo(total, 5);
-  });
-});
-
-describe("StackedBar", () => {
-  it("sizes each part by its points and hatches an unscored part at its capacity", () => {
-    render(<StackedBar label="Total" segments={[
-      { key: "a", value: 19.7, color: "red" }, { key: "b", value: 35, color: "blue" },
-      { key: "c", value: null, capacity: 15, color: "green" }]} />);
-    const segs = screen.getByRole("img", { name: "Total" }).querySelectorAll(".stacked-seg");
-    expect([...segs].map((s) => s.style.width)).toEqual(["19.7%", "35%", "15%"]);
-    expect(segs[2].classList.contains("pending")).toBe(true);
   });
 });
 

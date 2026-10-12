@@ -1,8 +1,7 @@
-import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProvider } from "../state.jsx";
-import { findShadowRole } from "../test/shadow.js";
 
 /**
  * PROF-01 / PROF-04 — profile header and navigation.
@@ -34,14 +33,10 @@ vi.mock("../api.js", () => ({
     departments: vi.fn(async () => ({departments:[{id:"di",label:"Digital Industries",interests:["automation"],demo:true}]})),
     runDepartments: vi.fn(async () => ({company:"x", department_id:null, legacy:true, departments:[{id:"di",label:"Digital Industries",demo:true,run_id:null,current:false}]})),
     assessDepartment: vi.fn(async () => ({})),
-    assessRun: vi.fn(async () => ({score:{status:"unavailable"},department_fit:{status:"unavailable",message:"Assessment unavailable"}})),
     run: vi.fn(async () => RUN),
     job: vi.fn(),
-    evaluate: vi.fn(async () => RUN),
-    audit: vi.fn(async () => ({ overrides: [] })),
     ask: vi.fn(async () => ({ answer: "", evidence: [] })),
   },
-  evaluateStream: vi.fn(async () => RUN),
 }));
 
 async function renderProfile() {
@@ -57,8 +52,8 @@ async function renderProfile() {
   );
 }
 
-// The what-if weighting persists to localStorage, so without this one test's weighting leaks into
-// the next and the failures point at the wrong place.
+// Reading preferences persist to localStorage (the scoring view, the dock), so without this one
+// test's choice leaks into the next and the failures point at the wrong place.
 beforeEach(() => localStorage.clear());
 
 describe("Profile", () => {

@@ -85,7 +85,7 @@ export function useSolveSession() {
         applicantsRanked: !!partial.applicants_ranked, market: null, marketDone: false };
 
   return {
-    job, view, result, running, elapsed, problem, setProblem, start, starting, startError,
+    job, view, result, elapsed, problem, setProblem, start, starting, startError,
     refine, refining, refineError, ask, newProblem, focusInput: params.has("compose"),
   };
 }

@@ -12,21 +12,17 @@ import CONSTANTS from "./engine-constants.json";
  * tests are what will tell you this file needs the same change.
  *
  * Nothing here writes anywhere. The engine's score remains the only stored, shared, exportable one.
+ *
+ * No page imports this module (or routing.js) at present: the what-if weight controls were removed
+ * from the UI. Both stay pinned to the engine by the tests above, so they are ready if it returns.
  */
 
-// The single dimension registry for the UI. Profile's labels and Radar's axis order both read it,
-// so they cannot disagree about which dimensions exist or what order they appear in.
+// The six score dimensions, in the engine's order (engine-constants.json mirrors core.config).
 export const DIMENSIONS = Object.keys(CONSTANTS.weights);
 
-export const DIMENSION_LABELS = {
-  traction: "Traction", siemens_fit: "Siemens Fit", product: "Product",
-  market: "Market", founder: "Founder", ecosystem: "Ecosystem",
-};
-
-// Expressed as points out of 100 rather than the engine's 0-1 fractions: this is what the editor
-// puts in its inputs, and at defaults the number a user sees is also the effective percentage.
-// Rounded because the scaling is not exact in binary — 0.28 * 100 is 28.000000000000004, which a
-// number input renders as "28.00" and makes the default state look like something already edited.
+// Expressed as points out of 100 rather than the engine's 0-1 fractions, so at defaults a weight
+// reads as its effective percentage. Rounded because the scaling is not exact in binary — 0.28 *
+// 100 is 28.000000000000004.
 export const DEFAULT_WEIGHTS = Object.freeze(
   Object.fromEntries(DIMENSIONS.map((k) => [k, Math.round(CONSTANTS.weights[k] * 10000) / 100])),
 );
@@ -74,13 +70,6 @@ export function normaliseWeights(weights) {
   };
 }
 
-export function isDefaultWeights(weights) {
-  const w = sanitiseWeights(weights);
-  if (!w) return true;
-  const a = normaliseWeights(w).weights, b = normaliseWeights(DEFAULT_WEIGHTS).weights;
-  return DIMENSIONS.every((k) => Math.abs(a[k] - b[k]) < 1e-9);
-}
-
 /**
  * `data_completeness` is always k/8, but the engine rounds it to 2dp on the way out
  * (`core/score.py:151`), and it rounds `data_confidence` separately. Recomputing from the rounded
@@ -97,38 +86,6 @@ function snapCompleteness(c) {
  * carries no dimensions at all. Python would raise KeyError here, so every complete run has all
  * six; the callers use null to show "unavailable for this run" instead of rendering NaN.
  */
-/**
- * Each dimension's share of the score under a weighting, on the same 0-100 scale as the dimensions
- * themselves so the radar can draw both.
- *
- * The `* DIMENSIONS.length` factor is what makes contribution comparable to evidence: under an even
- * weighting every w[k] is 1/n, so values[k] === dimensions[k] and the two polygons coincide. Under
- * the engine's own weights they do NOT coincide — the engine leans on traction and fit by design —
- * which is informative but has to be captioned, or it reads as "the what-if already changed
- * something".
- *
- * mean(values) === rawScore, which is the property that makes this a decomposition of the score
- * rather than a decorative second series.
- */
-export function contributionProfile(dimensions, weights) {
-  const { weights: w, ok } = normaliseWeights(weights);
-  if (!ok || !dimensions) return null;
-  if (DIMENSIONS.some((k) => typeof dimensions[k] !== "number" || !Number.isFinite(dimensions[k]))) {
-    return null;
-  }
-  const values = {};
-  const overflow = [];
-  for (const k of DIMENSIONS) {
-    const v = dimensions[k] * w[k] * DIMENSIONS.length;
-    values[k] = v;
-    // Reported rather than silently clipped: a dimension drawn at the ring edge is a different
-    // statement from one that reaches it exactly, and the caller has to be able to say which.
-    if (v > 100) overflow.push(k);
-  }
-  const mean = DIMENSIONS.reduce((s, k) => s + values[k], 0) / DIMENSIONS.length;
-  return { values, overflow, mean };
-}
-
 export function reweight(score, weights) {
   if (!score || typeof score !== "object") return null;
   const dims = score.dimensions;

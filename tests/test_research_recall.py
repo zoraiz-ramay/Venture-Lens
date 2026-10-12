@@ -111,7 +111,7 @@ def test_database_funding_stays_authoritative():
     assert scored["market"] != _score_with("", "Pre-Seed, amount undisclosed")["dimensions"]["market"]
 
 
-def test_knowledge_gapfill_never_invents_verifiable_facts():
+def test_knowledge_gapfill_never_invents_verifiable_facts(monkeypatch):
     """Model-recall gap-fill must not touch facts a reader would cite.
 
     It used to cover funding/founded_year/employees/hq/customers, and asked to recall a small
@@ -119,14 +119,33 @@ def test_knowledge_gapfill_never_invents_verifiable_facts():
     of 'SAR 3.75 million' that appears nowhere on the web. The marker meant to flag such values
     never reached the row, so a guess rendered exactly like a cited fact.
     """
-    import inspect
+    import json
 
     from core import data as data_mod
 
-    src = inspect.getsource(data_mod.web_profile_row)
-    gap = src.split("_GAP_KEYS = ")[1].split(")")[0]
-    for verifiable in ("funding", "founded_year", "employees", "hq", "customers", "website"):
-        assert verifiable not in gap, f"{verifiable} must not be filled from model memory"
+    hits = [{"title": "Acme Robotics", "body": "Acme Robotics builds welding robots",
+             "href": "https://acmerobotics.example"}]
+    monkeypatch.setattr(data_mod, "_ddg_many", lambda queries, **kw: {k: hits for k in queries})
+    recalled = {"funding": "Series A, $12M", "founded_year": "2019", "employees": "45",
+                "hq": "Berlin, Germany", "customers": "Siemens, Bosch",
+                "website": "https://invented.example", "business_model": "B2B SaaS",
+                "stage": "Scaling"}
+
+    class _LLM:
+        available = True
+
+        def complete(self, prompt, **kw):
+            if "From your own knowledge" in prompt:
+                return json.dumps(recalled)
+            return json.dumps({"exists": True, "company_name": "Acme Robotics",
+                               "description": "Welding robots."})
+
+    row = data_mod.web_profile_row("Acme Robotics", llm=_LLM())
+    for col in ("funding", "founded_year", "employees_count", "hq", "customers"):
+        assert row[col] == "", f"{col} must not be filled from model memory"
+    assert row["website"] != "https://invented.example"
+    # The descriptive fields are the sanctioned gap-fill, so the recall did run.
+    assert row["Business model"] == "B2B SaaS"
 
 
 @pytest.mark.parametrize("hits, expected", [

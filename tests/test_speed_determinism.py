@@ -256,10 +256,6 @@ def test_pipeline_executor_carries_the_bypass_flag(monkeypatch):
     # The plain submit sees the default; only the context-copying one sees the real flag.
     assert True in seen and False in seen
 
-    src = __import__("inspect").getsource(
-        __import__("core.pipeline", fromlist=["evaluate"]))
-    assert "copy_context" in src, "pipeline must copy context into its executor"
-
 
 def test_failed_search_is_not_cached(monkeypatch):
     """A transient throttle must not be pinned in place for the whole TTL."""

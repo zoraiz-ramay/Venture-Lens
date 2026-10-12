@@ -27,6 +27,7 @@ DATA_DIR), which over time becomes the demand-side catalogue the evaluate-mode f
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pathlib
 import re
@@ -40,6 +41,8 @@ from .text import _keywords
 from .web import _ddg_many
 from .llm import LLMClient
 from . import catalogs, tool_search
+
+log = logging.getLogger(__name__)
 
 
 CHALLENGES_PATH = os.getenv("CHALLENGES_JSON", str(pathlib.Path(BASE_DIR) / "challenges.json"))
@@ -137,11 +140,16 @@ def _glassdollar_candidates(keywords: list[str], limit_per_kw: int = 5) -> list[
 
 
 
-def _web_candidates(keywords: list[str], llm: LLMClient) -> list[dict]:
+def _web_candidates(keywords: list[str], llm: LLMClient, stats: dict | None = None) -> list[dict]:
     """Companies named in a web search for the keywords: extracted by the model from the results,
-    or offline, the result domains themselves."""
+    or offline, the result domains themselves.
+
+    ``stats`` receives the wave's own (``requested``, ``timed_out``, …; see ``web._ddg_many``) and a
+    ``note`` when the model was there but its extraction could not be read — the companies are
+    then named from their web addresses, and the page should not believe the model chose them."""
+    stats = stats if stats is not None else {}
     queries = {f"kw_{i}": f"startup {kw} solution company" for i, kw in enumerate(keywords[:6])}
-    results = _ddg_many(queries, max_results=5)
+    results = _ddg_many(queries, max_results=5, stats=stats)
     hits = [h for hs in results.values() for h in (hs or [])]
     if not hits:
         return []
@@ -159,6 +167,7 @@ def _web_candidates(keywords: list[str], llm: LLMClient) -> list[dict]:
                      "description": str(c.get("description", ""))[:400],
                      "website": str(c.get("website", ""))}
                     for c in data["companies"] if isinstance(c, dict) and str(c.get("name", "")).strip()][:15]
+        stats["note"] = "the model could not read the web results, so companies are named from their web addresses"
     # offline: treat non-social result domains as candidate companies
     out, seen = [], set()
     for h in hits:
@@ -353,10 +362,13 @@ def rank(problem: str, candidates: list[dict], llm: LLMClient) -> list[dict]:
                     continue
                 used.add(index)
                 c = dict(candidates[index])
-                c.update(band=band, reason=_short(r.get("reason"), 300),
+                c.update(band=band, reason=_short(r.get("reason"), 300), judged_by="model",
                          quote=_verbatim(r.get("quote", ""), c.get("description", "")))
                 judged.append((BANDS.index(band), index, c))
             return _by_band(judged)
+        # Not silent: the bands below are shared words, and each candidate says so (judged_by).
+        log.warning("[solve] the ranking reply could not be read; ranking %d candidates on shared words",
+                    len(candidates))
     # Offline: shared words can say "same domain", never "does the core of it".
     words = _keywords(problem)
     judged = []
@@ -364,7 +376,7 @@ def rank(problem: str, candidates: list[dict], llm: LLMClient) -> list[dict]:
         overlap = words & _keywords(f"{c['name']} {c.get('description', '')}")
         if overlap:
             band = "good" if len(overlap) >= 4 else "possible"
-            judged.append((BANDS.index(band), i, {**c, "band": band, "quote": "",
+            judged.append((BANDS.index(band), i, {**c, "band": band, "quote": "", "judged_by": "words",
                                                   "reason": "Shared terms: " + ", ".join(sorted(overlap)[:4]) + "."}))
     return _by_band(judged)
 
@@ -379,7 +391,7 @@ def _market_order(c: dict) -> tuple[int, int]:
     return BANDS.index(c["band"]), _SOURCE_ORDER.get(c["source"], 3)
 
 
-def _fill_candidate_gaps(candidates: list[dict]) -> None:
+def _fill_candidate_gaps(candidates: list[dict], stats: dict | None = None) -> None:
     """One web wave for missing descriptions. Use snippets verbatim with their URLs.
 
     A missing company website stays unknown: a search-result URL may be a news article.
@@ -389,7 +401,7 @@ def _fill_candidate_gaps(candidates: list[dict]) -> None:
     if not gaps:
         return
     hits = _ddg_many({str(i): f'{c["name"]} company products solutions'
-                      for i, c in enumerate(gaps)}, max_results=3)
+                      for i, c in enumerate(gaps)}, max_results=3, stats=stats)
     for i, c in enumerate(gaps):
         for h in hits.get(str(i), []) or []:
             body, url = str(h.get("body") or ""), str(h.get("href") or "")
@@ -430,6 +442,12 @@ def _shown(ranked: list[dict]) -> list[dict]:
     return sorted(ranked, key=_market_order)[:MARKET_LIMIT]
 
 
+def _timed_out(stats: dict) -> str:
+    """Why a web wave came back short, in the page's words, or '' when every search answered."""
+    missed, asked = int(stats.get("timed_out") or 0), int(stats.get("requested") or 0)
+    return f"{missed} of {asked} web searches timed out" if missed and asked else ""
+
+
 def _market(problem: str, keywords, llm: LLMClient, *, do_web: bool, use_glassdollar: bool,
             tracxn, exclude, on_progress=None) -> tuple[list[dict], list[dict]]:
     """Tracxn -> GlassDollar fallback -> web gaps.
@@ -443,18 +461,39 @@ def _market(problem: str, keywords, llm: LLMClient, *, do_web: bool, use_glassdo
 
     ``on_progress(sources, market)`` reports each source's status as it resolves (``searching``
     while in flight), and the first ranked market while the web is still being searched.
+
+    No source can fail the search: the applicants are already on the page, and a market error
+    used to fail the whole job and take them with it. A source that fails or times out says so in
+    its status (``unavailable``), with a ``reason`` — never as "no matches", which is a claim
+    about the market rather than about the search.
     """
     sources: list[dict] = []
     report = on_progress or (lambda sources, market=None: None)
 
-    def status(provider: str, state: str):
+    def status(provider: str, state: str, reason: str = ""):
         entry = next((s for s in sources if s["provider"] == provider), None)
         if entry is None:
-            sources.append({"provider": provider, "status": state})
-        else:
-            entry["status"] = state
+            entry = {"provider": provider}
+            sources.append(entry)
+        entry["status"] = state
+        entry.pop("reason", None)
+        if reason:
+            entry["reason"] = reason
         report([dict(s) for s in sources])
 
+    try:
+        return _market_search(problem, keywords, llm, do_web=do_web, use_glassdollar=use_glassdollar,
+                              tracxn=tracxn, exclude=exclude, status=status, sources=sources, report=report)
+    except Exception:                                     # noqa: BLE001 — the applicants must survive
+        log.warning("[solve] market search failed", exc_info=True)
+        for provider in ("tracxn", "glassdollar", "web"):
+            entry = next((s for s in sources if s["provider"] == provider), None)
+            if entry is None or entry["status"] == "searching":
+                status(provider, "unavailable", "the market search failed")
+        return [], sources
+
+
+def _market_search(problem, keywords, llm, *, do_web, use_glassdollar, tracxn, exclude, status, sources, report):
     candidates = []
     if tracxn is not None:
         status("tracxn", "searching")
@@ -467,16 +506,22 @@ def _market(problem: str, keywords, llm: LLMClient, *, do_web: bool, use_glassdo
         status("tracxn", "not_connected")
     if not candidates and use_glassdollar:
         status("glassdollar", "searching")
-        candidates = _glassdollar_candidates(keywords())
-        status("glassdollar", "used" if candidates else "empty_or_unavailable")
+        try:
+            candidates = _glassdollar_candidates(keywords())
+            status("glassdollar", "used" if candidates else "empty_or_unavailable")
+        except Exception:                                 # noqa: BLE001 — GlassDollarError is caught inside
+            log.warning("[solve] GlassDollar search failed", exc_info=True)
+            candidates = []
+            status("glassdollar", "unavailable", "the GlassDollar search failed")
     else:
         status("glassdollar", "skipped" if candidates else "not_configured")
 
     # The candidates above, once merged: the web's own candidates are told apart from them.
     merged: concurrent.futures.Future = concurrent.futures.Future()
+    web_stats: dict = {}
 
     def web_branch():
-        found = _web_candidates(keywords()[:3], llm)
+        found = _web_candidates(keywords()[:3], llm, stats=web_stats)
         web = _merge(found, exclude() | {c["name"].casefold() for c in merged.result()})
         return web, rank(problem, web, llm)
 
@@ -504,19 +549,33 @@ def _market(problem: str, keywords, llm: LLMClient, *, do_web: bool, use_glassdo
             raise
         if do_web and len(candidates) < WEB_FALLBACK_BELOW:
             start_web()
+        gap_stats: dict = {}
+        gap_note = ""
         if do_web:
-            _fill_candidate_gaps(candidates)
+            try:
+                _fill_candidate_gaps(candidates, stats=gap_stats)
+                gap_note = _timed_out(gap_stats)
+            except Exception:                         # noqa: BLE001 — a blank description is not fatal
+                log.warning("[solve] description gap-fill failed", exc_info=True)
+                gap_note = "the search for missing descriptions failed"
         ranked = rank(problem, candidates, llm)
         if do_web and len(ranked) < WEB_FALLBACK_BELOW:
             start_web()
             if ranked and not web_f.done():
                 report([dict(s) for s in sources], _shown([dict(c) for c in ranked]))
-            web, web_ranked = web_f.result()
-            ranked += web_ranked
-            status("web", "used" if web else "empty")
+            try:
+                web, web_ranked = web_f.result()
+            except Exception:                         # noqa: BLE001 — what the market found stands
+                log.warning("[solve] web candidate search failed", exc_info=True)
+                status("web", "unavailable", "the web search failed")
+            else:
+                ranked += web_ranked
+                why = "; ".join(x for x in (_timed_out(web_stats), web_stats.get("note", ""), gap_note) if x)
+                # Searches that never answered cannot say the web had nothing.
+                status("web", "used" if web else "unavailable" if _timed_out(web_stats) else "empty", why)
         else:
             filled = any(v.get("provider") == "web" for c in candidates for v in c.get("field_sources", {}).values())
-            status("web", "used" if filled else "skipped" if do_web else "disabled")
+            status("web", "used" if filled else "skipped" if do_web else "disabled", gap_note)
     return _shown(ranked), sources
 
 
@@ -544,11 +603,31 @@ def solve_problem(problem: str, llm: LLMClient = None, do_web: bool = True,
     def lap(stage: str):
         timings[stage] = round(time.monotonic() - started, 2)
 
+    # Neither stage may fail the search: each falls back the way it would without a model, and
+    # says so. An exception here used to fail the whole job, applicants and market alike.
+    def interpretation_stage():
+        try:
+            return interpret(problem, llm)
+        except Exception:                                 # noqa: BLE001
+            log.warning("[solve] interpretation failed", exc_info=True)
+            return {"restatement": "", "facets": [], "keywords": _offline_keywords(problem), "method": "offline"}
+
+    failed = []
+
     def applicants_stage():
-        found, retrieval = match_applications(problem, catalog, llm)
+        try:
+            found, retrieval = match_applications(problem, catalog, llm)
+        except Exception:                                 # noqa: BLE001
+            log.warning("[solve] applications search failed", exc_info=True)
+            failed.append("applications")
+            found, retrieval = [], {"method": "none", "reason": "the applications search failed"}
         lap("applicants_found")
         emit("applicants", {"applicants": found, "retrieval": retrieval, "applicants_ranked": False})
-        judged = rank(problem, found, llm)
+        try:
+            judged = rank(problem, found, llm)
+        except Exception:                                 # noqa: BLE001
+            log.warning("[solve] ranking the applicants failed", exc_info=True)
+            judged = rank(problem, found, None)           # shared words, as without a model
         lap("applicants_ranked")
         emit("applicants", {"applicants": judged, "retrieval": retrieval, "applicants_ranked": True})
         return judged, retrieval
@@ -557,7 +636,7 @@ def solve_problem(problem: str, llm: LLMClient = None, do_web: bool = True,
         emit("market", {"sources": sources, **({"market": market, "market_complete": False} if market else {})})
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        interpretation_f = pool.submit(copy_context().run, interpret, problem, llm)
+        interpretation_f = pool.submit(copy_context().run, interpretation_stage)
         applicants_f = pool.submit(copy_context().run, applicants_stage)
         # The market starts now, beside the other two, and waits on each only where it reads it.
         # Applicants are still known before the market is merged, so a company that applied is
@@ -574,8 +653,10 @@ def solve_problem(problem: str, llm: LLMClient = None, do_web: bool = True,
         applicants, retrieval = applicants_f.result()
         market, sources = market_f.result()
         lap("market")
-    sources.insert(0, {"provider": "applications",
-                       "status": "used" if applicants else "empty" if catalog.get("available") else "not_configured"})
+    sources.insert(0, {"provider": "applications", "status": "unavailable", "reason": retrieval["reason"]}
+                   if failed else
+                   {"provider": "applications",
+                    "status": "used" if applicants else "empty" if catalog.get("available") else "not_configured"})
     return {"problem": problem, "interpretation": interpretation, "keywords": interpretation["keywords"],
             "applicants": applicants, "market": market, "sources": sources, "retrieval": retrieval,
             "method": "llm" if llm.available else "offline_keyword", "timings": timings}

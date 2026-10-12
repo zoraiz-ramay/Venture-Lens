@@ -35,7 +35,7 @@ from core.solve import solve_problem, load_challenges, set_challenge_status
 from core.chat import run_brief
 from core import s3 as _s3
 from api import store
-from api.auth import Principal, current_user, require_admin, settings as auth_settings
+from api.auth import Principal, current_user, require_admin, sessions, settings as auth_settings
 from api.auth import admin_upns as auth_admin_upns, db_admin_upns as auth_db_admin_upns
 from api.auth import router as auth_router
 from api.security import SecurityMiddleware
@@ -771,25 +771,32 @@ def _run_for(run_id: int, user: Principal) -> dict:
 @app.post("/api/runs/{run_id}/business-flow")
 def run_business_flow(run_id: int, user: Principal = Depends(current_user)) -> dict:
     """The profile's "How this startup works": five plain, cited sentences (core/business_flow.py).
-    Written once per run and kept in the database; served from there on every later read."""
-    from core.business_flow import business_flow
+    Written once per run and kept in the database; served from there on every later read. A flow
+    the research leaves short searches for the missing steps, so it runs in the background and the
+    page polls (api/jobs.in_background)."""
+    from api.jobs import in_background
+    from core.business_flow import VERSION, business_flow
     res = _run_for(run_id, user)
     company = str(res.get("company", ""))
-    stored = store.latest_enrichment(company, "business_flow", run_id=run_id)
-    if stored:
-        return stored
-    # Two first views at once (two tabs, two reviewers) both missed the store above and both paid
-    # for the model call. The second now waits for the first and reads what it saved. Per worker
-    # process: gunicorn's second worker can still race, which is a rare double call, not a wrong one.
-    with _flow_lock(run_id):
-        stored = store.latest_enrichment(company, "business_flow", run_id=run_id)
-        if stored:
-            return stored
-        out = business_flow(res, core.LLMClient())
-        if out.get("status") == "ok":
-            store.save_enrichment(company, "business_flow", {**out, "provider": "model"},
-                                  run_id=run_id, user_oid=user.oid)
-    return out
+    def stored():
+        # A flow written by an older version is written again: v2 kept whatever the run's own
+        # research covered, which for a young company was often three of the five steps.
+        flow = store.latest_enrichment(company, "business_flow", run_id=run_id)
+        return flow if flow and flow.get("version") == VERSION else None
+
+    def compute():
+        # The two gunicorn workers can each start one for the same first view; the second waits
+        # for the first and reads what it saved.
+        with _flow_lock(run_id):
+            again = stored()
+            if again:
+                return again
+            out = business_flow(res, core.LLMClient())
+            if out.get("status") == "ok":
+                store.save_enrichment(company, "business_flow", {**out, "provider": "model"},
+                                      run_id=run_id, user_oid=user.oid)
+            return out
+    return in_background(f"{run_id}:business_flow", compute, ready=stored)
 
 
 _flow_locks: dict[int, threading.Lock] = {}
@@ -810,8 +817,15 @@ def run_team(run_id: int, refresh: bool = False, user: Principal = Depends(curre
     refreshes hold — the run's own entries first and in order, since Team & Ecosystem cites them by
     position — stored, and read by the next full evaluation as one more earlier run. Like the other
     lookups it never rewrites the run, so it moves no score until the company is evaluated again.
-    Declared before the generic lookup route so "team" is not read as one of its kinds."""
+    Declared before the generic lookup route so "team" is not read as one of its kinds.
+
+    Investors also come from the funding lookup (core/traction_lookup.py). The evaluation looks for
+    them in short search passages and often finds none where the funding lookup, which reads the
+    model's own web search, names the round's lead and every angel: Radical Dot's run had no
+    investors, its funding lookup seven. So a run without investors reads the stored funding lookup,
+    or runs it once in the background and stores it — the Traction section then reads the same one."""
     from datetime import datetime, timezone
+    from api.jobs import in_background
     from core.profile import merge_team, refresh_team
     res = _run_for(run_id, user)
     company = str(res.get("company", ""))
@@ -820,15 +834,55 @@ def run_team(run_id: int, refresh: bool = False, user: Principal = Depends(curre
                  "programs": dp.get("programs"), "investors": (dp.get("commercial") or {}).get("investors")}
     stored = store.latest_enrichment(company, "team")
     if not refresh:
-        return {**merge_team(run_lists, stored or {}), "retrieved_at": (stored or {}).get("retrieved_at", ""),
-                "from_store": bool(stored)}
-    profile = res.get("profile") or {}
-    row = pd.Series({"company_name": company, "website": profile.get("website", ""),
-                     "domain": profile.get("domain", ""), "short_description": res.get("summary", "")})
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    out = {**merge_team(run_lists, stored or {}, refresh_team(company, row, core.LLMClient())), "retrieved_at": now}
-    store.save_enrichment(company, "team", out, run_id=None, user_oid=user.oid)
-    return {**out, "from_store": False}
+        merged = merge_team(run_lists, stored or {})
+        answer = lambda more: {**merge_team(run_lists, stored or {}, more),  # noqa: E731
+                               "retrieved_at": (stored or {}).get("retrieved_at", ""), "from_store": bool(stored)}
+        if merged.get("investors"):
+            return answer({})
+        funding = store.latest_enrichment(company, "funding")
+        if funding or sessions().get(f"team-funding-tried:{company.casefold()}"):
+            return answer(_funding_investors(funding))
+
+        def compute():
+            found = _lookup_now("funding", res, company, user, refresh=False)
+            if not found.get("rounds") and not found.get("investors"):
+                # Searched and found no investors: the next open does not pay for the same search.
+                sessions().put(f"team-funding-tried:{company.casefold()}", {"at": time.time()}, 86400)
+            return answer(_funding_investors(found))
+        return in_background(f"{user.oid}:{run_id}:team-investors", compute)
+
+    def compute_refresh():
+        profile = res.get("profile") or {}
+        row = pd.Series({"company_name": company, "website": profile.get("website", ""),
+                         "domain": profile.get("domain", ""), "short_description": res.get("summary", "")})
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        found = refresh_team(company, row, core.LLMClient())
+        # The refresh's own finds go last: merge_team marks what the last record adds as new.
+        out = {**merge_team(run_lists, stored or {}, _funding_investors(store.latest_enrichment(company, "funding")), found),
+               "retrieved_at": now}
+        store.save_enrichment(company, "team", out, run_id=None, user_oid=user.oid)
+        return {**out, "from_store": False}
+    return in_background(f"{user.oid}:{run_id}:team-refresh", compute_refresh)
+
+
+def _funding_investors(funding: dict | None) -> dict:
+    """The funding lookup's investors in Team & Ecosystem's shape: {name, source_url}, each carrying
+    the page that names it (a Tracxn answer has none to link, and says Tracxn instead)."""
+    out, seen = [], set()
+
+    def add(name, sources):
+        name = str(name or "").strip()
+        if not name or name.casefold() in seen or not sources:
+            return
+        url = next((str(s.get("url") or "") for s in sources if str(s.get("url") or "").startswith("http")), "")
+        seen.add(name.casefold())
+        out.append({"name": name, "source_url": url, **({} if url else {"source": "Tracxn"})})
+    for r in (funding or {}).get("rounds") or []:
+        for name in [*(r.get("lead_investors") or []), *(r.get("investors") or [])]:
+            add(name, r.get("sources") or [])
+    for i in (funding or {}).get("investors") or []:
+        add(i.get("name"), i.get("sources") or [])
+    return {"investors": out}
 
 
 @app.post("/api/runs/{run_id}/lookup/contacts")
@@ -866,18 +920,22 @@ def run_lookup(run_id: int, kind: Literal["funding", "headcount", "signals"], re
     company's market (core/traction_lookup.py, core/market_signals.py).
 
     Served from the database when this company's result was fetched before — by anyone, for any of
-    its runs — and searched again only on Refresh. A fresh result is stored (history kept), whether
-    it came from Tracxn or the web: Tracxn first through the reviewer's own connection, the model's
-    web search second.
+    its runs — and searched again only on Refresh. A search runs in the background and the page
+    polls for it (api/jobs.in_background): market signals alone took a minute measured.
     """
-    from core.market_signals import market_signals
-    from core.traction_lookup import funding_details, headcount_details
+    from api.jobs import in_background
     res = _run_for(run_id, user)
     company = str(res.get("company", ""))
-    if not refresh:
-        stored = store.latest_enrichment(company, kind)
-        if stored:
-            return stored
+    return in_background(f"{user.oid}:{run_id}:{kind}:{int(refresh)}",
+                         lambda: _lookup_now(kind, res, company, user, refresh),
+                         ready=None if refresh else lambda: store.latest_enrichment(company, kind) or None)
+
+
+def _lookup_now(kind: str, res: dict, company: str, user: Principal, refresh: bool) -> dict:
+    """Search for one lookup and store a real answer: Tracxn first through the reviewer's own
+    connection, the model's web search second."""
+    from core.market_signals import market_signals
+    from core.traction_lookup import funding_details, headcount_details
     profile = res.get("profile") or {}
     llm = core.LLMClient()
     tracxn = tracxn_client_for(user, llm)

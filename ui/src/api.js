@@ -140,6 +140,23 @@ export async function evaluateStream(name, { doWeb = true, refresh = false, onPa
   return result;
 }
 
+// A profile lookup runs on the server and answers {pending: true} until it is done
+// (api/jobs.in_background): market signals alone took a minute measured, which one long request
+// could not be relied on to survive. Each poll is a short request; the lookup itself finishes on
+// the server whether or not this page is still open.
+const LOOKUP_POLL_MS = 2000;
+const LOOKUP_MAX_MS = 6 * 60 * 1000;
+
+export async function pollLookup(path, { everyMs = LOOKUP_POLL_MS, maxMs = LOOKUP_MAX_MS } = {}) {
+  const deadline = Date.now() + maxMs;
+  for (;;) {
+    const data = await request(path, { method: "POST" });
+    if (!data?.pending) return data;
+    if (Date.now() > deadline) throw new ApiError("This is taking longer than usual. Try again in a minute.", 0);
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+}
+
 export const api = {
   health: () => request("/health"),
   search: (q) => request(`/api/search?q=${encodeURIComponent(q)}`),
@@ -185,12 +202,11 @@ export const api = {
   deleteRun: (id) => request(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   challenges: () => request("/api/challenges"),
   // "How this startup works": five plain, cited sentences, written once per run and cached.
-  runBusinessFlow: (runId) =>
-    request(`/api/runs/${encodeURIComponent(runId)}/business-flow`, { method: "POST", timeoutMs: 90000 }),
-  // Traction facts looked up on request, Tracxn first, then web search: kind is "funding"
-  // (rounds and investor profiles) or "headcount" (sourced employee figures).
+  runBusinessFlow: (runId) => pollLookup(`/api/runs/${encodeURIComponent(runId)}/business-flow`),
+  // Lookups on request, Tracxn first, then web search: kind is "funding" (rounds and investor
+  // profiles), "headcount" (sourced employee figures), "signals" or "team".
   runLookup: (runId, kind, refresh = false) =>
-    request(`/api/runs/${encodeURIComponent(runId)}/lookup/${kind}${refresh ? "?refresh=true" : ""}`, { method: "POST", timeoutMs: 120000 }),
+    pollLookup(`/api/runs/${encodeURIComponent(runId)}/lookup/${kind}${refresh ? "?refresh=true" : ""}`),
   // `history` is the chat so far ({role, text}), so a follow-up keeps its subject. The server also
   // stores each turn in the reviewer's thread for that company, which chat() reads back.
   ask: (question, runId = null, history = []) =>

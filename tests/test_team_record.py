@@ -63,11 +63,12 @@ def test_a_stored_refresh_is_carried_into_the_next_evaluation_without_its_displa
     assert merged["profile"]["founders"][0]["last_confirmed_at"].startswith("2026-10-09")
 
 
-def test_the_team_route_reads_without_searching_and_searches_only_on_refresh(monkeypatch):
+def test_the_team_route_reads_without_searching_and_searches_only_on_refresh(monkeypatch, poll):
     from api import main
     saved, searched = [], []
     run = {"company": "Teamrec GmbH", "profile": {"website": "https://teamrec.test"},
-           "deep_profile": {"founders": [ADA], "programs": [], "commercial": {"investors": []}}}
+           "deep_profile": {"founders": [ADA], "programs": [],
+                            "commercial": {"investors": [{"name": "Acme VC", "source_url": "https://acme.vc"}]}}}
     monkeypatch.setattr(main, "_run_for", lambda run_id, user: run)
     monkeypatch.setattr(main.store, "latest_enrichment", lambda company, kind, run_id=None: saved[-1] if saved else None)
     monkeypatch.setattr(main.store, "save_enrichment", lambda company, kind, payload, **kw: saved.append(payload))
@@ -79,7 +80,69 @@ def test_the_team_route_reads_without_searching_and_searches_only_on_refresh(mon
 
     first = client.post("/api/runs/7401/lookup/team", headers=csrf).json()
     assert searched == [] and first["from_store"] is False and [f["name"] for f in first["founders"]] == ["Ada Lovelace"]
-    fresh = client.post("/api/runs/7401/lookup/team?refresh=true", headers=csrf).json()
+    fresh = poll(client, "/api/runs/7401/lookup/team?refresh=true", csrf).json()
     assert searched == ["Teamrec GmbH"] and [p["name"] for p in fresh["programs"]] == ["Techstars"] and fresh["programs"][0]["new"]
     again = client.post("/api/runs/7401/lookup/team", headers=csrf).json()
     assert searched == ["Teamrec GmbH"] and again["from_store"] and [p["name"] for p in again["programs"]] == ["Techstars"]
+
+
+FUNDING = {"provider": "web", "rounds": [{"date": "March 2025", "amount": "€2.7 million",
+                                         "lead_investors": ["UVC Partners"], "investors": ["Jane Angel"],
+                                         "sources": [{"title": "t", "url": "https://news.test/round"}]}],
+           "investors": [{"name": "UVC Partners", "sources": [{"url": "https://uvc.test"}]},
+                         {"name": "Tracxn Only Fund", "sources": [{"title": "Tracxn", "url": ""}]}]}
+
+
+def _team_client(monkeypatch, run, enrichments, saved):
+    from api import main
+    monkeypatch.setattr(main, "_run_for", lambda run_id, user: run)
+    monkeypatch.setattr(main.store, "latest_enrichment",
+                        lambda company, kind, run_id=None: enrichments.get(kind))
+    monkeypatch.setattr(main.store, "save_enrichment",
+                        lambda company, kind, payload, **kw: saved.append(kind) or enrichments.__setitem__(kind, payload))
+    client = TestClient(main.app)
+    client.get("/api/auth/login", follow_redirects=False)
+    return main, client, {"X-CSRF-Token": client.cookies.get("sea_csrf")}
+
+
+def test_a_run_without_investors_shows_the_funding_lookups_with_their_sources(monkeypatch):
+    """Radical Dot's run found no investors; its funding lookup named the lead and the angels."""
+    run = {"company": "Noinv GmbH", "deep_profile": {"founders": [ADA], "commercial": {"investors": []}}}
+    main, client, csrf = _team_client(monkeypatch, run, {"funding": FUNDING}, [])
+    out = client.post("/api/runs/7501/lookup/team", headers=csrf).json()
+    assert [(i["name"], i["source_url"]) for i in out["investors"]] == [
+        ("UVC Partners", "https://news.test/round"), ("Jane Angel", "https://news.test/round"),
+        ("Tracxn Only Fund", "")]
+    assert out["investors"][2]["source"] == "Tracxn"
+    assert [f["name"] for f in out["founders"]] == ["Ada Lovelace"]
+
+
+def test_with_no_funding_lookup_stored_it_runs_once_in_the_background_and_is_stored(monkeypatch, poll):
+    run = {"company": "Noinv2 GmbH", "profile": {"website": "https://noinv.test"},
+           "deep_profile": {"founders": [ADA], "commercial": {"investors": []}}}
+    enrichments, saved, searched = {}, [], []
+    main, client, csrf = _team_client(monkeypatch, run, enrichments, saved)
+    monkeypatch.setattr(main, "tracxn_client_for", lambda user, llm=None: None)
+    monkeypatch.setattr("core.traction_lookup.funding_details",
+                        lambda company, **kw: searched.append(company) or dict(FUNDING))
+    first = client.post("/api/runs/7502/lookup/team", headers=csrf).json()
+    assert first == {"pending": True}
+    out = poll(client, "/api/runs/7502/lookup/team", csrf).json()
+    assert [i["name"] for i in out["investors"]][:2] == ["UVC Partners", "Jane Angel"]
+    assert searched == ["Noinv2 GmbH"] and saved == ["funding"]       # Traction reads the same lookup
+    client.post("/api/runs/7502/lookup/team", headers=csrf)
+    assert searched == ["Noinv2 GmbH"]
+
+
+def test_a_funding_lookup_that_finds_nothing_is_not_repeated_on_every_open(monkeypatch, poll):
+    from api.auth import sessions
+    run = {"company": "Noinv3 GmbH", "deep_profile": {"founders": [ADA], "commercial": {"investors": []}}}
+    searched = []
+    main, client, csrf = _team_client(monkeypatch, run, {}, [])
+    sessions().delete("team-funding-tried:noinv3 gmbh")
+    monkeypatch.setattr(main, "tracxn_client_for", lambda user, llm=None: None)
+    monkeypatch.setattr("core.traction_lookup.funding_details",
+                        lambda company, **kw: searched.append(company) or {"provider": "none", "rounds": [], "investors": []})
+    poll(client, "/api/runs/7503/lookup/team", csrf)
+    out = client.post("/api/runs/7503/lookup/team", headers=csrf).json()
+    assert searched == ["Noinv3 GmbH"] and out["investors"] == [] and [f["name"] for f in out["founders"]] == ["Ada Lovelace"]

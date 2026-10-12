@@ -26,3 +26,22 @@ os.environ["SEARCH_BACKEND"] = "ddg"
 # S3 is found through boto3's default credential chain, so any AWS credentials on the machine
 # would have every saved run in the suite uploaded to the real bucket. Tests of S3 fake it.
 os.environ["S3_SYNC"] = "0"
+
+
+import time as _time
+
+import pytest as _pytest
+
+
+@_pytest.fixture
+def poll():
+    """POST a profile lookup until it stops answering {"pending": true}, as the page does."""
+    def run(client, url, headers, timeout=5.0):
+        deadline = _time.time() + timeout
+        while True:
+            response = client.post(url, headers=headers)
+            if response.status_code != 200 or not response.json().get("pending"):
+                return response
+            assert _time.time() < deadline, f"{url} never finished"
+            _time.sleep(0.02)
+    return run

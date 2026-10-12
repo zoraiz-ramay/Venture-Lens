@@ -123,3 +123,51 @@ def get_job(job_id: str, user: Principal = Depends(current_user)):
         record.update(status="error", error="Research was interrupted. Start it again.")
         sessions().put(_key(user.oid, job_id), record, TTL)
     return record
+
+
+# ----------------------------------------------------------------------------- profile lookups
+# The profile's lookups (market signals, funding, headcount, team, business flow) each wait on the
+# model's own web search, and one of those took 34-56s measured: market signals ran its four domains
+# in 61s on Radical Dot with nothing else running. The profile opens several at once, so a request
+# could outlast the browser's two minutes or a proxy's idle timeout, and the section showed an error
+# instead of what the search found. A lookup now runs here and the page polls for it: every
+# request returns in milliseconds, and the work finishes whether or not anyone is still waiting.
+_lookups = ThreadPoolExecutor(max_workers=16, thread_name_prefix="lookup")
+LOOKUP_TTL = 900      # also how long a lookup may run before a poll starts it again
+
+
+def in_background(key: str, compute, ready=None) -> dict:
+    """``compute()``'s result once it is ready, ``{"pending": True}`` until then.
+
+    The first call starts it; later calls with the same key poll it. Redis holds the state, so a
+    poll landing on the other gunicorn worker sees the same lookup instead of starting a second.
+    ``ready()``, if given, is an answer already on hand (a stored lookup): served when no lookup is
+    in flight for the key, so the poll that collects a finished lookup gets that lookup's answer."""
+    store_key = f"lookup:{key}"
+    with locked(store_key):
+        record = sessions().get(store_key)
+        if record is None and ready is not None:
+            on_hand = ready()
+            if on_hand is not None:
+                return on_hand
+        if record and record.get("status") == "done":
+            sessions().delete(store_key)
+            return record["result"]
+        if record and record.get("status") == "error":
+            sessions().delete(store_key)
+            raise HTTPException(502, record["error"])
+        if record and time.time() - record.get("started", 0) < LOOKUP_TTL:
+            return {"pending": True}
+        sessions().put(store_key, {"status": "running", "started": time.time()}, LOOKUP_TTL)
+
+    def run():
+        try:
+            result = json.loads(json.dumps(compute(), default=str))
+            sessions().put(store_key, {"status": "done", "result": result}, LOOKUP_TTL)
+        except Exception as exc:
+            # Do not expose vendor responses or credentials in lookup errors.
+            detail = exc.detail if isinstance(exc, HTTPException) else "The lookup failed. Please try again."
+            sessions().put(store_key, {"status": "error", "error": str(detail)}, LOOKUP_TTL)
+
+    _lookups.submit(contextvars.copy_context().run, run)
+    return {"pending": True}

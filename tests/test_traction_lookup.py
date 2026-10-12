@@ -114,7 +114,7 @@ def temp_db(monkeypatch, tmp_path):
     return store
 
 
-def test_the_endpoint_uses_the_reviewers_tracxn_and_names_only_known_lookups(monkeypatch, temp_db):
+def test_the_endpoint_uses_the_reviewers_tracxn_and_names_only_known_lookups(monkeypatch, temp_db, poll):
     from api import main, store
     run_id = store.save_run({"company": "Lookup Test GmbH", "found": True, "profile": {"website": "https://lookup.test"}})
     seen = {}
@@ -123,13 +123,13 @@ def test_the_endpoint_uses_the_reviewers_tracxn_and_names_only_known_lookups(mon
     client = TestClient(main.app)
     client.get("/api/auth/login", follow_redirects=False)
     headers = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
-    assert client.post(f"/api/runs/{run_id}/lookup/headcount", headers=headers).json() == {"provider": "tracxn"}
+    assert poll(client, f"/api/runs/{run_id}/lookup/headcount", headers).json() == {"provider": "tracxn"}
     assert seen == {"spec": "headcount", "company": "Lookup Test GmbH", "website": "https://lookup.test",
                     "llm": seen["llm"], "tracxn": "tracxn-client", "refresh": False}
     assert client.post(f"/api/runs/{run_id}/lookup/customers", headers=headers).status_code == 422
 
 
-def test_a_fetched_lookup_is_stored_and_served_from_the_database_until_refresh(monkeypatch, temp_db):
+def test_a_fetched_lookup_is_stored_and_served_from_the_database_until_refresh(monkeypatch, temp_db, poll):
     from api import main, store
     run_id = store.save_run({"company": "Stored Lookup GmbH", "found": True, "profile": {}})
     calls = []
@@ -142,11 +142,11 @@ def test_a_fetched_lookup_is_stored_and_served_from_the_database_until_refresh(m
     client = TestClient(main.app)
     client.get("/api/auth/login", follow_redirects=False)
     headers = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
-    first = client.post(f"/api/runs/{run_id}/lookup/funding", headers=headers).json()
+    first = poll(client, f"/api/runs/{run_id}/lookup/funding", headers).json()
     second = client.post(f"/api/runs/{run_id}/lookup/funding", headers=headers).json()
     assert calls == [False] and "from_store" not in first
     assert second["from_store"] is True and second["rounds"][0]["amount"] == "€2M"     # served, not searched
-    client.post(f"/api/runs/{run_id}/lookup/funding?refresh=true", headers=headers)
+    poll(client, f"/api/runs/{run_id}/lookup/funding?refresh=true", headers)
     assert calls == [False, True]                                                     # Refresh searches again
     with store._conn() as con:
         assert con.execute("SELECT count(*) FROM enrichments WHERE kind='funding'").fetchone()[0] == 2   # history kept

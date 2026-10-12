@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { IxButton, IxMessageBar } from "@siemens/ix-react";
 import { useResearch } from "../../research.jsx";
@@ -41,7 +41,12 @@ export default function SolvePage() {
   const [comparing, setComparing] = useState(false);
   const [notice, setNotice] = useState("");
   const [filter, setFilter] = useState(NO_FILTER);
-  useEffect(() => { setComparing(false); setNotice(""); setFilter(NO_FILTER); }, [s.id]);
+  // Reset for a different search during render, not in an effect: an effect runs after the screen
+  // has updated, so a band picked in that gap (the moment a search finishes) was silently undone.
+  const [shownId, setShownId] = useState(s.id);
+  if (shownId !== s.id) {
+    setShownId(s.id); setComparing(false); setNotice(""); setFilter(NO_FILTER);
+  }
 
   const all = useMemo(() => [...(view.applicants || []), ...(view.market || [])], [view.applicants, view.market]);
   // A shortlisted startup the current choices hide is still on the shortlist, so every candidate

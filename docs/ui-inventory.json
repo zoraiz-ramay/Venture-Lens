@@ -1837,7 +1837,7 @@
     },
     {
       "path": "ui/src/pages/solve/SolvePage.jsx",
-      "lines": 137,
+      "lines": 142,
       "exports": [
         "SolvePage"
       ],
@@ -1888,6 +1888,6 @@
     "api_methods": 40,
     "design_tokens": 70,
     "jsx_files": 109,
-    "jsx_lines": 11412
+    "jsx_lines": 11417
   }
 }

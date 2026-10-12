@@ -18,7 +18,7 @@ import time
 # Ensure the project root is importable when launched as `uvicorn api.main:app`.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -41,7 +41,6 @@ from api.auth import router as auth_router
 from api.security import SecurityMiddleware
 from api.telemetry import setup_telemetry
 from api import flight
-from api.routes_evidence import router as evidence_router
 
 log = logging.getLogger(__name__)
 
@@ -153,7 +152,6 @@ _log_admin_count()
 # Registered before the SPA catch-all at the bottom of this file, which would otherwise
 # swallow /api/auth/* and serve index.html instead.
 app.include_router(auth_router)
-app.include_router(evidence_router)
 from api.tracxn import router as tracxn_router, client_for as tracxn_client_for
 app.include_router(tracxn_router)
 from api.jobs import router as jobs_router
@@ -531,7 +529,6 @@ def evaluate_stream(body: EvaluateBody, user: Principal = Depends(current_user))
     import contextvars
     import json
     import queue
-    import threading
 
     name = body.name.strip()
     principal = user.as_reviewer()
@@ -618,11 +615,6 @@ def applications_catalog() -> dict:
     return catalogs.applications_catalog(_LOCAL_XLSX)
 
 
-@app.post("/api/solve")
-def solve(body: SolveBody, user: Principal = Depends(current_user)) -> dict:
-    return run_solve(body, user)
-
-
 def run_solve(body: SolveBody, user: Principal, on_partial=None) -> dict:
     """Find startups for a problem. ``on_partial`` is the jobs worker's hook (api/jobs.py): the
     interpretation and the applicants reach the page while the market is still being searched.
@@ -630,8 +622,6 @@ def run_solve(body: SolveBody, user: Principal, on_partial=None) -> dict:
     from api.routes_solve import attach_runs
     import hashlib
     import json
-    import time
-    from api.auth import sessions
 
     problem = body.problem.strip()
     if len(problem) < 3:
@@ -745,12 +735,6 @@ def admin_revoke(upn: str, user: Principal = Depends(require_admin)) -> dict:
         raise HTTPException(status_code=404, detail=f"{target} is not an administrator.")
     log.info("[admin] %s revoked admin access (by %s)", target, user.upn)
     return {"upn": target, "revoked": True}
-
-
-@app.get("/api/companies")
-def companies() -> dict:
-    """Canonical company records (normalized tables) with people/programs/customers."""
-    return {"companies": store.list_companies()}
 
 
 @app.get("/api/runs/{run_id}")
@@ -1160,49 +1144,6 @@ def ask(body: AskBody, user: Principal = Depends(current_user)) -> dict:
     except Exception:                                # noqa: BLE001 — losing history must not lose the answer
         log.warning("[ask] could not store the conversation turn", exc_info=True)
     return out
-
-
-# ── PDF management (S3-backed) ────────────────────────────────────────────────
-
-@app.get("/api/pdfs")
-def list_pdfs() -> dict:
-    """List all pitch PDFs stored in S3."""
-    return {"pdfs": _s3.list_pdfs()}
-
-
-@app.post("/api/pdfs/upload")
-async def upload_pdf(file: UploadFile = File(...)) -> dict:
-    """Upload a pitch PDF to S3."""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
-    import tempfile, shutil, pathlib
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = tmp.name
-    try:
-        key = _s3.upload_pdf(tmp_path, file.filename)
-        if not key:
-            raise HTTPException(status_code=500, detail="S3 upload failed — check credentials.")
-    finally:
-        pathlib.Path(tmp_path).unlink(missing_ok=True)
-    return {"key": key, "filename": file.filename}
-
-
-@app.delete("/api/pdfs/{filename}")
-def delete_pdf(filename: str) -> dict:
-    """Delete a pitch PDF from S3."""
-    if not _s3.delete_pdf(filename):
-        raise HTTPException(status_code=404, detail=f"PDF '{filename}' not found in S3.")
-    return {"deleted": filename}
-
-
-@app.get("/api/pdfs/{filename}/url")
-def pdf_url(filename: str) -> dict:
-    """Get a pre-signed download URL for a PDF stored in S3."""
-    url = _s3.presigned_url(filename)
-    if not url:
-        raise HTTPException(status_code=404, detail=f"PDF '{filename}' not found or S3 unavailable.")
-    return {"url": url, "filename": filename}
 
 
 # ── Static file serving (single-container production mode) ───────────────────

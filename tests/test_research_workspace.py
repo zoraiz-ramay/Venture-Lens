@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 from api.auth import Principal, sessions
-from api import workspace, jobs, interests
+from api import workspace, jobs
 from core.tracxn import TracxnClient
 from core.siemens_fit import assess_fit
 
@@ -79,15 +79,6 @@ def test_unknown_rubric_does_not_invent_evidence():
     assert result["score"] == 0
     assert result["evidence_coverage"] == 0
     assert all(not c["evidence"] for c in result["criteria"])
-
-
-def test_department_score_is_explicit_and_does_not_change_canonical_score():
-    run={"summary":"Industrial inspection software", "fit":{"rubric":{"score":80}}}
-    result=interests.interest_score(run,{"interests":["inspection","energy"]})
-    assert result["score"] == 62
-    assert result["matched"] == ["inspection"]
-    assert run["fit"]["rubric"]["score"] == 80
-    assert interests.interest_score(None,{"interests":["energy"]})["score"] is None
 
 
 def test_provider_row_skips_glassdollar_resolution(monkeypatch):

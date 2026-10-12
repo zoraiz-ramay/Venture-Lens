@@ -1,20 +1,6 @@
-"""Benchmark reference schemas for startup evaluation.
+"""Offline measurement of the decision layer against human labels.
 
-Exposes the Tracxn benchmark (https://tracxn.com): the canonical set of
-dimensions a credible startup profile should cover.
+`replay.py` re-scores stored runs with the current engine (no network, no model);
+`routing_eval.py` compares the result with `labels.json`. Run with
+`py -3 -m benchmarks.routing_eval` — see .claude/rules/benchmarks.md.
 """
-from .tracxn import (
-    BENCHMARK_NAME,
-    BENCHMARK_SOURCE,
-    DIMENSIONS,
-    benchmark_coverage,
-    map_field_to_dimension,
-)
-
-__all__ = [
-    "BENCHMARK_NAME",
-    "BENCHMARK_SOURCE",
-    "DIMENSIONS",
-    "benchmark_coverage",
-    "map_field_to_dimension",
-]

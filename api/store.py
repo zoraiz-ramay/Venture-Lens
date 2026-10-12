@@ -5,7 +5,7 @@ DB lives at DATA_DIR/runs.db (override with RUNS_DB).
 
 On first connection the DB is restored from S3 if a remote copy exists and no
 local file is present; a restore that fails for any reason but "no copy yet" turns uploads off
-for the container, so an empty database never replaces the stored one. After every write (save_run, delete_run, add_override)
+for the container, so an empty database never replaces the stored one. After every write (save_run, delete_run, ...)
 the DB is uploaded back to S3 (debounced, see _upload_to_s3) so it survives container
 restarts and redeployments.
 """
@@ -1029,41 +1029,6 @@ def backfill_assessment_records() -> int:
     return n
 
 
-def list_companies() -> list[dict]:
-    """Canonical company records with their people/programs/customers rolled up."""
-    with _conn() as con:
-        comps = con.execute(
-            "SELECT id, name, website, hq, founded_year, parent_group, employees, funding, "
-            "stage, latest_run_id, updated_at FROM companies ORDER BY updated_at DESC").fetchall()
-        out = []
-        for c in comps:
-            cid = c[0]
-            people = con.execute(
-                "SELECT kind, name, role, background, linkedin FROM people WHERE company_id=?",
-                (cid,)).fetchall()
-            progs = con.execute(
-                "SELECT name, type FROM programs WHERE company_id=?", (cid,)).fetchall()
-            custs = con.execute(
-                "SELECT name, status FROM reference_customers WHERE company_id=?", (cid,)).fetchall()
-            row = con.execute("SELECT result_json FROM runs WHERE id=?", (c[9],)).fetchone()
-            latest = json.loads(row[0]) if row else {}
-            latest_score = latest.get("score") or {}
-            out.append({
-                "id": cid, "name": c[1], "website": c[2], "hq": c[3], "founded_year": c[4],
-                "parent_group": c[5], "employees": c[6], "funding": c[7], "stage": c[8],
-                "latest_run_id": c[9], "updated_at": c[10],
-                "final_score": latest_score.get("final_score"),
-                "siemens_fit": latest_score.get("dimensions", {}).get("siemens_fit"),
-                "department_assessments": latest.get("department_assessments", {}),
-                "founders": [{"name": p[1], "role": p[2], "background": p[3], "linkedin": p[4]}
-                             for p in people if p[0] == "founder"],
-                "advisors": [{"name": p[1], "role": p[2]} for p in people if p[0] == "advisor"],
-                "programs": [{"name": p[0], "type": p[1]} for p in progs],
-                "reference_customers": [{"name": x[0], "status": x[1]} for x in custs],
-            })
-    return out
-
-
 def list_runs(limit: int = 100) -> list[dict]:
     """Summary rows enriched with explore-grid columns parsed from the stored result JSON
     (fine at this scale; switch to real columns if runs grow past a few thousand)."""
@@ -1547,37 +1512,8 @@ def delete_run(run_id: int) -> bool:
 
 
 # ----------------------------------------------------------------- reviewer overrides
-def add_override(run_id: int, new_pillar: str, reason: str,
-                 evidence_note: str = "", *, reviewer: dict | None = None) -> dict | None:
-    """Record a reviewer override of the routing decision. The automated result stays
-    untouched in result_json (auditability); the runs row reflects the effective pillar.
-
-    `reviewer` is the authenticated principal (see api/auth.py), not a name the caller
-    chose. It is keyword-only and optional so the scripts and tests that drive the engine
-    without a web request keep working; those rows are then indistinguishable from the
-    pre-SSO ones, which is correct — nobody verified them either.
-    """
-    r = reviewer or {}
-    with _conn() as con:
-        row = con.execute("SELECT pillar FROM runs WHERE id=?", (run_id,)).fetchone()
-        if row is None:
-            return None
-        prev = row[0]
-        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        con.execute(
-            "INSERT INTO overrides (run_id, prev_pillar, new_pillar, reason, evidence_note, "
-            "reviewer, reviewer_oid, reviewer_upn, reviewer_tid, reviewer_source, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (run_id, prev, new_pillar, reason, evidence_note, r.get("name", ""),
-             r.get("oid"), r.get("upn"), r.get("tid"), r.get("source"), ts))
-        con.execute("UPDATE runs SET pillar=? WHERE id=?", (new_pillar, run_id))
-    _upload_to_s3()
-    return {"run_id": run_id, "prev_pillar": prev, "new_pillar": new_pillar,
-            "reason": reason, "evidence_note": evidence_note,
-            "reviewer": r.get("name", ""), "verified": r.get("source") == "entra",
-            "created_at": ts}
-
-
+# Overrides were retired (POST /api/runs/{id}/override answers 410), so nothing writes this table
+# any more. The rows already written stay readable: they are the audit trail of past decisions.
 def list_overrides(run_id: int) -> list[dict]:
     with _conn() as con:
         rows = con.execute(

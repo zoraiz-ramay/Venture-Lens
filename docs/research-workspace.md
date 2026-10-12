@@ -22,7 +22,7 @@ Empower, Connect and Collaborate use Siemens iX tabs and contain only “Under d
 
 ## Department interests
 
-`department_profiles` and `department_shortlists` are database-backed. Initial DI, SI, and Mobility interests are explicitly labelled demo placeholders. They do not alter official programme criteria or pretend to represent approved business-unit priorities.
+`department_profiles` is database-backed. Initial DI, SI, and Mobility interests are explicitly labelled demo placeholders. They do not alter official programme criteria or pretend to represent approved business-unit priorities.
 
 The standalone Department interests page and its navigation entry have been removed. Department profiles remain backend data for Scoring & Fit and Database. Administrators can configure the profiles through `PUT /api/departments/{id}`.
 

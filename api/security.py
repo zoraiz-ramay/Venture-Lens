@@ -6,10 +6,10 @@ Defense-in-depth for a small internal tool:
   session cookie, resolved here and handed to routes via `Depends(current_user)`.
 - Double-submit CSRF check on every state-changing request.
 - Sliding-window per-IP rate limit (in-memory; suitable for single-process deploys).
-  Evaluate/solve are expensive (LLM + web calls), so they get a tighter budget.
+  Evaluate and ask are expensive (LLM + web calls), so they get a tighter budget.
 
 The guard lives in middleware rather than as a dependency on each route because there are
-nineteen routes and the failure mode of the alternative is silent: forget the decorator on
+dozens of routes and the failure mode of the alternative is silent: forget the decorator on
 a new endpoint and it ships open. Here, a new route is protected by default and has to be
 named in PUBLIC_PATHS to opt out — the mistake is visible in review instead of invisible.
 
@@ -46,7 +46,7 @@ RATE_EXPENSIVE = (int(os.getenv("RATE_LIMIT_EXPENSIVE", "10")), 60.0)
 # (Honouring X-Forwarded-For would give each user their own bucket, but that header is
 # caller-supplied and trusting it needs the proxy hop count pinned down first.)
 RATE_AUTH = (int(os.getenv("RATE_LIMIT_AUTH", "300")), 60.0)
-_EXPENSIVE_PATHS = ("/api/evaluate", "/api/solve", "/api/ask")
+_EXPENSIVE_PATHS = ("/api/evaluate", "/api/ask")
 _AUTH_PATHS = ("/api/auth/login", "/api/auth/callback", "/api/auth/me", "/api/auth/logout")
 
 # Reachable without a session. Everything else under /api requires one.

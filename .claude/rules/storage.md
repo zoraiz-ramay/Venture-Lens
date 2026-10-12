@@ -2,7 +2,6 @@
 paths:
   - "api/store.py"
   - "api/workspace.py"
-  - "api/routes_evidence.py"
   - "api/interests.py"
   - "core/traction_lookup.py"
   - "core/business_flow.py"

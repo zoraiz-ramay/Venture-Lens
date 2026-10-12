@@ -810,7 +810,7 @@ def _flow_lock(run_id: int) -> threading.Lock:
 
 @app.post("/api/runs/{run_id}/lookup/team")
 def run_team(run_id: int, refresh: bool = False, user: Principal = Depends(current_user)) -> dict:
-    """The founders, programmes and investors on record for this run's company.
+    """The founders, programmes, investors and partners on record for this run's company.
 
     A full evaluation does not search for these again once any run has found them; this is where
     they are searched on request (``refresh``). The result is merged into what the run and earlier
@@ -819,50 +819,77 @@ def run_team(run_id: int, refresh: bool = False, user: Principal = Depends(curre
     lookups it never rewrites the run, so it moves no score until the company is evaluated again.
     Declared before the generic lookup route so "team" is not read as one of its kinds.
 
-    Investors also come from the funding lookup (core/traction_lookup.py). The evaluation looks for
-    them in short search passages and often finds none where the funding lookup, which reads the
-    model's own web search, names the round's lead and every angel: Radical Dot's run had no
-    investors, its funding lookup seven. So a run without investors reads the stored funding lookup,
-    or runs it once in the background and stores it — the Traction section then reads the same one."""
+    The evaluation reads the team off short search passages, which miss what a full page says:
+    Radical Dot's run had two founders without a background, one programme and no investors. So
+    a company's first open searches once more in the background — the model's own web search,
+    every item checked against its page (core/profile.search_team_web) — with investors from the
+    funding lookup (core/traction_lookup.py), and stores the result for every later open."""
     from datetime import datetime, timezone
     from api.jobs import in_background
-    from core.profile import merge_team, refresh_team
+    from core.profile import _program_key, merge_team, refresh_team, search_team_web
     res = _run_for(run_id, user)
     company = str(res.get("company", ""))
     dp = res.get("deep_profile") or {}
+    profile = res.get("profile") or {}
     run_lists = {"founders": dp.get("founders"), "key_team": dp.get("key_team"), "advisors": dp.get("advisors"),
                  "programs": dp.get("programs"), "investors": (dp.get("commercial") or {}).get("investors")}
-    stored = store.latest_enrichment(company, "team")
-    if not refresh:
-        merged = merge_team(run_lists, stored or {})
-        answer = lambda more: {**merge_team(run_lists, stored or {}, more),  # noqa: E731
-                               "retrieved_at": (stored or {}).get("retrieved_at", ""), "from_store": bool(stored)}
-        if merged.get("investors"):
-            return answer({})
+
+    def investors() -> dict:
+        """The funding lookup's investors (stored, or looked up now): it names a round's lead and
+        every angel, where the evaluation's passages found one of Radical Dot's seven."""
         funding = store.latest_enrichment(company, "funding")
         if funding or sessions().get(f"team-funding-tried:{company.casefold()}"):
-            return answer(_funding_investors(funding))
+            return _funding_investors(funding)
+        found = _lookup_now("funding", res, company, user, refresh=False)
+        if not found.get("rounds") and not found.get("investors"):
+            # Searched and found no investors: the next open does not pay for the same search.
+            sessions().put(f"team-funding-tried:{company.casefold()}", {"at": time.time()}, 86400)
+        return _funding_investors(found)
 
-        def compute():
-            found = _lookup_now("funding", res, company, user, refresh=False)
-            if not found.get("rounds") and not found.get("investors"):
-                # Searched and found no investors: the next open does not pay for the same search.
-                sessions().put(f"team-funding-tried:{company.casefold()}", {"at": time.time()}, 86400)
-            return answer(_funding_investors(found))
-        return in_background(f"{user.oid}:{run_id}:team-investors", compute)
-
-    def compute_refresh():
-        profile = res.get("profile") or {}
-        row = pd.Series({"company_name": company, "website": profile.get("website", ""),
-                         "domain": profile.get("domain", ""), "short_description": res.get("summary", "")})
+    def searched(search) -> dict:
+        import concurrent.futures
+        import contextvars
+        # The team search and the funding lookup each take about a minute; side by side, not in turn.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            found = ex.submit(contextvars.copy_context().run, search)
+            backers = ex.submit(contextvars.copy_context().run, investors)
+            found, backers = found.result(), backers.result()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        found = refresh_team(company, row, core.LLMClient())
-        # The refresh's own finds go last: merge_team marks what the last record adds as new.
-        out = {**merge_team(run_lists, stored or {}, _funding_investors(store.latest_enrichment(company, "funding")), found),
-               "retrieved_at": now}
+        stored = store.latest_enrichment(company, "team") or {}
+        # What this search found goes last: merge_team marks what the last record adds as new.
+        out = {**merge_team(run_lists, stored, backers, found), "retrieved_at": now}
+        # A partner already listed as a programme is shown once, however it is spelled: "TUM Venture
+        # Labs ChemSPACE" the partner is "TUM Venture Labs" the programme.
+        # Containment counts only for names of 8+ characters: a programme called "TUM" must not hide
+        # the TUM Catalysis Research Center.
+        listed = [k for k in (_program_key(p.get("name", "")) for p in out.get("programs") or []) if k]
+
+        def same(a, b):
+            short, long = sorted((a, b), key=len)
+            return a == b or (len(short) >= 8 and short in long)
+        out["partners"] = [x for x in out.get("partners") or []
+                           if not any(same(k, _program_key(x.get("name", ""))) for k in listed)]
         store.save_enrichment(company, "team", out, run_id=None, user_oid=user.oid)
         return {**out, "from_store": False}
-    return in_background(f"{user.oid}:{run_id}:team-refresh", compute_refresh)
+
+    if refresh:
+        row = pd.Series({"company_name": company, "website": profile.get("website", ""),
+                         "domain": profile.get("domain", ""), "short_description": res.get("summary", "")})
+        return in_background(f"{user.oid}:{run_id}:team-refresh",
+                             lambda: searched(lambda: refresh_team(company, row, core.LLMClient())))
+
+    def on_hand():
+        # Searched once per company, on its first open: the evaluation's own lists cannot say what
+        # they miss — Radical Dot's second run had two programmes and a filler sentence for a
+        # background, and still lacked the CEO, three programmes and six investors.
+        stored = store.latest_enrichment(company, "team")
+        if not stored:
+            return None
+        return {**merge_team(run_lists, stored, _funding_investors(store.latest_enrichment(company, "funding"))),
+                "retrieved_at": stored.get("retrieved_at", ""), "from_store": True}
+    return in_background(f"{user.oid}:{run_id}:team",
+                         lambda: searched(lambda: search_team_web(company, str(profile.get("website") or ""), core.LLMClient())),
+                         ready=on_hand)
 
 
 def _funding_investors(funding: dict | None) -> dict:

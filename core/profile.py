@@ -657,7 +657,8 @@ def _deepen_founders(prof: dict, company: str, llm: LLMClient) -> None:
     """Second research pass: for founders whose background is still empty, run
     person-targeted searches and one LLM call to fill role/background/LinkedIn."""
     thin = [f for f in prof.get("founders", [])
-            if isinstance(f, dict) and f.get("name") and not str(f.get("background", "")).strip()][:3]
+            if isinstance(f, dict) and f.get("name")
+            and (not str(f.get("background", "")).strip() or says_nothing(f.get("background"), f.get("name", "")))][:3]
     if not thin or not llm.available:
         return
     queries = {f"f{i}": f"\"{f['name']}\" {company} founder background LinkedIn"
@@ -678,8 +679,11 @@ def _deepen_founders(prof: dict, company: str, llm: LLMClient) -> None:
     for f in prof["founders"]:
         u = updates.get(str(f.get("name", "")).strip().lower())
         if u:
+            if says_nothing(f.get("background"), f.get("name", "")):
+                f["background"] = ""
             for k in ("role", "background", "linkedin", "source_url"):
-                if not str(f.get(k, "")).strip() and str(u.get(k, "")).strip():
+                if not str(f.get(k, "")).strip() and str(u.get(k, "")).strip() \
+                        and not (k == "background" and says_nothing(u[k], f.get("name", ""))):
                     f[k] = str(u[k]).strip()
 
 
@@ -1687,7 +1691,7 @@ def _siemens_in(passage: str, original: str, company: str, own_site: bool, url: 
 
 # ---- the team record: founders and external validation, searched once and reused ----------------
 
-_TEAM_LISTS = ("founders", "key_team", "advisors", "programs", "investors")
+_TEAM_LISTS = ("founders", "key_team", "advisors", "programs", "investors", "partners")
 
 
 def _recover_investors(prof: dict, company: str, llm: LLMClient) -> None:
@@ -1728,9 +1732,11 @@ def refresh_team(company: str, row: pd.Series, llm: LLMClient) -> dict:
     of searching for them again; this is the one place they are searched on request. Lists only —
     whoever stores it merges it with what was already known (``merge_team``)."""
     prof: dict = {"founders": [], "programs": [], "investors": []}
+    web_team: dict = {}
     jobs = [functools.partial(_recover_founders, prof, company, llm),
             functools.partial(_recheck_programs, prof, row, company, {}, llm),
-            functools.partial(_recover_investors, prof, company, llm)]
+            functools.partial(_recover_investors, prof, company, llm),
+            lambda: web_team.update(search_team_web(company, str(row.get("website") or ""), llm))]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as ex:
         for fut in [ex.submit(contextvars.copy_context().run, fn) for fn in jobs]:
             try:
@@ -1741,7 +1747,229 @@ def refresh_team(company: str, row: pd.Series, llm: LLMClient) -> dict:
         _deepen_founders(prof, company, llm)
     except Exception:
         pass
-    return {k: prof.get(k) or [] for k in ("founders", "programs", "investors")}
+    found = {k: prof.get(k) or [] for k in ("founders", "programs", "investors")}
+    return merge_team(found, web_team)
+
+
+# ------------------------------------------------------------- team & ecosystem from web search
+# The evaluation reads founders and programmes off search passages: two 200-character windows per
+# result. A founder's education and earlier employers sit elsewhere on the page, and a cohort page
+# carries the programme in its heading and the company far down its list, so _program_grounded's
+# "both in one result" never saw them together. Radical Dot showed two founders with no
+# background and one programme, while the web names the CEO's Cambridge PhD and Systemiq years and
+# four programmes (XPRENEURS, Circular Valley, BMW Foundation RESPOND, TUM Venture Labs ChemSPACE).
+#
+# So the team is also looked up the way the funding lookup works: the model's own web search, then
+# an extraction naming the page behind each item. Every item is then checked against that page,
+# fetched in full: a founder's page must name the person and the company and carry the background
+# (_supported); a programme or partner must stand near the company on a page, or be the cohort page
+# that lists it. A page
+# that cannot be fetched supports nothing. LinkedIn URLs are never taken from here: the search
+# itself reports it cannot verify a profile's address, and a wrong one sends a reviewer elsewhere.
+# Two searches, run side by side: one asked for founders, programmes and partners at once ran past
+# the 90s web-search timeout on one of two tries and answered nothing; each half answers in ~60s.
+_TEAM_WEB_PROMPTS = (
+    "Search the web for {company}{site}. List every founder and co-founder with their role, education "
+    "and previous employers. After each fact put the URL of the page it comes from. Say only what the "
+    "pages state.",
+    "Search the web for {company}{site}. List every accelerator, incubator, startup programme, cohort, "
+    "award, prize or competition it is part of or won, and its research, university or corporate "
+    "partners (not investors). After each fact put the URL of the page it comes from. Say only what "
+    "the pages state.")
+_TEAM_WEB_JSON = ('{"founders":[{"name":"","role":"","background":"","source_urls":[]}],'
+                  '"programs":[{"name":"","type":"accelerator|incubator|program|award|competition","source_urls":[]}],'
+                  '"partners":[{"name":"","type":"university|research|corporate","source_urls":[]}]}')
+_NEAR = 1500            # characters between a programme or partner and the company on one page
+
+
+def search_team_web(company: str, website: str, llm: LLMClient) -> dict:
+    """{founders, programs, partners} found by the model's web search, each held by its own page."""
+    if not (llm and llm.available and company):
+        return {}
+    site = f" ({website})" if website else ""
+
+    def ask(prompt):
+        # One retry: a web search that timed out or failed answers nothing at all.
+        for _ in range(2):
+            answer = llm.web_answer(prompt.format(company=company, site=site), max_tokens=2000)
+            if answer and str(answer.get("text") or "").strip():
+                return str(answer["text"])
+        return ""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_TEAM_WEB_PROMPTS)) as ex:
+        # The caller's context, copied per search: it carries the usage log and the cache bypass.
+        futures = [ex.submit(contextvars.copy_context().run, ask, pr) for pr in _TEAM_WEB_PROMPTS]
+        notes = "\n\n".join(t for t in (f.result() for f in futures) if t)
+    if not notes:
+        return {}
+    data = LLMClient.parse_json(llm.complete(
+        f"Research notes about the startup '{company}':\n\n{notes}\n\n"
+        "Extract the founders, the programmes and the partners these notes state, each with every URL "
+        "the notes give for it (a founder's background often comes from a different page than the role). "
+        "Background: education and previous employers in one short line, only as the notes state them. "
+        "Programme names as the programme calls itself (e.g. \"XPRENEURS\", not \"XPRENEURS Batch 15\"). "
+        "One partner per entry, named as the page names it. Investors are not partners. Leave out "
+        "anything without a URL.\n"
+        "Return ONLY JSON: " + _TEAM_WEB_JSON,
+        system="You extract structured facts strictly from supplied evidence. JSON only.",
+        max_tokens=1500, reasoning="none"))
+    if not isinstance(data, dict):
+        return {}
+    urls = {u for k in ("founders", "programs", "partners") for i in data.get(k) or [] for u in _urls_of(i)}
+    pages = _read_pages(urls)
+    own = _host(website)
+    name = company.casefold()
+    out: dict = {"founders": [], "programs": [], "partners": []}
+    for f in data.get("founders") or []:
+        person = str(f.get("name") or "").strip() if isinstance(f, dict) else ""
+        # A founder needs a page naming them at this company. Their background may come from another
+        # page that names them in full — an alumni story or an employer's profile seldom names the
+        # startup (Kremer's HEC Paris profile does not) — and that page is linked as its source.
+        named = [(u, pages[u].casefold()) for u in _urls_of(f) if pages.get(u)]
+        named = [(u, page) for u, page in named if person and _names_in(person, page)]
+        held = [(u, page) for u, page in named if name in page]
+        if not held:
+            continue
+        entry = {"name": person, "role": "", "background": "", "linkedin": "", "source_url": held[0][0]}
+        role = str(f.get("role") or "").strip()
+        if role and any(all(w in page for w in re.findall(r"[a-z]{3,}", role.casefold())) for _, page in held):
+            entry["role"] = role
+        background = str(f.get("background") or "").strip()
+        backed = next((u for u, page in held + named if background and _carried(background, page)), "")
+        if backed:
+            entry["background"], entry["background_source"] = background, backed
+        out["founders"].append(entry)
+    for key in ("programs", "partners"):
+        for item in data.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("name") or "").strip()
+            url = next((u for u in _urls_of(item) if pages.get(u) and label and label.casefold() != name
+                        and _tied(label, name, pages[u].casefold(), u)), "")
+            if not url:
+                continue
+            entry = {"name": label, "type": str(item.get("type") or ("program" if key == "programs" else "partner")).strip(),
+                     "source_url": url}
+            if key == "programs":
+                # The company's own pages claim a membership; anyone else's corroborate it (score.py
+                # discounts the claim).
+                entry["confidence"] = "self_asserted" if own and _host(url) == own else "corroborated"
+                entry["prestige"] = _program_tier_offline(label)
+            if not any(_program_key(e["name"]) == _program_key(label) for e in out[key]):
+                out[key].append(entry)
+    return out
+
+
+def _urls_of(item) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    raw = list(item.get("source_urls") or []) + [item.get("source_url")]
+    return [u for u in dict.fromkeys(_clean_source_url(x) for x in raw if isinstance(x, str)) if u]
+
+
+def _read_pages(urls) -> dict:
+    """{url: visible text} for each page that could be fetched (web._fetch_with_url, SSRF-guarded)."""
+    from . import web
+    urls = [u for u in dict.fromkeys(urls) if str(u).startswith("http")][:12]
+    if not urls:
+        return {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls)) as ex:
+        futures = {u: ex.submit(contextvars.copy_context().run, web._fetch_with_url, u, 6.0) for u in urls}
+        out = {}
+        for u, fut in futures.items():
+            try:
+                out[u] = str(fut.result()[0] or "")
+            except Exception:
+                pass
+    return out
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlparse
+    url = str(url or "")
+    host = urlparse(url if "//" in url else "https://" + url).hostname or ""
+    return host.removeprefix("www.")
+
+
+def _names_in(person: str, page: str) -> bool:
+    """Every part of the person's name (diacritics folded, honorifics dropped) appears on the page."""
+    import unicodedata
+    from .text import person_key
+
+    def fold(text):
+        text = unicodedata.normalize("NFKD", str(text))
+        return "".join(c for c in text if not unicodedata.combining(c)).casefold()
+    words = set(re.findall(r"[a-z0-9]+", fold(page)))
+    return all(part in words for part in person_key(person).split() if len(part) > 1)
+
+
+def _carried(claim: str, page: str) -> bool:
+    """The business flow's bar: half the claim's content words, and every number in it, on the page."""
+    from .business_flow import _supported
+    return _supported(claim, page)
+
+
+def _tied(label: str, company: str, page: str, url: str = "") -> bool:
+    """The page is the programme's own and names the company, or the programme stands within _NEAR
+    characters of the company.
+
+    A cohort page puts the programme in its address and the company down its list: UnternehmerTUM's
+    XPRENEURS Batch 15 page has the name after 1,700 characters of site menu and Radical Dot 1,860
+    characters further on. Being first on a page is not enough — page text cannot tell a heading
+    from an article that opens on "Y Combinator funds many startups" and lists the company later."""
+    if company not in page:
+        return False
+    slug = re.sub(r"[^a-z0-9]", "", label.casefold())
+    if len(slug) >= 5 and slug in re.sub(r"[^a-z0-9]", "", str(url).casefold()):
+        return True
+    pattern = _word_match(label.casefold())
+    spots = [m.start() for m in pattern.finditer(page)]
+    if not spots:
+        return False
+    at = [m.start() for m in re.finditer(re.escape(company), page)]
+    return any(abs(a - b) <= _NEAR for a in spots for b in at)
+
+
+# A background that says only that there is none: the evaluation's extraction wrote "Dr. Andreas
+# Wagner; no prior companies or roles are specified in the results." for Radical Dot's CEO. It is
+# shown as nothing, and a found background replaces it.
+_SAYS_NOTHING = re.compile(r"\b(?:not (?:specified|stated|mentioned|available|provided|given|found|disclosed)|"
+                           r"no (?:prior|previous|further|other|specific) (?:compan|role|information|detail|background)|"
+                           r"unknown|n/a)", re.I)
+
+
+_HONORIFICS = {"dr", "prof", "mr", "mrs", "ms", "sir", "dame", "herr", "frau"}
+
+
+def says_nothing(background, name: str = "") -> bool:
+    """Filler, or nothing but the person's own name ("Dr. Andreas Wagner" was his "background")."""
+    import unicodedata
+
+    def words(text):
+        text = "".join(c for c in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(c))
+        return set(re.findall(r"[a-z0-9]+", text.casefold()))
+    text = str(background or "")
+    if _SAYS_NOTHING.search(text):
+        return True
+    return bool(text.strip()) and not (words(text) - words(name) - _HONORIFICS)
+
+
+def _fill_person(known: dict, found: dict) -> None:
+    """What a later record knows about a person the earlier one listed thinly: a background the
+    earlier one left blank, and a role that only adds to the earlier one ("Co-founder" becomes
+    "Co-founder and CEO", but a different role never replaces one). Each carries its own source."""
+    if says_nothing(known.get("background"), known.get("name", "")):
+        known["background"] = ""
+    if not str(known.get("background") or "").strip() and str(found.get("background") or "").strip() \
+            and not says_nothing(found.get("background"), found.get("name", "")):
+        known["background"] = str(found["background"]).strip()
+        if found.get("background_source"):
+            known["background_source"] = found["background_source"]
+    old_role, new_role = str(known.get("role") or "").strip(), str(found.get("role") or "").strip()
+    if new_role and len(new_role) > len(old_role) and old_role.casefold() in new_role.casefold():
+        known["role"] = new_role
+    for k in ("linkedin", "source_url"):
+        if not str(known.get(k) or "").strip() and str(found.get(k) or "").strip():
+            known[k] = found[k]
 
 
 def merge_team(base: dict, *more: dict) -> dict:
@@ -1754,18 +1982,27 @@ def merge_team(base: dict, *more: dict) -> dict:
     out: dict = {}
     for key in _TEAM_LISTS:
         merged = [dict(i) for i in base.get(key) or [] if isinstance(i, dict)]
+        for person in merged if key in ("founders", "key_team", "advisors") else []:
+            if says_nothing(person.get("background"), person.get("name", "")):
+                person["background"] = ""
         for n, record in enumerate(more):
             for item in (record or {}).get(key) or []:
                 if not isinstance(item, dict) or not str(item.get("name", "")).strip():
                     continue
                 if key in ("founders", "key_team", "advisors"):
-                    known = any(same_person(item, m) for m in merged)
+                    same = next((m for m in merged if same_person(item, m)), None)
+                    known = same is not None
+                    if known:
+                        _fill_person(same, item)
                 elif key == "programs":
                     known = any(_program_key(item.get("name", "")) == _program_key(m.get("name", "")) for m in merged)
                 else:
                     known = any(str(item["name"]).strip().lower() == str(m.get("name", "")).strip().lower() for m in merged)
                 if not known:
-                    merged.append({**item, "new": n == len(more) - 1 and len(more) > 1})
+                    item = {**item, "new": n == len(more) - 1 and len(more) > 1}
+                    if key in ("founders", "key_team", "advisors") and says_nothing(item.get("background"), item.get("name", "")):
+                        item["background"] = ""
+                    merged.append(item)
         out[key] = merged
     return out
 

@@ -37,4 +37,15 @@ describe("TeamSection", () => {
     expect(await screen.findByText(/Grace Hopper/)).toBeInTheDocument();
     expect(screen.getByText("New")).toBeInTheDocument();
   });
+
+  it("shows partners and links a founder's background to the page it was read from", async () => {
+    api.runLookup.mockResolvedValueOnce({
+      founders: [{ ...ADA, background: "PhD, University of Cambridge", background_source: "https://cam.test/ada" }],
+      programs: [], investors: [], retrieved_at: "", from_store: true,
+      partners: [{ name: "TUM Catalysis Research Center", type: "research", source_url: "https://tum.test/crc" }] });
+    render(<TeamSection res={{ ...RUN, run_id: 7503 }} />);
+    expect(await screen.findByRole("link", { name: "TUM Catalysis Research Center" })).toHaveAttribute("href", "https://tum.test/crc");
+    expect(screen.getByText(/PhD, University of Cambridge/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Source" })).toHaveAttribute("href", "https://cam.test/ada");
+  });
 });

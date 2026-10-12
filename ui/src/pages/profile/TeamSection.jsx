@@ -6,8 +6,8 @@ import Section from "./Section.jsx";
 import { dedupePeople, withoutListed } from "./people.js";
 import { useLookup } from "./scoring/TractionLookup.jsx";
 
-/* Team & ecosystem: the founders and the external validation behind them — programmes and
-   investors. They are searched once: a full refresh of the evaluation reuses what any earlier run
+/* Team & ecosystem: the founders and the external validation behind them — programmes,
+   investors and research or corporate partners. They are searched once: a full refresh of the evaluation reuses what any earlier run
    found (core/profile.research_profile(known_team)), and this section's own Refresh is where they
    are searched again (api lookup/team). What it finds is stored and merged in after the run's own
    entries, so the evaluation's citations keep pointing at the same people, and it is carried into
@@ -29,6 +29,7 @@ export default function TeamSection({ res, researching }) {
   const advisors = withoutListed(dedupePeople((lists.advisors || []).filter((a) => a?.name)), founders);
   const programs = (lists.programs || []).filter((x) => x?.name);
   const investors = (lists.investors || []).filter((x) => x?.name);
+  const partners = (lists.partners || []).filter((x) => x?.name);
   const refresh = () => { setRefreshing(true); load(true); };
 
   return (
@@ -45,7 +46,7 @@ export default function TeamSection({ res, researching }) {
       </div>
       {refreshing && <p className="muted" role="status">Searching again for founders, programmes and investors…</p>}
       {state.error && <ErrorBox message={state.error} />}
-      {founders.length === 0 && advisors.length === 0 && programs.length === 0 && investors.length === 0 && (
+      {founders.length === 0 && advisors.length === 0 && programs.length === 0 && investors.length === 0 && partners.length === 0 && (
         <p className="muted" style={{ margin: 0 }}>
           {researching ? "Still researching founders, advisors and programmes…" : "No researched team data."}
         </p>
@@ -54,6 +55,8 @@ export default function TeamSection({ res, researching }) {
         <Spec key={`f${i}`} k="Founder">
           {f.name} — {f.role || "founder"}
           {f.background && <span className="muted"> · {f.background}</span>}{" "}
+          {/* A background read off a page other than the one naming the founder links that page. */}
+          {f.background && f.background_source && f.background_source !== f.source_url && <ExtLink href={f.background_source}>Source</ExtLink>}{" "}
           {f.linkedin && <ExtLink href={f.linkedin}>LinkedIn</ExtLink>} <ConfirmedTag item={f} /><NewTag item={f} />
         </Spec>
       ))}
@@ -80,6 +83,15 @@ export default function TeamSection({ res, researching }) {
           {investors.map((x, i) => (
             <span key={i} className="chip">
               {x.source_url ? <ExtLink href={x.source_url}>{x.name}</ExtLink> : x.name} <ConfirmedTag item={x} /><NewTag item={x} />
+            </span>
+          ))}
+        </Spec>
+      )}
+      {partners.length > 0 && (
+        <Spec k="Partners">
+          {partners.map((x, i) => (
+            <span key={i} className="chip" title={x.type || undefined}>
+              {x.source_url ? <ExtLink href={x.source_url}>{x.name}</ExtLink> : x.name} <NewTag item={x} />
             </span>
           ))}
         </Spec>

@@ -685,6 +685,12 @@
       ]
     },
     {
+      "path": "ui/src/pages/ColumnDrawer.test.jsx",
+      "lines": 15,
+      "exports": [],
+      "css_classes": []
+    },
+    {
       "path": "ui/src/pages/Explore.jsx",
       "lines": 329,
       "exports": [
@@ -1750,7 +1756,7 @@
     "routes": 9,
     "api_methods": 34,
     "design_tokens": 70,
-    "jsx_files": 101,
-    "jsx_lines": 10596
+    "jsx_files": 102,
+    "jsx_lines": 10611
   }
 }

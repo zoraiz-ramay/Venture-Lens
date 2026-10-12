@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { IxButton, IxPane } from "@siemens/ix-react";
-import { COLUMNS } from "./exploreColumns.jsx";
+import { COLUMNS, DEFAULT_COLS } from "./exploreColumns.jsx";
 
 /* The Database grid's column chooser and "save view" form, in a side pane. */
 export default function ColumnDrawer({ open, onClose, cols, setCols, onSaveView }) {

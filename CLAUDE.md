@@ -34,6 +34,10 @@ codebase enforces this in several places, and changes must not weaken them:
   *evaluative*. Nothing that feeds a score may come from model memory.
 - `core/score.py` — a self-asserted program membership scores at a discount to an independently
   corroborated one; a source URL alone is not evidence.
+- **Known gap, not a third exception:** `core/data.py::_knowledge_profile_row` — the fallback when
+  the web lookup returns zero hits — still asks the model for HQ, founded year, funding, employees
+  and customers, and its `"_source": "llm_knowledge"` marker is read by nothing. It predates the
+  rule above and is a defect to fix, not a precedent to copy.
 
 If a field cannot be evidenced, leave it empty and let the UI show "—".
 
@@ -52,7 +56,15 @@ If a field cannot be evidenced, leave it empty and let the UI show "—".
 result cache is injected the other way round: `api/main.py` calls `core.web.install_cache(...)`.
 
 Pipeline: `core/pipeline.py::evaluate` → `enrich` → (verify ‖ summarize ‖ fit ‖ profile ‖ trend,
-concurrent) → `score` → `route`.
+concurrent) → score (`core/judgment.py`, `core/traction.py`, and per department the pillars, Team &
+Ecosystem and Market) → route (`core/assessment.py::route`). Every `core/` module's docstring says
+where it sits in that flow; read it before the code.
+
+The older scorecard layer — `core/score.py::score_startup`, `core/route.py::route`, `core/empower.py`,
+`core/departments.py`, `core/programs.py::assess_all_pillars` — is **not called by the live
+pipeline** (only `route._portfolio_stance` is). It is kept for `benchmarks/replay.py`, stored-run
+replays and the UI what-if mirror (`ui/src/scoring/`, pinned by `tests/test_whatif_*_parity.py`).
+`core/__init__.py` re-exports only the names actually used as `core.<name>`.
 
 ## Read before editing
 
@@ -109,7 +121,7 @@ extraction, xlsx + web instead of the live database — rather than failing.
 Secrets Manager (`docker-apps/startup-evaluation-agent-hydra`, named in `.gitlab-ci.yml`). The CI
 hub maps only a fixed set of them to env vars; the rest arrive inside the `APP_SECRETS` /
 `AWS_SECRET_JSON` JSON blob, which `core/config.py` exports into the environment at import without
-overriding anything already set. `OPENAI_API_KEY` present → the Siemens gateway (`gpt-5.4`,
+overriding anything already set. `OPENAI_API_KEY` present → the Siemens gateway (`LLM_MODEL`, default `gpt-6-luna`,
 `google/gemini-embedding-2`); absent → `GEMINI_API_KEY` from `.env`. The vector indexes ship one
 file per embedding model, so both find theirs. `runs.db` restores from and syncs to S3 when the
 `HYDRA_DATA_AWS_*` keys are set; locally it is just a file. `load_secrets.py` is not called by

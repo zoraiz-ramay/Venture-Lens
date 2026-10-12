@@ -12,6 +12,8 @@ import pytest
 from core import business_flow as B
 from core.llm import LLMClient
 
+search_steps = B._search_steps      # the real one; the fixture below stubs it for every other test
+
 RUN = {"company": "Radical Dot", "found": True,
        "summary": "Radical Dot converts mixed, unrecyclable plastic waste into acetic acid through its Oxolysis process.",
        "profile": {"Business model": "Today, revenue comes from R&D partnerships with chemical companies."}}
@@ -27,6 +29,9 @@ def model(reply: dict):
 def no_cache(monkeypatch):
     monkeypatch.setattr(B.web, "_cached", lambda *a, **k: None)
     monkeypatch.setattr(B.web, "_store", lambda *a, **k: None)
+    # No site and no search unless a test supplies them: the missing-step search is pinned below.
+    monkeypatch.setattr(B.web, "fetch_site_text", lambda host, *a, **k: {})
+    monkeypatch.setattr(B, "_search_steps", lambda company, site, missing, llm: [])
 
 
 def ids():
@@ -71,7 +76,7 @@ def test_a_reply_with_a_stray_trailing_brace_still_parses():
     assert LLMClient.parse_json('```json\n{"a":{"b":1}}}\n```') == {"a": {"b": 1}}
 
 
-def test_two_first_views_at_once_make_one_model_call(monkeypatch):
+def test_two_first_views_at_once_make_one_model_call(monkeypatch, poll):
     """Both used to miss the store and both paid for the model; the second now reads the first's."""
     import threading
     import time
@@ -93,9 +98,113 @@ def test_two_first_views_at_once_make_one_model_call(monkeypatch):
     csrf = {"X-CSRF-Token": client.cookies.get("sea_csrf")}
     codes = []
     threads = [threading.Thread(target=lambda: codes.append(
-        client.post("/api/runs/7302/business-flow", headers=csrf).status_code)) for _ in range(2)]  # secret-scan:allow
+        poll(client, "/api/runs/7302/business-flow", csrf).status_code)) for _ in range(2)]  # secret-scan:allow
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     assert codes == [200, 200] and len(calls) == 1 and len(saved) == 1
+
+
+# ----------------------------------------------------------------- a missing step is searched for
+
+THIN = {"company": "Radical Dot", "found": True, "profile": {"website": "https://radicaldot.test/"},
+        "summary": "Radical Dot converts hard-to-recycle plastic waste into chemical building blocks that "
+                   "manufacturers can use as feedstocks."}
+SITE = {"/about": "Our team in Munich. " * 20 + "Radical Dot sells its chemical building blocks to manufacturers "
+                  "under long-term offtake supply contracts. " + "Join us. " * 30}
+
+
+class _Model:
+    """First call: only what the summary carries. Second call: the money step from the site."""
+
+    def __init__(self):
+        self.available, self.prompts = True, []
+
+    def complete(self, prompt, **kw):
+        self.prompts.append(prompt)
+        if len(self.prompts) == 1:
+            return json.dumps({"problem": {"text": "Hard-to-recycle plastic waste is hard to use.", "citations": ["E1"]},
+                               "offer": {"text": "It converts plastic waste into chemical building blocks.", "citations": ["E1"]}})
+        site = next(line for line in prompt.splitlines() if line.startswith("[")) and "S1"
+        return json.dumps({"money": {"text": "It sells its chemical building blocks to manufacturers under "
+                                             "long-term offtake supply contracts.", "citations": [site]}})
+
+
+def test_a_step_the_run_leaves_out_is_found_on_the_startups_own_site(monkeypatch):
+    searched = []
+    monkeypatch.setattr(B.web, "fetch_site_text", lambda host, *a, **k: SITE if host == "radicaldot.test" else {})
+    monkeypatch.setattr(B, "_search_steps", lambda company, site, missing, llm: searched.append(list(missing)) or [])
+    llm = _Model()
+    out = B.business_flow(THIN, llm)
+    assert [x["id"] for x in out["steps"]] == ["problem", "offer", "money"]
+    money = out["steps"][2]
+    assert money["sources"][0]["url"] == "https://radicaldot.test/about"
+    assert "offtake supply" in money["sources"][0]["quote"]
+    # Only the steps still missing are searched for and asked for again.
+    assert searched == [["how", "customers", "money"]]
+    assert "- money:" in llm.prompts[1] and "- problem:" not in llm.prompts[1]
+
+
+def test_a_found_passage_still_has_to_carry_the_sentence(monkeypatch):
+    monkeypatch.setattr(B.web, "fetch_site_text", lambda host, *a, **k: SITE)
+
+    class Inventive(_Model):
+        def complete(self, prompt, **kw):
+            if self.prompts:
+                self.prompts.append(prompt)
+                return json.dumps({"money": {"text": "It charges a 12% royalty on every licensed plant.", "citations": ["S1"]}})
+            return super().complete(prompt, **kw)
+    out = B.business_flow(THIN, Inventive())
+    assert [x["id"] for x in out["steps"]] == ["problem", "offer"]
+
+
+def test_a_complete_story_searches_nothing(monkeypatch):
+    s, m = ids()
+    calls = []
+    monkeypatch.setattr(B, "_search_steps", lambda *a: calls.append(a) or [])
+    full = {"problem": {"text": "Mixed plastic waste cannot be recycled today.", "citations": [s]},
+            "offer": {"text": "Radical Dot converts plastic waste into acetic acid.", "citations": [s]},
+            "how": {"text": "Its Oxolysis process converts plastic waste into acetic acid.", "citations": [s]},
+            "customers": {"text": "It works with chemical companies.", "citations": [m]},
+            "money": {"text": "It earns from R&D partnerships with chemical companies.", "citations": [m]}}
+    llm = model(full)
+    out = B.business_flow(RUN, llm)
+    assert len(out["steps"]) == 5 and calls == [] and llm.complete.call_count == 1
+
+
+class _Searcher:
+    available = True
+
+    def __init__(self, text, sources=()):
+        self.text, self.sources = text, list(sources)
+
+    def web_answer(self, prompt, **kw):
+        return {"text": self.text, "sources": self.sources, "queries": []}
+
+
+ANSWER = """Radical Dot lists its business model as B2B and sells chemical building blocks to manufacturers. [1]
+
+It was founded on the Moon by astronauts. [2]
+
+**Sources**
+
+[1] https://startups.test/radical-dot
+[2] https://gossip.test/story"""
+
+
+def test_a_searched_sentence_counts_only_when_its_page_holds_it(monkeypatch):
+    pages = {"https://startups.test/radical-dot": "Radical Dot. Business model: B2B. Radical Dot sells chemical "
+                                                  "building blocks to manufacturers in the plastics industry.",
+             "https://gossip.test/story": "Radical Dot is a chemical recycling startup in Munich."}
+    monkeypatch.setattr(B, "_read_pages", lambda urls: {u: pages[u] for u in urls})
+    found = search_steps("Radical Dot", "", ["money"], _Searcher(ANSWER))
+    assert found == [("https://startups.test/radical-dot",
+                      "Radical Dot lists its business model as B2B and sells chemical building blocks to manufacturers.")]
+
+
+def test_an_unreadable_page_counts_only_when_the_provider_cited_it(monkeypatch):
+    monkeypatch.setattr(B, "_read_pages", lambda urls: {})
+    assert search_steps("Radical Dot", "", ["money"], _Searcher(ANSWER)) == []
+    cited = _Searcher(ANSWER, [{"title": "t", "url": "https://startups.test/radical-dot/"}])
+    assert [u for u, _ in search_steps("Radical Dot", "", ["money"], cited)] == ["https://startups.test/radical-dot"]

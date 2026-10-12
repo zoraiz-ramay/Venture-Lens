@@ -23,3 +23,6 @@ os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 # "auto" would search through the gateway whenever a developer's key is set, and the search tests
 # drive the DuckDuckGo path with fakes. Tests of "auto" itself set it explicitly.
 os.environ["SEARCH_BACKEND"] = "ddg"
+# S3 is found through boto3's default credential chain, so any AWS credentials on the machine
+# would have every saved run in the suite uploaded to the real bucket. Tests of S3 fake it.
+os.environ["S3_SYNC"] = "0"

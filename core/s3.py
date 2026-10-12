@@ -13,7 +13,10 @@ import logging
 
 log = logging.getLogger(__name__)
 
-S3_BUCKET = os.getenv("S3_BUCKET", "hydra-data-app-startup-evaluation-agent-hydra-pdfs")
+# This app's own bucket. The platform names it hydra-data-app-<repo slug> and grants the deployed
+# container's instance role access to it. The old default named the bucket of the app this one was
+# copied from, which this app's role cannot reach.
+S3_BUCKET = os.getenv("S3_BUCKET", "hydra-data-app-venture-lens-hydra")
 S3_REGION = os.getenv("AWS_REGION", "us-west-2")
 S3_PREFIX = "pdfs/"
 
@@ -22,20 +25,33 @@ _CACHE_DIR = pathlib.Path(tempfile.gettempdir()) / "pdf_s3_cache"
 
 
 def _client():
+    # No keys passed: the deployed container's instance role is found by boto3's default chain.
+    # This used to require HYDRA_DATA_AWS_* keys, which the platform does not give deployed apps,
+    # so S3 was silently off in production and every redeploy started from an empty database.
     import boto3
-    return boto3.client(
-        "s3",
-        region_name=S3_REGION,
-        aws_access_key_id=os.environ.get("HYDRA_DATA_AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.environ.get("HYDRA_DATA_AWS_SECRET_ACCESS_KEY"),
-    )
+    return boto3.client("s3", region_name=S3_REGION)
+
+
+_creds_found: bool | None = None
 
 
 def _available() -> bool:
-    return bool(
-        os.environ.get("HYDRA_DATA_AWS_ACCESS_KEY_ID")
-        and os.environ.get("HYDRA_DATA_AWS_SECRET_ACCESS_KEY")
-    )
+    """Whether S3 can be reached: credentials resolve and S3_SYNC is not "0".
+
+    Resolved once per process. Locally there are no AWS credentials, so S3 stays off and the
+    database is just a file."""
+    global _creds_found
+    if os.getenv("S3_SYNC", "1").strip() == "0":
+        return False
+    if _creds_found is None:
+        try:
+            import boto3
+            _creds_found = boto3.Session().get_credentials() is not None
+        except Exception:
+            _creds_found = False
+        log.info("S3 %s (bucket %s)", "available" if _creds_found else "unavailable: no AWS credentials",
+                 S3_BUCKET)
+    return _creds_found
 
 
 def fetch_pdf(basename: str) -> str:

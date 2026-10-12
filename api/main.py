@@ -251,7 +251,10 @@ def status(user: Principal = Depends(current_user)) -> dict:
             "data_source": "glassdollar_api",
             "applications_file": os.path.basename(_LOCAL_XLSX) if _LOCAL_XLSX else "",
             "applications_count": int(len(_get_local_df())) if _LOCAL_XLSX else 0,
-            "s3_available": _s3._available()}
+            "s3_available": _s3._available(),
+            # Whether stored runs survive a redeploy: "restored" / "fresh" / "local" are healthy,
+            # "failed" means this container is not saving to S3 (see store._restore_from_s3).
+            "db_sync": {k: store.sync_state[k] for k in ("restore", "blocked", "last_upload")}}
 
 
 @app.get("/api/search")

@@ -4,7 +4,8 @@ Stored per run: summary columns for fast listing + the full result JSON blob.
 DB lives at DATA_DIR/runs.db (override with RUNS_DB).
 
 On first connection the DB is restored from S3 if a remote copy exists and no
-local file is present. After every write (save_run, delete_run, add_override)
+local file is present; a restore that fails for any reason but "no copy yet" turns uploads off
+for the container, so an empty database never replaces the stored one. After every write (save_run, delete_run, add_override)
 the DB is uploaded back to S3 (debounced, see _upload_to_s3) so it survives container
 restarts and redeployments.
 """
@@ -37,47 +38,98 @@ _s3_lock = threading.Lock()
 _restored = False
 
 
+_BACKUP_PREFIX = "data/backups/"
+# What this process knows about the S3 copy, for /api/status. "blocked" means the restore failed for
+# a reason other than "there is no copy yet": the local database may be empty, and uploading it
+# would replace every stored run in S3 with nothing, so this process does not upload at all.
+sync_state = {"restore": "pending", "blocked": False, "last_upload": "", "last_error": ""}
+_backed_up_on = ""
+
+
 def _s3_client():
-    import boto3
-    return boto3.client(
-        "s3",
-        region_name=os.getenv("AWS_REGION", "us-west-2"),
-        aws_access_key_id=os.environ.get("HYDRA_DATA_AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.environ.get("HYDRA_DATA_AWS_SECRET_ACCESS_KEY"),
-    )
+    from core import s3
+    return s3._client()
 
 
 def _s3_available() -> bool:
-    return bool(
-        os.environ.get("HYDRA_DATA_AWS_ACCESS_KEY_ID")
-        and os.environ.get("HYDRA_DATA_AWS_SECRET_ACCESS_KEY")
-    )
+    from core import s3
+    return s3._available()
 
 
 def _s3_bucket() -> str:
-    return os.getenv("S3_BUCKET", "hydra-data-app-startup-evaluation-agent-hydra-pdfs")
+    from core import s3
+    return s3.S3_BUCKET
+
+
+def _missing(exc: Exception) -> bool:
+    """Whether a download failed because the object does not exist — the only failure that means
+    "start fresh". Anything else (throttling, a network blip, a role not yet attached) is not."""
+    code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+    return code in ("404", "NoSuchKey", "NotFound")
 
 
 def _restore_from_s3() -> None:
-    """Download runs.db from S3 if no local copy exists yet."""
+    """Download runs.db from S3 if no local copy exists yet.
+
+    A redeployed container starts without runs.db, so this is what carries every stored run across
+    a deploy. Gunicorn runs two workers, each importing this module; a file lock makes the second
+    wait for the first's download instead of racing it into the same path."""
     global _restored
-    if _restored or not _s3_available():
-        _restored = True
+    if _restored:
         return
-    _restored = True
+    with _s3_lock:
+        if _restored:
+            return
+        if not _s3_available():
+            sync_state["restore"] = "off"
+            _restored = True
+            return
+        os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+        import fcntl
+        with open(DB_PATH + ".restore.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                _restore_locked()
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+        _restored = True
+
+
+def _restore_locked() -> None:
+    import time
+    failed_marker = DB_PATH + ".restore-failed"
+    if os.path.exists(failed_marker):
+        # The other worker's restore failed and then created an empty schema file at DB_PATH: that
+        # file is not the stored database, and this worker must not upload it either.
+        sync_state.update(restore="failed", blocked=True)
+        return
     if os.path.exists(DB_PATH):
+        sync_state["restore"] = "local"
         log.info("[store] Local DB already exists at %s, skipping S3 restore", DB_PATH)
         return
-    try:
-        os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-        tmp = DB_PATH + ".s3tmp"
-        _s3_client().download_file(_s3_bucket(), _S3_DB_KEY, tmp)
-        shutil.move(tmp, DB_PATH)
-        log.info("[store] Restored DB from s3://%s/%s -> %s", _s3_bucket(), _S3_DB_KEY, DB_PATH)
-    except Exception as exc:
-        log.info("[store] No DB in S3 (starting fresh): %s", exc)
-        if os.path.exists(DB_PATH + ".s3tmp"):
-            os.remove(DB_PATH + ".s3tmp")
+    tmp = f"{DB_PATH}.s3tmp.{os.getpid()}"
+    for attempt in range(4):
+        try:
+            _s3_client().download_file(_s3_bucket(), _S3_DB_KEY, tmp)
+            shutil.move(tmp, DB_PATH)
+            sync_state["restore"] = "restored"
+            log.info("[store] Restored DB from s3://%s/%s -> %s", _s3_bucket(), _S3_DB_KEY, DB_PATH)
+            return
+        except Exception as exc:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            if _missing(exc):
+                sync_state["restore"] = "fresh"
+                log.info("[store] No DB in S3 yet, starting fresh: %s", exc)
+                return
+            sync_state["last_error"] = str(exc)[:300]
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+    sync_state.update(restore="failed", blocked=True)
+    open(failed_marker, "w").close()
+    log.error("[store] Could not restore DB from s3://%s/%s; uploads are OFF for this process so an "
+              "empty database cannot overwrite the stored one: %s", _s3_bucket(), _S3_DB_KEY,
+              sync_state["last_error"])
 
 
 # Writes within this many seconds share one upload. Every write used to start its own thread
@@ -91,7 +143,7 @@ _upload_scheduled = False
 def _upload_to_s3() -> None:
     """Schedule an upload of runs.db to S3; writes in the next S3_UPLOAD_DELAY seconds join it."""
     global _upload_scheduled
-    if not _s3_available():
+    if sync_state["blocked"] or not _s3_available():
         return
     with _upload_state:
         if _upload_scheduled:
@@ -130,16 +182,33 @@ def _upload_now() -> None:
     with _s3_lock:
         tmp = DB_PATH + ".upload"
         try:
+            if sync_state["blocked"]:
+                return
             _snapshot(tmp)
-            _s3_client().upload_file(tmp, _s3_bucket(), _S3_DB_KEY)
+            client = _s3_client()
+            client.upload_file(tmp, _s3_bucket(), _S3_DB_KEY)
+            sync_state["last_upload"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             log.debug("[store] Synced DB to s3://%s/%s", _s3_bucket(), _S3_DB_KEY)
+            _daily_backup(client, tmp)
         except Exception as exc:
+            sync_state["last_error"] = str(exc)[:300]
             log.warning("[store] S3 upload failed: %s", exc)
         finally:
             try:
                 os.remove(tmp)
             except OSError:
                 pass
+
+
+def _daily_backup(client, snapshot: str) -> None:
+    """The first upload each day is also kept under its date. data/runs.db is overwritten on every
+    write, so a bad copy reaching it would otherwise take every earlier run with it."""
+    global _backed_up_on
+    today = datetime.now(timezone.utc).date().isoformat()
+    if _backed_up_on == today:
+        return
+    client.upload_file(snapshot, _s3_bucket(), f"{_BACKUP_PREFIX}runs-{today}.db")
+    _backed_up_on = today
 
 
 def _flush_pending_upload() -> None:

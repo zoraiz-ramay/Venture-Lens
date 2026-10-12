@@ -17,8 +17,9 @@ never about what the evidence means:
 - **Single values**: a blank or unsourced fresh value never replaces a sourced earlier one; when
   both are sourced the newer wins (fresh retrieval is the later date), and the value it replaced is
   kept in ``history`` with its source. A web value always beats an ``*_origin="llm"`` recall.
-- **Market size / CAGR older than 18 months is dropped** — fresh or carried. A year-only ``as_of``
-  counts as 31 December of that year.
+- **A market figure must be current** — fresh or carried: its ``as_of`` year within the last two
+  calendar years and not in the future (a future-dated figure is a forecast); an undated one counts
+  by when its run found it, within 18 months (`market_size_current`).
 - **Identity first**: a prior run is used only if it is the same company (same registrable domain,
   or, with no domain on either side, the same normalised name). A namesake's investors are worse
   than none.
@@ -26,6 +27,9 @@ never about what the evidence means:
 Not carried: free-text string lists (``reference_customers``), which carry no per-item source to
 re-check, and anything model-judged (fit, pillars, scores), which is recomputed from the merged
 evidence.
+
+The pipeline applies `merge_profile` and `merge_trend` as the profile and trend branches land,
+before anything is scored or emitted (core/pipeline.py).
 """
 from __future__ import annotations
 
@@ -134,6 +138,7 @@ def _own_domain(domain: str, name: str) -> bool:
 
 
 def identity(company: str, *urls) -> dict:
+    """{name, domain}: the normalised name, and the first of ``urls`` that is the company's own domain."""
     name = _norm(company)
     return {"name": name, "domain": next((d for d in map(_domain, urls) if d and _own_domain(d, name)), "")}
 
@@ -200,7 +205,7 @@ def _facts_of(run_like: dict) -> list:
 
 # ------------------------------------------------------------------------------- list merging
 
-def _merge_list(fresh_items, prior_runs, path, fields, getter, now: str, report: dict, label: str):
+def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, label: str) -> list:
     """Fresh items first (current), then every grounded item only earlier runs found."""
     fresh_items = dedupe_people(fresh_items) if fields == ("person",) else list(fresh_items or [])
     seen = {_item_key(i, fields) for i in fresh_items if _item_key(i, fields)}
@@ -270,7 +275,7 @@ def merge_profile(fresh: dict, prior_runs: list, now: str, report: dict) -> dict
     fresh_facts = _facts_of(fresh)
     for path, fields in _PROFILE_LISTS:
         merged = _merge_list(_get(dp, path), prior_runs, path, fields,
-                             lambda run, p: _get(_profile_of(run), p), now, report, ".".join(path))
+                             lambda run, p: _get(_profile_of(run), p), report, ".".join(path))
         if merged or _get(dp, path) is not None:
             _set(dp, path, merged)
     founders_first(dp)
@@ -378,7 +383,8 @@ def _carried_facts(fresh_facts: list, prior_runs: list, dp: dict) -> list:
     return out
 
 
-def _as_of(size: dict, today: _dt.date):
+def _as_of(size: dict) -> _dt.date | None:
+    """The date a market figure is stated for; a year alone reads as 31 December of that year."""
     raw = str((size or {}).get("as_of") or "").strip()
     m = re.search(r"(19|20)\d{2}", raw)
     if not m:
@@ -402,7 +408,7 @@ def market_size_current(size, today: _dt.date, found=None) -> bool:
     """
     if not isinstance(size, dict):
         return False
-    when = _as_of(size, today)
+    when = _as_of(size)
     if when is None:
         return found is not None and 0 <= (today - found).days <= MARKET_MAX_AGE_DAYS
     return today.year - MARKET_MAX_AGE_YEARS <= when.year <= today.year
@@ -416,7 +422,10 @@ def _run_date(run: dict):
 
 
 def merge_trend(fresh: dict, prior_runs: list, now: str, today: _dt.date, report: dict) -> dict:
-    """``fresh`` is analyze_trend's result. Applies the 18-month market rule even with no priors."""
+    """``fresh`` is analyze_trend's result. Applies the market-figure currency rule even with no priors.
+
+    ``now`` is not read (a carried item's date is the run that found it); it mirrors merge_profile.
+    """
     if not isinstance(fresh, dict):
         return fresh
     out = copy.deepcopy(fresh)
@@ -430,7 +439,7 @@ def merge_trend(fresh: dict, prior_runs: list, now: str, today: _dt.date, report
         if prior_runs:
             for path, fields in _TREND_LISTS:
                 land[path[-1]] = _merge_list(_get(out, path), prior_runs, path, fields,
-                                             lambda run, p: _get(run.get("trend") or {}, p), now, report,
+                                             lambda run, p: _get(run.get("trend") or {}, p), report,
                                              ".".join(path))
             if not land.get("market_size"):
                 for run in reversed(prior_runs):            # newest qualifying prior figure

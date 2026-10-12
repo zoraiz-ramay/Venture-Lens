@@ -1,4 +1,11 @@
-"""Routing to the Siemens-for-Startups pillar (Connect / Collaborate / Empower / Pass)."""
+"""Scorecard routing to the Siemens-for-Startups pillar (Connect / Collaborate / Empower / Pass).
+
+`route` is the original, department-less router over `core/score.py`'s scorecards. A live
+evaluation no longer calls it: department runs route from the pillar assessments
+(`core/assessment.route`) and department-less runs from `judgment.decision_research`. It is kept
+because `benchmarks/replay.py` replays it and `ui/src/scoring/routing.js` mirrors its gates
+(pinned by tests/test_whatif_route_parity.py). `_portfolio_stance` is still read by the pipeline.
+"""
 from __future__ import annotations
 
 import pandas as pd
@@ -59,9 +66,11 @@ def route(score: dict, fit: dict, row: pd.Series, llm: LLMClient, profile: dict 
     r_collab = cards.get("Collaborate", final)
     score_eligible = []
     if aligned and score["dimensions"]["siemens_fit"] >= FIT_ALIGN_THRESHOLD:
-        if r_connect >= _GATES["Connect"]["route_score"]                 and traction >= _GATES["Connect"]["traction"]:
+        if (r_connect >= _GATES["Connect"]["route_score"]
+                and traction >= _GATES["Connect"]["traction"]):
             score_eligible.append("Connect")      # market-ready, fits portfolio
-        if r_collab >= _GATES["Collaborate"]["route_score"]                 and traction >= _GATES["Collaborate"]["traction"]:
+        if (r_collab >= _GATES["Collaborate"]["route_score"]
+                and traction >= _GATES["Collaborate"]["traction"]):
             score_eligible.append("Collaborate")  # strong fit, real traction
         score_eligible.append("Empower")          # tech fit; Siemens tools accelerate the startup
 
@@ -81,7 +90,7 @@ def route(score: dict, fit: dict, row: pd.Series, llm: LLMClient, profile: dict 
     secondary = eligible[1:]                # ALL other qualifying pillars
 
     sfs = assess_sfs(row, profile, fit)
-    reasons, risks = _route_reasons(pillar, score, fit, row, llm)
+    reasons, risks = _route_reasons(pillar, score, fit, llm)
     confidence = round(min(0.95, 0.4 + 0.5 * score["data_confidence"] *
                            (1 if pillar != "Pass" else 0.6)), 2)
     # An unproven primary is a weaker answer than a substantiated one and says so, rather than
@@ -181,7 +190,8 @@ def _route_recommendations(eligible: list, score: dict, fit: dict,
     return out
 
 
-def _route_reasons(pillar, score, fit, row, llm: LLMClient):
+def _route_reasons(pillar: str, score: dict, fit: dict, llm: LLMClient) -> tuple[list, list]:
+    """Two reasons and two risks for the chosen pillar: the model's, else a template."""
     if llm.available:
         prompt = (f"A startup was routed to the Siemens-for-Startups pillar '{pillar}'. "
                   f"Final score {score['final_score']}, Siemens-fit {score['dimensions']['siemens_fit']}, "

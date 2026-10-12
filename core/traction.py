@@ -11,6 +11,9 @@ remains. That is the product owner's rule and it is the same distinction `employ
 and the SFS `unassessed` state exist for: "we found nothing" and "we found it was nothing" are
 different statements. Confidence is the share of the 100 points the evidence covers, so a score
 normalised from employees alone reads as 10% confident rather than as a strong company.
+
+Scored in the pipeline as soon as the research joins (`pipeline._join_research`), folded into the
+model score by `apply_traction`, and recomputed for stored runs on read by `with_traction`.
 """
 from __future__ import annotations
 
@@ -26,7 +29,6 @@ from .text import (find_money, is_named_org, is_revenue_estimate, parse_funding_
 # v3: a third-party revenue estimate (a data broker's figure, or a statement worded as an estimate)
 # is never revenue (text.is_revenue_estimate); stored runs that scored one are corrected on read.
 VERSION = "traction-rubric-v3"
-DIVISIONS = ("funding", "customers", "revenue", "employees")
 # Relations that make a named organisation a customer. A pilot is not yet a paying account, and a
 # partner, investor or supplier is not one at all — the grounding window accepts "partner" as a
 # relationship phrase, so this is where that distinction has to be drawn.
@@ -71,6 +73,7 @@ def _fmt_eur(v: float) -> str:
 
 
 def _division(key: str, **kw) -> dict:
+    """One division's result: ``unknown`` with no points unless ``kw`` says otherwise."""
     spec = config.TRACTION_RUBRIC[key]
     out = {"id": key, "label": spec["label"], "max": spec["max"], "status": "unknown",
            "points": None, "value": "", "band": "", "source_url": "", "origin": "", "basis": "",
@@ -96,6 +99,7 @@ _REVENUE = re.compile(r"revenue|\barr\b|\bmrr\b|turnover|sales|run[- ]rate|umsat
 
 
 def _amounts_about(text: str, want: re.Pattern, avoid: re.Pattern) -> list[dict]:
+    """The money amounts in ``text`` that are about ``want`` and not about ``avoid``."""
     out = []
     for clause in re.split(r"(?<!\d)[.;](?!\d)|\n", str(text or "")):
         found = find_money(clause)
@@ -150,7 +154,7 @@ def _funding(inputs: dict) -> dict:
         points = config.FUNDING_STAGE_POINTS[stage]
         src = next((c for c in candidates if parse_funding_stage(c["value"]) == stage),
                    candidates[0] if candidates else {})
-        label = stage.replace("_plus", "+").replace("_", " ").title().replace("B+", "B+")
+        label = stage.replace("_plus", "+").replace("_", " ").title()
         return _division(
             "funding", status="evidenced", points=float(points), band=f"Stage: {label}",
             basis="stage_only", value=src.get("value", label), source_url=src.get("source_url", ""),
@@ -349,6 +353,7 @@ def gather_traction_inputs(result: dict) -> dict:
 
 
 def score_traction(inputs: dict) -> dict:
+    """The four divisions scored, normalised over the evidenced ones (see the module docstring)."""
     divisions = [_funding(inputs), _customers(inputs), _revenue(inputs), _employees(inputs)]
     known = [d for d in divisions if d["status"] != "unknown"]
     earned = sum(d["points"] for d in known)

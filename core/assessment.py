@@ -9,6 +9,9 @@ deliberately not added in again.
 
 The total and its components are recomputed whenever a run is read (`hydrate`), from the stored
 pillar and team results, so a traction-rubric change cannot leave a stale total behind it.
+
+`build` / `build_all` package a department run at the end of `pipeline.evaluate` (and of
+`pipeline.assess_department(s)`); `hydrate` is what the API applies to every stored run it reads.
 """
 from __future__ import annotations
 
@@ -20,11 +23,10 @@ from .traction import VERSION as TRACTION_VERSION, with_traction
 
 VERSION = "department-assessment-v1"
 WEIGHTS = {"traction": 0.30, "siemens_fit": 0.35, "team_ecosystem": 0.20, "market": 0.15}
-LABELS = {"traction": "Traction", "siemens_fit": "Siemens Fit",
-          "team_ecosystem": "Team & Ecosystem", "market": "Market"}
 
 
 def rubric_version() -> str:
+    """Every rubric version a department total depends on, joined; a change makes cached runs stale."""
     return f"{VERSION}+{P.VERSION}+{TEAM_VERSION}+{TRACTION_VERSION}+{MARKET_VERSION}"
 
 
@@ -46,6 +48,7 @@ def assessment_key(catalogs: dict) -> str:
 
 
 def components(result: dict) -> dict:
+    """The four 0–100 inputs to the total, each None when the run has no usable value for it."""
     traction = result.get("traction") or {}
     dims = (result.get("score") or {}).get("dimensions") or {}
     a = result.get("assessment") or {}
@@ -67,6 +70,7 @@ def components(result: dict) -> dict:
 
 
 def total(parts: dict) -> float | None:
+    """The weighted total, or None (pending) while any component is missing."""
     if any(parts.get(k) is None for k in WEIGHTS):
         return None
     return round(sum(WEIGHTS[k] * parts[k] for k in WEIGHTS), 1)

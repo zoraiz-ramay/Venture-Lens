@@ -1,4 +1,16 @@
-"""Pipeline orchestration: INPUT -> ENRICH -> VERIFY -> STRUCTURE -> SCORE -> REVIEW (+ ROUTE)."""
+"""Pipeline orchestration: the entry point of the engine.
+
+`evaluate` resolves the company (Tracxn → GlassDollar search → GlassDollar by domain → web), then
+runs enrichment's search ‖ summarize ‖ fit ‖ profile ‖ trend concurrently (verify waits only for
+enrichment), folds prior runs in
+(core/carry_forward.py), scores (core/judgment.py, core/traction.py, and per department the
+pillars, Team & Ecosystem and Market), and routes. `assess_department(s)` re-scores an existing
+run's research for other departments without researching again.
+
+The progress labels reported through ``on_step`` are INPUT → ENRICH → VERIFY → STRUCTURE →
+REVIEW → SCORE → ROUTE; partial results stream through ``on_partial`` (see
+.claude/rules/streaming.md).
+"""
 from __future__ import annotations
 
 import concurrent.futures
@@ -7,6 +19,7 @@ import contextvars
 import functools
 import logging
 import time
+from datetime import datetime, timezone
 
 import pandas as pd
 from opentelemetry import trace
@@ -14,7 +27,7 @@ from opentelemetry import trace
 from . import web
 from . import llm as llm_mod
 from .llm import LLMClient
-from .data import load_glassdollar, find_startup, web_profile_row, load_siemens_tools
+from .data import find_startup, web_profile_row, load_siemens_tools
 from .enrich import enrich_local, search_web, fetch_site, combine
 from .verify import verify_facts
 from .summarize import summarize_offering
@@ -32,6 +45,7 @@ _tracer = trace.get_tracer(__name__)
 
 
 def _traced(span_name: str, fn):
+    """Wrap ``fn`` to run inside its own span, charged to the stage named by the span."""
     # The span name doubles as the stage a failed model call is charged to (result["degraded"]).
     stage = span_name.removeprefix("pipeline.")
 
@@ -48,7 +62,8 @@ def _traced(span_name: str, fn):
     return run
 
 
-def _submit(ex, span_name: str, fn, *a):
+def _submit(ex, span_name: str, fn, *a) -> concurrent.futures.Future:
+    """Submit ``fn`` to the pool traced as ``span_name``, carrying the caller's context."""
     # copy_context(): pool threads start with an EMPTY context, which would drop both the
     # cache-bypass ContextVar and the current span.
     return ex.submit(contextvars.copy_context().run, _traced(span_name, fn), *a)
@@ -176,6 +191,9 @@ def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = T
              team_record: dict | None = None) -> dict:
     """Run the full pipeline for one startup.
 
+    ``glassdollar_path`` is accepted for callers' positional signature and ignored: the company is
+    looked up in ``df`` when given, otherwise searched through the GlassDollar API.
+
     ``departments`` assesses the startup for every listed department at once: research, Empower
     and Connect once, Collaborate per department, headed by the department whose needs it answers
     best (core/assessment.build_all). It takes precedence over ``department``.
@@ -204,7 +222,7 @@ def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = T
     try:
         with _run_records() as records:
             web.set_search_subject(name)
-            return records(_evaluate(name, glassdollar_path, tools_path, do_web, df, on_step,
+            return records(_evaluate(name, tools_path, do_web, df, on_step,
                                      on_partial, tracxn, department, prior_runs, departments, team_record))
     finally:
         web.reset_cache_enabled(token)
@@ -252,7 +270,7 @@ def _with_degraded(result: dict, failures: list) -> dict:
     return result
 
 
-def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = True,
+def _evaluate(name: str, tools_path: str, do_web: bool = True,
               df: "pd.DataFrame" = None, on_step=None, on_partial=None, tracxn=None,
               department: dict | None = None, prior_runs: list | None = None,
               departments: list | None = None, team_record: dict | None = None) -> dict:
@@ -338,7 +356,6 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     # put up a header with the real name instead of whatever the reviewer typed.
     _emit("identity", {"company": str(row.get("company_name", "")) or name, "source": source})
     from . import carry_forward
-    from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     priors = carry_forward.usable_priors(prior_runs, carry_forward.identity(
         str(row.get("company_name", "")) or name, row.get("website", ""), row.get("domain", "")))
@@ -365,14 +382,15 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     # `profile_researching` marks a profile the branch is still adding to, so the page can say
     # "still researching" where it would otherwise render a section's empty state as a finding.
     # Only partials carry it; the stored result never does.
-    _emit("profile", {**dict(zip(("profile", "profile_sources", "deep_profile"),
-                                 (*_header_profile(row, {}, source), {}))), "profile_researching": True})
+    row_profile, row_sources = _header_profile(row, {}, source)
+    _emit("profile", {"profile": row_profile, "profile_sources": row_sources, "deep_profile": {},
+                      "profile_researching": True})
 
     # verify / summarize / fit / trend are independent LLM steps — run them concurrently.
     _step("VERIFY", "running")
     _step("STRUCTURE", "running")
     _step("REVIEW", "running")
-    from .traction import score_traction, gather_traction_inputs, apply_traction
+    from .traction import apply_traction
     from .judgment import score_research, decision_research
     company = str(row.get("company_name", "")) or name
     web.set_search_subject(company)
@@ -382,7 +400,7 @@ def _evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = 
     traction_inputs = {"origin": {"glassdollar": "GlassDollar", "tracxn": "Tracxn"}.get(source, "application"),
                        **{k: _cell(row.get(k, "")) for k in
                           ("funding", "employees_count", "employee_band", "customers")}}
-    team = pillar_result = market = None
+    team = market = None
     # One pool for the research branches AND the scoring after them. Scoring used to start only
     # once all five branches had returned, which put fit's ~35s match call in front of everything.
     # Only the model score and Empower read fit; Team & Ecosystem, Market, concept extraction,

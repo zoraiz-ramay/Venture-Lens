@@ -14,6 +14,9 @@ The approach angles are the one place this composes sentences rather than report
 are templated from named evidence (a bundle, a founder, a programme, an API) rather than
 generated, so an angle cannot mention a product the company does not make or a programme it is not
 in — which is exactly what a model asked for outreach ideas produces, fluently.
+
+Its only caller is the scorecard router, `core/route.route` (the `empower` key of its result); the
+live pipeline's routing does not carry this brief.
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ _STAGE_STRENGTH = {"seed": STRONG, "series_a": STRONG, "pre_seed": MODERATE,
                    "grant": MODERATE, "series_b_plus": WEAK}
 
 
-def _signal(sid, label, detail, strength, source_url="") -> dict:
+def _signal(sid: str, label: str, detail: str, strength: str, source_url: str = "") -> dict:
     return {"id": sid, "label": label, "detail": detail, "strength": strength,
             "source_url": str(source_url or "")}
 
@@ -65,10 +68,9 @@ def _growth(series) -> dict | None:
             "multiple": round(end / start, 1), "source_url": last.get("source_url", "")}
 
 
-def investment_signals(row: pd.Series, profile: dict, fit: dict, score: dict,
-                       trend: dict = None) -> list[dict]:
+def investment_signals(profile: dict, score: dict, trend: dict = None) -> list[dict]:
     """What in this run argues the startup is worth Siemens' time, each with its evidence."""
-    profile, fit, score, trend = profile or {}, fit or {}, score or {}, trend or {}
+    profile, score, trend = profile or {}, score or {}, trend or {}
     commercial = _commercial(profile)
     out: list[dict] = []
 
@@ -150,7 +152,7 @@ def _first_founder(profile: dict) -> str:
     return ""
 
 
-def approach_angles(row: pd.Series, profile: dict, fit: dict, rel: dict) -> list[str]:
+def approach_angles(row: pd.Series, profile: dict, rel: dict) -> list[str]:
     """Concrete openings, composed ONLY from evidence this run actually found."""
     profile, rel = profile or {}, rel or {}
     series = row if row is not None else pd.Series(dtype=str)
@@ -190,8 +192,8 @@ def empower_brief(row: pd.Series, profile: dict, fit: dict, score: dict,
     """Everything the Empower section shows, in one object. Never raises."""
     try:
         rel = relevance(row, profile, fit)
-        return {"signals": investment_signals(row, profile, fit, score, trend),
+        return {"signals": investment_signals(profile, score, trend),
                 "relevance": rel,
-                "approach": approach_angles(row, profile, fit, rel)}
+                "approach": approach_angles(row, profile, rel)}
     except Exception:                                  # pragma: no cover - defensive
         return {"signals": [], "relevance": {}, "approach": []}

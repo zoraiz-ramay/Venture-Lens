@@ -105,12 +105,6 @@ PILLARS = {
 }
 
 
-def third_criterion(pillar: str) -> str:
-    """Actionability for Empower and Collaborate, Offering for Connect — the criterion that
-    decides whether a high total is Strong or only worth a review."""
-    return PILLARS[pillar]["criteria"][2][0]
-
-
 def band(total: int, third: int) -> str:
     """0–3 no match · 4–6 review · 7–9 strong, but only with the third criterion at 2 or more.
 
@@ -124,7 +118,6 @@ def band(total: int, third: int) -> str:
     return "review"
 
 
-BAND_LABELS = {"no_match": "No match", "review": "Moderate / Review", "strong": "Strong"}
 SIMILARITY = ("same", "different")
 
 
@@ -145,6 +138,7 @@ def _follows(text: str, fragments: tuple) -> bool:
 
 
 def unassessed(pillar: str, reason: str, message: str, **extra) -> dict:
+    """A pillar that could not be judged — distinct from an assessed 0, and never scored."""
     return {"pillar": pillar, "status": "unassessed", "reason": reason, "message": message,
             "total": None, "band": None, "criteria": [], **extra}
 
@@ -434,7 +428,8 @@ def validate_match(pillar: str, raw, evidence: dict, catalog_ids: dict) -> dict:
             **({"similar": similar, "case": connect_case(rows, banded, similar)} if similar else {})}
 
 
-def _rank_key(p: dict):
+def _rank_key(p: dict) -> tuple:
+    """Total, then the third criterion, then evidence coverage, then ORDER as the tie-break."""
     return (p["total"], p["criteria"][2]["score"], p.get("evidence_coverage", 0),
             -ORDER.index(p["pillar"]))
 

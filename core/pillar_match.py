@@ -53,6 +53,7 @@ SYNONYMS = {
 
 
 def normalize(term: str) -> str:
+    """A concept's merge key: normalised text, synonyms resolved, simple plurals singularised."""
     t = _norm(term)
     t = SYNONYMS.get(t, t)
     words = [w[:-3] + "y" if len(w) > 4 and w.endswith("ies")
@@ -217,7 +218,8 @@ def collaborate_query(run: dict, concepts: dict) -> str:
 
 
 def market_records(run: dict) -> list[dict]:
-    """The run's GOOD market signals as citable records (`market:` sources), each a point of Ecosystem value.
+    """The run's GOOD market signals as citable records (`market:` sources), each a point of
+    Connect's Market signals (`pillars.market_signals`).
 
     Built from what the trend stage cited, banded by core/market.py, so the judgement of "good" is
     Python's and not the model's. Kept out of the 14k evidence budget, which in practice cuts the
@@ -255,6 +257,10 @@ def seller_word_ranking(concepts: dict, catalog: dict) -> list[dict]:
 
 
 def shortlist(pillar: str, concepts: dict, catalog: dict, run: dict, semantic: list | None = None) -> list[dict]:
+    """The catalog entries the pillar's match call is shown, most relevant first.
+
+    ``semantic`` is the meaning-based ranking (ids for needs, names otherwise), or None for words alone.
+    """
     groups = PILLARS[pillar]["concepts"]
     pool = [c for g in groups for c in concepts.get(g, [])]
     if pillar == "Collaborate":
@@ -323,6 +329,8 @@ def _catalog_block(pillar: str, entries: list[dict]) -> str:
 
 def deep_match(pillar: str, concepts: dict, entries: list[dict], records: list[dict],
                llm: LLMClient, department: dict | None, run: dict) -> dict:
+    """One model call scoring the pillar's criteria over the shortlist; `validate_match` decides
+    what stands, and raises ValueError on output it cannot accept."""
     spec = PILLARS[pillar]
     groups = spec["concepts"]
     cited = {c for g in groups for item in concepts.get(g, []) for c in item["citations"]}
@@ -556,7 +564,7 @@ def _with_retrieval(result: dict, retrieval: dict | None) -> dict:
 
 def package_pillars(state: dict, pillars: dict) -> dict:
     """The pillars, Siemens Fit and the route, packaged exactly as assess_pillars returns them."""
-    return _package(pillars, state["concepts"], state["catalog_info"], state["department"],
+    return _package(pillars, state["concepts"], state["catalog_info"],
                     state["catalogs"], state["searched"], state["records"] if state["model"] else ())
 
 
@@ -626,7 +634,8 @@ def _concept_evidence(concepts: dict, records: list[dict]) -> dict:
             for r in records if r["id"] in cited}
 
 
-def _package(pillars, concepts, catalog_info, department, catalogs, searched, records=()) -> dict:
+def _package(pillars, concepts, catalog_info, catalogs, searched, records=()) -> dict:
+    """Attach each pillar's catalog info, then compute Siemens Fit and the route from the pillars."""
     for p in ORDER:
         pillars[p]["catalog"] = catalog_info[PILLARS[p]["catalog"]]
     dep = catalogs["department_needs"]

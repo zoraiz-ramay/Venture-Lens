@@ -5,6 +5,10 @@ This module is a CATALOGUE plus pure predicates over an evaluated profile — th
 `siemens_tools.csv`, and deliberately not part of `route.py`, which stays about routing. It
 imports nothing from `api/` and performs no I/O: everything it reads was gathered upstream.
 
+Callers: `assess_sfs` runs at the route step of every evaluation (core/pipeline.py); the pillar
+criteria (`assess_all_pillars`) gate the scorecard router in core/route.py; and the Siemens-unit
+tables at the bottom serve the profile's relationship detection and the Collaborate bonus.
+
 Why it exists
 -------------
 The routing gates were numeric thresholds over the six scoring dimensions, which encode how
@@ -478,6 +482,7 @@ def assess_pillar(pillar: str, row: pd.Series, profile: dict, fit: dict,
 
 
 def assess_all_pillars(row: pd.Series, profile: dict, fit: dict, score: dict) -> dict:
+    """{pillar: assess_pillar(...)} for Connect, Collaborate and Empower."""
     return {p: assess_pillar(p, row, profile, fit, score) for p in PILLARS}
 
 
@@ -487,20 +492,8 @@ def assess_all_pillars(row: pd.Series, profile: dict, fit: dict, score: dict) ->
 # underwrite. The old check asked whether the startup operated in a capital-intensive SPACE, which
 # is a question about its CUSTOMERS, and answered yes for all 18 stored runs — including two pure
 # software companies whose only connection to capital equipment was that their users owned some.
-SFS_LINES = (
-    {"id": "vendor_finance", "label": "Vendor / sales finance",
-     "what": "sales-financing programmes so the startup's own customers can finance its equipment",
-     "url": SOURCES["sfs_equipment"]},
-    {"id": "equipment_finance", "label": "Equipment and technology finance",
-     "what": "leasing, rental, usage-based and as-a-service structures for assets the startup needs",
-     "url": SOURCES["sfs_equipment"]},
-    {"id": "project_finance", "label": "Project and structured finance",
-     "what": "debt and equity for energy, mobility and infrastructure projects",
-     "url": SOURCES["sfs"]},
-    {"id": "corporate_lending", "label": "Corporate lending / growth capital",
-     "what": "senior secured debt, revolvers, term loans, asset-based lending and growth capital",
-     "url": SOURCES["sfs"]},
-)
+# The four lines `assess_sfs` can name: vendor / sales finance, equipment and technology finance,
+# project and structured finance, and corporate lending / growth capital.
 
 # Projects SFS finances as projects: an SPV with an offtake, not a product sale.
 _PROJECT_TERMS = (r"\bpower (?:plant|purchase)", r"\bppa\b", r"\boff[- ]?take", r"\bepc\b",

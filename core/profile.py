@@ -2178,7 +2178,10 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                     extra = ex.submit(contextvars.copy_context().run, lambda: _ddg_many(
                         _suggested_queries(company, row, llm), max_results=5))
-                    results = _ddg_many(_base_queries(company, row), max_results=5)
+                    recent = (known_team or {}).get("recent") or {}
+                    skip = {slot for slot in ("founders", "programs") if recent.get(slot)}
+                    results = _ddg_many({k: v for k, v in _base_queries(company, row).items()
+                                         if k not in skip}, max_results=5)
                     results.update(extra.result())
             site = _ready(site)
             # Fold the company's own site text in as pseudo-results so the grounding gate

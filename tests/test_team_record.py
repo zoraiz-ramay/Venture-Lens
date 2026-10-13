@@ -38,7 +38,8 @@ def test_a_full_evaluation_skips_the_searches_for_what_is_already_known(monkeypa
 
 def test_known_team_needs_a_sourced_entry():
     runs = [{"deep_profile": {"founders": [{"name": "Ada"}], "programs": [PROG]}}]
-    assert carry_forward.known_team(runs) == {"founders": False, "programs": True}   # Ada has no source
+    known = carry_forward.known_team(runs)
+    assert (known["founders"], known["programs"]) == (False, True)   # Ada has no source
 
 
 def test_the_merge_keeps_the_runs_entries_first_and_marks_what_the_refresh_added():
@@ -315,3 +316,27 @@ def test_a_searched_team_is_really_stored_and_the_next_open_reads_it(monkeypatch
     assert [p["name"] for p in again["programs"]] == ["Techstars", "TUM Venture Labs"]
     assert [i["name"] for i in again["investors"]][0] == "UVC Partners"
     assert store.latest_enrichment("Stored Team GmbH", "team")["partners"][0]["name"] == "TUM"
+
+
+def test_founder_and_programme_searches_are_skipped_only_when_re_found_recently(monkeypatch):
+    import datetime as dt
+    found_now = {"run_created_at": "2026-10-10T00:00:00+00:00", "deep_profile": {"founders": [ADA], "programs": [PROG]}}
+    carried = {"run_created_at": "2026-10-10T00:00:00+00:00",
+               "deep_profile": {"founders": [{**ADA, "last_confirmed_at": "2026-08-01"}], "programs": []}}
+    old = {"run_created_at": "2026-07-01T00:00:00+00:00", "deep_profile": {"founders": [ADA], "programs": [PROG]}}
+    today = dt.date(2026, 10, 13)
+    assert carry_forward.known_team([found_now], today)["recent"] == {"founders": True, "programs": True}
+    assert carry_forward.known_team([carried], today)["recent"]["founders"] is False   # only carried
+    assert carry_forward.known_team([old], today)["recent"] == {"founders": False, "programs": False}
+
+    queries = []
+    monkeypatch.setattr(P, "_ddg_many", lambda qs, **k: queries.append(set(qs)) or {})
+
+    class NoModel:
+        available = False
+
+    known = carry_forward.known_team([found_now], today)
+    P.research_profile(pd.Series({"company_name": "Acme"}), NoModel(), do_web=True, known_team=known)
+    base = next(q for q in queries if "funding" in q)
+    assert "founders" not in base and "programs" not in base
+    assert {"founder_bg", "corp_programs"} <= base          # the broader searches still run

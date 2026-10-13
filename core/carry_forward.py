@@ -411,12 +411,31 @@ def team_run(record: dict | None) -> dict | None:
             "team_record": True}
 
 
-def known_team(prior_runs: list) -> dict:
+KNOWN_RECENT_DAYS = 30       # a slot re-found this recently need not be searched for again
+
+
+def known_team(prior_runs: list, today: _dt.date | None = None) -> dict:
     """Whether earlier runs already found sourced founders / programmes. A full evaluation does not
-    search for them again; they come in through merge_profile like every carried list."""
+    run the recall nets for them again; they come in through merge_profile like every carried list.
+
+    ``recent`` says whether a run within KNOWN_RECENT_DAYS found them ITSELF (not carried): then
+    the main wave also skips its dedicated founder / programme searches, keeping only the broader
+    ones (founder backgrounds, "backed by / cohort") that can still turn up something new. Two
+    fewer searches compete for the wave's slots, and fewer fresh samples means less to settle."""
     def found(path):
         return any(_grounded(i) for run in prior_runs or [] for i in _get(_profile_of(run), path) or [])
-    return {"founders": found(("founders",)), "programs": found(("programs",))}
+
+    def recent(path):
+        if today is None:
+            return False
+        for run in prior_runs or []:
+            day = _run_date(run)
+            if day and (today - day).days <= KNOWN_RECENT_DAYS and any(
+                    _grounded(i) and not i.get("last_confirmed_at") for i in _get(_profile_of(run), path) or []):
+                return True
+        return False
+    return {"founders": found(("founders",)), "programs": found(("programs",)),
+            "recent": {"founders": recent(("founders",)), "programs": recent(("programs",))}}
 
 
 # ----------------------------------------------------------------------------------- public API

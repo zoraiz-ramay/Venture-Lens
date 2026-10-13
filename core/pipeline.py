@@ -389,7 +389,7 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
     stored_team = carry_forward.team_run(team_record)
     if stored_team:
         priors = sorted(priors + [stored_team], key=carry_forward._when)
-    known_team = carry_forward.known_team(priors)
+    known_team = carry_forward.known_team(priors, datetime.now(timezone.utc).date())
     carried: dict = {}
 
     tools = load_siemens_tools(tools_path)

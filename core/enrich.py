@@ -112,6 +112,9 @@ def search_web(row: pd.Series) -> dict:
         # from ~11 queries to ~17 when the commercial-posture searches were added. The semaphore
         # caps concurrency at 10 whatever we ask for — raising it would just burst DuckDuckGo into
         # rate-limiting us — so a longer wave means a second batch, and the deadline has to cover it.
+        # Inside an evaluation _ddg_many also holds it to the run's own deadline
+        # (pipeline.EVAL_DEADLINE_S via web.wave_budget): 55s is the most this wave waits, not
+        # what it is given when the run has less left.
         results = _ddg_many(all_q, max_results=4, overall_timeout=55.0, stats=search_stats)
         if search_stats.get("timed_out"):
             log.warning("[enrich] %s: %d/%d web queries abandoned at the deadline",

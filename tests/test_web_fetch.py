@@ -301,6 +301,53 @@ def test_cache_entry_getter_is_optional(monkeypatch):
     assert calls == ["k"] and meta == {}
 
 
+def test_a_wave_waits_for_its_own_budget_or_the_time_the_run_has_left(monkeypatch):
+    monkeypatch.setattr(web, "WAVE_FLOOR_S", 10.0)
+    assert web.wave_budget(55.0) == 55.0                           # outside a run: unchanged
+    token = web.set_run_deadline(30.0)
+    try:
+        assert 29.0 < web.wave_budget(55.0) <= 30.0                # the run's time left
+        assert web.wave_budget(20.0) == 20.0                       # its own, when shorter
+    finally:
+        web.reset_run_deadline(token)
+    token = web.set_run_deadline(0.001)
+    try:
+        import time
+        time.sleep(0.01)
+        assert web.wave_budget(55.0) == 10.0                       # past the deadline: the floor
+    finally:
+        web.reset_run_deadline(token)
+    assert web.time_left() is None
+
+
+def test_the_run_deadline_cuts_a_waves_wait_short_and_says_so(monkeypatch):
+    """Enrichment waits up to 55s for its wave. A run with less time left waits only that long, and
+    the slot that missed it is named as timed out, never as empty."""
+    import threading
+    import time
+    release = threading.Event()
+
+    def search(q, n=4, **kw):
+        if "slow" in q:
+            release.wait(5)
+        return [{"title": "hit"}]
+
+    monkeypatch.setattr(web, "ddg_search", search)
+    monkeypatch.setattr(web, "WAVE_FLOOR_S", 0.3)
+    stats = {}
+    token = web.set_run_deadline(0.2)
+    began = time.monotonic()
+    try:
+        out = web._ddg_many({"a": "fast one", "b": "slow one"}, overall_timeout=55.0, stats=stats)
+    finally:
+        web.reset_run_deadline(token)
+        release.set()
+    assert time.monotonic() - began < 2.0
+    assert out["a"] and out["b"] == []
+    assert stats["timed_out_keys"] == ["b"] and stats["empty_keys"] == []
+    assert stats["deadline_capped_s"] <= 0.3
+
+
 def test_ddg_many_stats_on_empty_input():
     stats = {}
     assert web._ddg_many({}, stats=stats) == {}

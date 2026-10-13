@@ -99,6 +99,40 @@ def stop_collecting_timeline(token) -> None:
     _timeline.reset(token)
 
 
+# ---------------------------------------------------------------------------- run deadline
+# One deadline for a whole evaluation (pipeline.EVAL_DEADLINE_S). Each search wave had its own
+# fixed budget — enrichment's 55s, the profile's 40s — and they started at different times, so a
+# throttled run could still be searching long after the reviewer's minute was up. A wave now waits
+# for min(its own budget, the time the run has left), never less than WAVE_FLOOR_S: a wave given
+# nothing would return empty slots that read downstream exactly like "the web knows nothing", and
+# at the floor a grounded search (~3.6s median) and its page reads (3s) still fit. Only waits are
+# capped: a model call is never cut mid-answer (a search past its wave deadline runs on, is
+# billed, and still fills its topic for later queries — see _first_answer).
+WAVE_FLOOR_S = float(os.getenv("EVAL_WAVE_FLOOR_S", "10"))
+_run_deadline: contextvars.ContextVar = contextvars.ContextVar("run_deadline", default=None)
+
+
+def set_run_deadline(seconds: float | None):
+    """Start the current run's clock: ``seconds`` from now (None or <= 0: no deadline). Token."""
+    return _run_deadline.set(time.monotonic() + seconds if seconds and seconds > 0 else None)
+
+
+def reset_run_deadline(token) -> None:
+    _run_deadline.reset(token)
+
+
+def time_left() -> float | None:
+    """Seconds until the run's deadline (negative once past it), or None outside a run."""
+    deadline = _run_deadline.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def wave_budget(own: float) -> float:
+    """How long a search wave with its own budget ``own`` may wait now."""
+    left = time_left()
+    return own if left is None else min(own, max(WAVE_FLOOR_S, left))
+
+
 def run_offset_ms(t: float):
     """Milliseconds from the run's start to ``t``, or None outside a run."""
     timeline = _timeline.get()
@@ -628,7 +662,8 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
     The deadline runs from the moment the wave's first search starts, not from the call: time
     spent queued behind other waves for a process-wide slot (``_ddg_slots``) is not throttling,
     and charging it to the wave would abandon queries that never got to run. The queue wait is
-    itself bounded by one more ``overall_timeout``.
+    itself bounded by one more ``overall_timeout``. Inside an evaluation both waits are also held
+    to the time the run has left (``wave_budget``, never under ``WAVE_FLOOR_S``).
     """
     called = time.time()
     out: dict = {k: [] for k in (queries or {})}
@@ -681,8 +716,10 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
         # only be entered once, so the copy has to be per-thread).
         threading.Thread(target=contextvars.copy_context().run,
                          args=(worker, k, q), daemon=True).start()
-    started.wait(timeout=overall_timeout)
-    done.wait(timeout=overall_timeout)   # returns early once all finish, else at the deadline
+    # Both waits are held to the run's deadline as it stands when each begins (wave_budget).
+    started.wait(timeout=wave_budget(overall_timeout))
+    budget = wave_budget(overall_timeout)
+    done.wait(timeout=budget)   # returns early once all finish, else at the deadline
     # One snapshot, taken under the lock, is both what the caller gets and what the stats describe.
     # Returning `out` itself handed the caller a dict that abandoned workers were still writing
     # into: profile.research_profile reads its wave while other branches run, so a search landing
@@ -693,9 +730,13 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
         settled = set(finished)
         replayed = dict(cached_at)
     # queued_ms is the wait for a process-wide search slot: other waves' searches, not this one's.
+    # capped_s says the run's deadline, not the wave's own budget, decided how long it waited.
     mark("search_wave", called, queries=len(items), cached=len(replayed), timed_out=len(items) - len(settled),
-         queued_ms=int(((first_search[0] if first_search else called) - called) * 1000))
+         queued_ms=int(((first_search[0] if first_search else called) - called) * 1000),
+         **({"capped_s": round(budget, 1)} if budget < overall_timeout else {}))
     if isinstance(stats, dict):
+        if budget < overall_timeout:
+            stats["deadline_capped_s"] = round(budget, 1)
         stats["returned"] = len(settled)
         stats["timed_out"] = len(items) - len(settled)
         stats["empty"] = sum(1 for k in settled if not result.get(k))

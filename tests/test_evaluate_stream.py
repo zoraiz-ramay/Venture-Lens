@@ -239,6 +239,31 @@ def test_scoring_that_never_reads_fit_starts_while_fit_is_still_running(offline,
     assert result["fit"]["_overlapped"] is True
 
 
+def test_one_deadline_holds_every_search_wave_of_the_run(offline, monkeypatch):
+    """Each wave had its own fixed budget (enrichment 55s) counted from whenever it started. Inside
+    an evaluation every wave now sees one run clock, started when evaluate() is called, in
+    whichever pool thread it runs."""
+    import importlib
+    profile_mod, enrich_mod, trend_mod = (importlib.import_module(f"core.{m}") for m in ("profile", "enrich", "trend"))
+    df, tools = offline
+    left = {}
+
+    def wave(name):
+        def run(queries, **kw):
+            left.setdefault(name, pipeline.web.time_left())
+            return {k: [] for k in queries}
+        return run
+
+    for mod, name in ((profile_mod, "profile"), (enrich_mod, "enrich"), (trend_mod, "trend")):
+        monkeypatch.setattr(mod, "_ddg_many", wave(name))
+    monkeypatch.setattr(enrich_mod, "fetch_site_text", lambda *a, **kw: {})
+    monkeypatch.setattr(pipeline, "EVAL_DEADLINE_S", 40.0)
+    pipeline.evaluate("Acme Vision", None, tools, do_web=True, df=df)
+    assert set(left) >= {"enrich", "profile"}
+    assert all(v is not None and 0 < v <= 40.0 for v in left.values())
+    assert pipeline.web.time_left() is None                       # the clock ends with the run
+
+
 def test_a_streamed_run_that_scores_before_verification_lands_is_the_same_run(offline, monkeypatch):
     """Starting Team & Ecosystem before verification is only allowed when it cannot change a
     prompt; the streamed result must then be byte-identical to a run that waited."""

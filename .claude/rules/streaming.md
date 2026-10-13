@@ -65,6 +65,14 @@ Two edges were moved on that evidence, both without changing a prompt:
 - The profile branch starts its headcount and Siemens waves beside the base wave, and the
   headcount extraction beside the main extraction; they read nothing extraction produces.
 
+**One deadline per run.** `pipeline.EVAL_DEADLINE_S` (55s, from the call to `evaluate`) caps
+every search wave's wait at `min(its own budget, time left)`, never under `web.WAVE_FLOOR_S`
+(10s) — a wave given nothing returns empty slots that read like "the web knows nothing"
+(`web.wave_budget`, applied inside `_ddg_many`, so profile's and trend's waves follow it too). A
+capped wave records `capped_s` in the timeline and `deadline_capped_s` in its stats; the slots it
+abandoned are in `timed_out_keys`, distinct from `empty_keys`. Model calls are never cut: their
+own timeouts, hedges and truncation re-asks stand.
+
 The three long thinking calls (fit match, verification, trend momentum) are hedged
 (`LLMClient.complete(hedge_after=…)`): a duplicate races a request still running at ~1.5× its
 usual time. Same request, temperature 0 — the same contract as a retry, without discarding the

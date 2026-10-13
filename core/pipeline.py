@@ -18,6 +18,7 @@ import contextlib
 import contextvars
 import functools
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
@@ -42,6 +43,13 @@ log = logging.getLogger(__name__)
 # Each branch runs inside its own current span so the searches and completions it makes nest
 # under it: the question a trace answers is which branch the 118 seconds went to.
 _tracer = trace.get_tracer(__name__)
+
+# The time an evaluation aims to finish in, from the moment evaluate() is called. It caps every
+# search wave's wait (web.wave_budget: min(the wave's own budget, time left), never below
+# web.WAVE_FLOOR_S); it never cuts a model call, whose own timeouts and truncation re-asks stand.
+# It is a ceiling on waiting for searches, not a promise: scoring after the last wave still runs to
+# completion. 0 turns it off.
+EVAL_DEADLINE_S = float(os.getenv("EVAL_DEADLINE_S", "55"))
 
 
 def _traced(span_name: str, fn):
@@ -221,12 +229,16 @@ def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = T
     span.set_attribute("startup.department", str((department or {}).get("id", "")))
     span.set_attribute("web_cache.enabled", use_web_cache)
     token = web.set_cache_enabled(use_web_cache)
+    # The run's one deadline starts here, before the company is even resolved: the reviewer's
+    # minute does. Pool threads inherit it through copy_context like the cache flags.
+    deadline = web.set_run_deadline(EVAL_DEADLINE_S)
     try:
         with _run_records() as records:
             web.set_search_subject(name)
             return records(_evaluate(name, tools_path, do_web, df, on_step,
                                      on_partial, tracxn, department, prior_runs, departments, team_record))
     finally:
+        web.reset_run_deadline(deadline)
         web.reset_cache_enabled(token)
 
 

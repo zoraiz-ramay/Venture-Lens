@@ -165,11 +165,20 @@ def _when(run: dict) -> str:
     return str(run.get("run_created_at") or run.get("created_at") or "")
 
 
+def _name_key(value) -> str:
+    """A name's key, singular: "TUM Venture Labs" and "TUM Venture Lab" are one programme."""
+    words = _norm(value).split()
+    if words and len(words[-1]) > 3 and words[-1].endswith("s") and not words[-1].endswith("ss"):
+        words[-1] = words[-1][:-1]
+    return " ".join(words)
+
+
 def _item_key(item, fields) -> tuple:
     if not isinstance(item, dict):
         return ()
     return tuple(person_key(item.get("name")) if f == "person"
                  else str(item.get(f) or "").strip() if f == "source_url"
+                 else _name_key(item.get(f)) if f in ("name", "company")
                  else _norm(item.get(f)) for f in fields)
 
 
@@ -407,7 +416,7 @@ def known_team(prior_runs: list) -> dict:
 # ----------------------------------------------------------------------------------- public API
 
 def degraded(run: dict) -> bool:
-    """A run in which every model call failed.
+    """A run in which most model calls failed.
 
     Its profile is the keyword fallback and its trend, fit and verification are heuristics, so it
     is no evidence that a fact went missing or changed. Read from the run's own call log
@@ -423,7 +432,10 @@ def degraded(run: dict) -> bool:
         calls, failed = int(usage.get("calls") or 0), int(usage.get("failed_calls") or 0)
     except (TypeError, ValueError):
         return False
-    return calls > 0 and failed >= calls
+    # Half or more, not only all: a run that lost its credits mid-way (Radical Dot, October 2026:
+    # 63 of 78 calls failed on insufficient_quota) has no trend, no pillars and no total, and as
+    # an earlier run it would vouch that its missing competitors were never found.
+    return calls > 0 and failed * 2 >= calls
 
 
 def usable_priors(prior_runs, fresh_identity: dict) -> list:
@@ -616,6 +628,13 @@ def merge_trend(fresh: dict, prior_runs: list, now: str, today: _dt.date, report
         return fresh
     out = copy.deepcopy(fresh)
     land = out.get("landscape")
+    if not isinstance(land, dict) and prior_runs:
+        # This run's trend failed before it produced a landscape (a failed momentum call returns
+        # the offline result, which has none). Without this the run showed no competitors, peers or
+        # market size at all; an empty landscape lets the merge below carry what earlier runs found.
+        land = out["landscape"] = {"competitors": [], "funded_peers": [], "active_investors": [],
+                                   "market_size": None}
+        report["landscape_missing"] = True
     if isinstance(land, dict):
         size = land.get("market_size")
         if size and not market_size_current(size, today, found=today):

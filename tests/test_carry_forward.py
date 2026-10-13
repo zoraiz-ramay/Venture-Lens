@@ -284,6 +284,28 @@ def test_held_back_entries_are_not_scorer_evidence():
     assert not any(r["text"] == "OneOff" for r in evidence_for(run))
 
 
+def test_a_run_whose_trend_failed_keeps_the_landscape_on_record():
+    ident = cf.identity("Acme Vision", "https://acme.example")
+    earlier = prior("2026-10-01T00:00:00+00:00", trend={"landscape": {
+        "competitors": [{"name": "Refinity", "source_url": "https://refinity.example"}],
+        "market_size": {**_size("2025"), "value": "USD 4.8 billion"}}})
+    out = cf.merge_trend({"momentum": None}, cf.usable_priors([earlier], ident), NOW, TODAY, {})
+    assert [c["name"] for c in out["landscape"]["competitors"]] == ["Refinity"]
+    assert out["landscape"]["market_size"]["value"] == "USD 4.8 billion"
+
+
+def test_a_run_that_lost_most_of_its_model_calls_is_not_an_earlier_run():
+    ident = cf.identity("Acme Vision", "https://acme.example")
+    broken = {**prior("2026-10-12T00:00:00+00:00"), "token_usage": {"calls": 78, "failed_calls": 63}}
+    assert cf.usable_priors([broken], ident) == []
+
+
+def test_a_programme_written_singular_and_plural_is_one_programme():
+    older = prior("2026-09-01T00:00:00+00:00", programs=[{"name": "TUM Venture Labs", "source_url": "https://a.example"}])
+    out, _ = merge({"programs": [{"name": "TUM Venture Lab", "source_url": "https://b.example"}]}, [older])
+    assert len(out["profile"]["programs"]) == 1
+
+
 # ----------------------------------------------------------------------------------- pipeline
 
 def test_an_evaluation_carries_an_earlier_runs_investor_into_its_result(offline):

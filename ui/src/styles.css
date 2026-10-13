@@ -807,6 +807,10 @@ ix-menu:not(.expanded) .acct-name { display: none; }
 /* Evidence an earlier evaluation found and this refresh did not re-confirm (ConfirmedTag.jsx). */
 .confirmed-tag { font-size: 11px; color: var(--text-3); white-space: nowrap; }
 .confirmed-tag::before { content: "· "; }
+/* A carried fact whose cited page no longer states it (core/recheck.py): kept, but not current. */
+.confirmed-tag--stale { color: var(--warning); }
+/* One line on what this run changed against earlier runs (RunChanges.jsx). */
+.run-changes { margin: 4px 0 12px; font-size: 12px; color: var(--text-3); }
 /* A run part of which fell back because the model failed (DegradedNotice.jsx). */
 .degraded-notice { margin: 8px 0 12px; padding: 10px 14px; border: 1px solid var(--warning);
   border-left-width: 4px; border-radius: 6px; background: var(--warning-soft); color: var(--text-1); }

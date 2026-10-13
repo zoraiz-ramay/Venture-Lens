@@ -6,6 +6,8 @@ import { useResearch } from "../research.jsx";
 import { api } from "../api.js";
 import { useApp } from "../state.jsx";
 import DegradedNotice from "../components/DegradedNotice.jsx";
+import RunChanges from "../components/RunChanges.jsx";
+import { FactStatusContext } from "../components/factStatus.js";
 import ProfileLayout from "./profile/ProfileLayout.jsx";
 import OverviewTab from "./profile/OverviewTab.jsx";
 import ScoringTab from "./profile/scoring/ScoringTab.jsx";
@@ -223,6 +225,7 @@ export default function Profile() {
         </div>
       </div>
       <DegradedNotice degraded={res.degraded} />
+      <RunChanges carryForward={res.carry_forward} factStatus={res.fact_status} />
 
       {/* Navigation is the rail alone. The pipeline ribbon that used to sit here rendered all
           seven steps as done on every finished run, so it reported nothing a reader could act on
@@ -232,6 +235,7 @@ export default function Profile() {
           parameter — including the `name=` that /startup/new is evaluating — so selecting a group
           mid-run reset the page to a skeleton. Unreachable before, because /startup/new used to
           redirect to /startup/:id before anything was clickable. */}
+      <FactStatusContext.Provider value={res.fact_status || []}>
       <ProfileLayout view={tab} onSelectView={(v) => setParams((prev) => {
         const next = new URLSearchParams(prev);
         next.set("tab", v);
@@ -254,6 +258,7 @@ export default function Profile() {
                 : <EvidenceTab res={res} />)
               : <OverviewTab res={res} />}
       </ProfileLayout>
+      </FactStatusContext.Provider>
     </div>
   );
 }

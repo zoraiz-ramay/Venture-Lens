@@ -454,13 +454,14 @@
     },
     {
       "path": "ui/src/components/ConfirmedTag.jsx",
-      "lines": 26,
+      "lines": 43,
       "exports": [
         "ConfirmedTag",
         "confirmedLabel"
       ],
       "css_classes": [
-        "confirmed-tag"
+        "confirmed-tag",
+        "confirmed-tag--stale"
       ]
     },
     {
@@ -559,6 +560,22 @@
     {
       "path": "ui/src/components/ProfileSectionNav.test.jsx",
       "lines": 152,
+      "exports": [],
+      "css_classes": []
+    },
+    {
+      "path": "ui/src/components/RunChanges.jsx",
+      "lines": 23,
+      "exports": [
+        "RunChanges"
+      ],
+      "css_classes": [
+        "run-changes"
+      ]
+    },
+    {
+      "path": "ui/src/components/RunChanges.test.jsx",
+      "lines": 47,
       "exports": [],
       "css_classes": []
     },
@@ -1572,7 +1589,7 @@
     },
     {
       "path": "ui/src/pages/Profile.jsx",
-      "lines": 260,
+      "lines": 265,
       "exports": [
         "Profile"
       ],
@@ -1887,7 +1904,7 @@
     "routes": 9,
     "api_methods": 40,
     "design_tokens": 70,
-    "jsx_files": 109,
-    "jsx_lines": 11468
+    "jsx_files": 111,
+    "jsx_lines": 11560
   }
 }

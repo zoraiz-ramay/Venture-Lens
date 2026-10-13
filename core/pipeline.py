@@ -408,8 +408,14 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
     # `profile_researching` marks a profile the branch is still adding to, so the page can say
     # "still researching" where it would otherwise render a section's empty state as a finding.
     # Only partials carry it; the stored result never does.
-    row_profile, row_sources = _header_profile(row, {}, source)
-    _emit("profile", {"profile": row_profile, "profile_sources": row_sources, "deep_profile": {},
+    # With earlier runs, the record they built goes out at once too — founders, programmes,
+    # investors and the values they settled on — through the same merge as the final profile.
+    # Safe for the same reason: carry-forward never drops a carried entry or flips a settled value,
+    # so the later versions add to what this shows.
+    on_record = carry_forward.merge_profile({"profile": {}, "facts": []}, priors,
+                                            now.isoformat(timespec="seconds"), {})["profile"] if priors else {}
+    row_profile, row_sources = _header_profile(row, on_record, source)
+    _emit("profile", {"profile": row_profile, "profile_sources": row_sources, "deep_profile": on_record,
                       "profile_researching": True})
 
     # verify / summarize / fit / trend are independent LLM steps — run them concurrently.

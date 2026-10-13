@@ -447,3 +447,14 @@ def test_a_web_only_company_keeps_the_website_its_earlier_runs_settled_on():
               "token_usage": {"calls": 10, "failed_calls": 10}}
     assert cf.pinned_website("Acme Vision", [own, broken]) == "https://acmevision.example"
     assert cf.pinned_website("Other Co", [own]) == ""
+
+
+def test_the_first_profile_partial_already_shows_what_earlier_runs_found(offline):
+    df, tools = offline
+    earlier = {"company": "Acme Vision", "run_created_at": "2026-08-22T03:00:00+00:00",
+               "profile": {"website": "https://acme.example"},
+               "deep_profile": {"commercial": {"investors": [UVC]}}, "facts": []}
+    partials = []
+    _run(df, tools, prior_runs=[earlier], on_partial=lambda section, data: partials.append((section, data)))
+    first = next(data for section, data in partials if section == "profile")
+    assert [i["name"] for i in first["deep_profile"]["commercial"]["investors"]] == ["UVC Partners"]

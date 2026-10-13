@@ -72,21 +72,26 @@ def _evidence(run: dict) -> list[dict]:
     return _evidence_cut(run)[0]
 
 
-def evidence_settled_without(run: dict, key: str) -> bool:
-    """True when ``_evidence(run)`` cannot change whatever ``run[key]`` turns out to hold.
+def evidence_settled_without(run: dict, *keys: str) -> bool:
+    """True when ``_evidence(run)`` cannot change whatever ``run[k]`` turns out to hold, for every
+    one of ``keys`` (the research branches that have not landed yet).
 
     The budget is spent in evidence_for's fixed order, so once it runs out on a record that comes
-    before ``key``'s, nothing ``key`` holds is ever read, and record ids are numbered in that same
-    order. That is what lets Team & Ecosystem, the pillar concepts and Collaborate start while the
-    trend stage — measured as the last research branch to finish — is still running, without a
-    single prompt changing. On 80 stored runs the budget ran out before the trend in 71.
+    before the earliest of ``keys``, nothing any of them holds is ever read, and record ids are
+    numbered in that same order. That is what lets Team & Ecosystem, the pillar concepts and
+    Collaborate start while the trend stage — measured as the last research branch to finish — or
+    verification — which waits for enrichment's whole search wave and then thinks for ~15s — is
+    still running, without a single prompt changing. On 80 stored runs the budget ran out before
+    the trend in 71.
     """
     from .judgment import EVIDENCE_KEYS
-    cut = _evidence_cut({**run, key: None})[1]
+    if not keys:
+        return True
+    cut = _evidence_cut({**run, **{k: None for k in keys}})[1]
     if cut is None:
-        return False            # the budget never ran out: key's records would be read
+        return False            # the budget never ran out: the keys' records would be read
     root = re.split(r"[.\[]", str(cut.get("source", "")), maxsplit=1)[0]
-    return root in EVIDENCE_KEYS[:EVIDENCE_KEYS.index(key)]
+    return root in EVIDENCE_KEYS[:min(EVIDENCE_KEYS.index(k) for k in keys)]
 
 
 def _evidence_cut(run: dict) -> tuple[list[dict], dict | None]:

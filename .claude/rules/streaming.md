@@ -52,11 +52,16 @@ call log's `start_ms`. Read it before moving work: on three cold runs the chain 
 profile) → a 16–21s pillars tail led by Empower's tool checks. Profile was not last.
 
 Two edges were moved on that evidence, both without changing a prompt:
-- Team & Ecosystem, the pillar concepts, Collaborate and Empower start before the trend lands
-  when `pillar_match.evidence_settled_without(research, "trend")` — the 14k evidence budget runs
-  out before `evidence_for` reaches the trend, so its records are never read (71 of 80 stored
-  runs). Market, Connect (market records) and the model score still wait for it. Empower starts
-  the moment fit lands. `tests/test_all_departments.py` pins that the result is identical.
+- Team & Ecosystem, the pillar concepts, Collaborate and Empower start before verification and
+  the trend land when `pillar_match.evidence_settled_without(research, *outstanding)` — the 14k
+  evidence budget runs out before `evidence_for` reaches the earliest outstanding branch, so its
+  records are never read (before the trend in 71 of 80 stored runs). It is checked again each time
+  enrichment, verification or the trend lands. Market and Connect read the trend itself and start
+  once it is in, still without verification when the budget allows; the model score reads
+  everything and traction reads verification's claims, so both wait for both. Empower starts the
+  moment fit lands. `tests/test_all_departments.py` and `tests/test_evaluate_stream.py` pin that
+  the result is identical. Verification lands ~15s after enrichment's wave (Radical Dot: wave
+  ~29–33s, verification ~47s), and everything downstream used to wait for it.
 - The profile branch starts its headcount and Siemens waves beside the base wave, and the
   headcount extraction beside the main extraction; they read nothing extraction produces.
 

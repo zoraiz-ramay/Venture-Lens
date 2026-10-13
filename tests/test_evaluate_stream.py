@@ -237,3 +237,36 @@ def test_scoring_that_never_reads_fit_starts_while_fit_is_still_running(offline,
     dep = {"id": "di", "label": "Digital Industries", "interests": ["machine vision"], "demo": True}
     result = _run(df, tools, department=dep)
     assert result["fit"]["_overlapped"] is True
+
+
+def test_a_streamed_run_that_scores_before_verification_lands_is_the_same_run(offline, monkeypatch):
+    """Starting Team & Ecosystem before verification is only allowed when it cannot change a
+    prompt; the streamed result must then be byte-identical to a run that waited."""
+    import re
+    import threading
+    from core import pillar_match, team_ecosystem
+    df, tools = offline
+    dep = {"id": "di", "label": "Digital Industries", "interests": ["machine vision"], "demo": True}
+    team_started = threading.Event()
+    real_team, real_verify = team_ecosystem.assess_team, pipeline.verify_facts
+
+    def team(*a, **kw):
+        team_started.set()
+        return real_team(*a, **kw)
+
+    def slow_verify(*a, **kw):
+        assert team_started.wait(5)
+        return real_verify(*a, **kw)
+
+    monkeypatch.setattr(team_ecosystem, "assess_team", team)
+    monkeypatch.setattr(pipeline, "verify_facts", slow_verify)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, *keys: True)
+    seen = []
+    early = _run(df, tools, department=dep, on_partial=lambda s, d: seen.append(s))
+    monkeypatch.setattr(pipeline, "verify_facts", real_verify)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, *keys: False)
+    late = _run(df, tools, department=dep)
+    clock = re.compile(r'"retrieved_at": "[^"]*"')
+    assert "verification" in seen
+    assert clock.sub("", json.dumps(early, sort_keys=True, default=str)) == \
+           clock.sub("", json.dumps(late, sort_keys=True, default=str))

@@ -458,13 +458,43 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
         done: dict = {}
         research = None
         early: dict = {}
-        # The research without the trend, once the trend provably cannot reach a scorer's evidence
-        # (False when it can). The trend was the last branch to land in every measured run.
-        trend_free = None
+        # The research the early scorers started on, before verification and/or the trend landed:
+        # set only once the branches still out provably cannot reach a scorer's evidence, so every
+        # prompt built from it is the prompt the finished research would have built.
+        early_run = None
+        tried: set = set()          # which sets of outstanding branches were already checked
         f_empower = None
+
+        def _start_settled():
+            # Team & Ecosystem, the pillar concepts and Collaborate read verification and the trend
+            # only through the evidence budget, which usually runs out before reaching them. When
+            # it does, they start now on the same evidence they would read later. Market and
+            # Connect read the trend itself and join once it has landed; the model score reads
+            # everything and traction reads verification's claims, so both still wait for both.
+            nonlocal early, early_run
+            missing = tuple(k for k in ("verification", "trend") if k not in done)
+            if (not deps or research is not None or not missing or missing in tried
+                    or not enriched.done() or not all(s in done for s in ("summary", "profile"))):
+                return
+            tried.add(missing)
+            from .pillar_match import evidence_settled_without
+            facts = enriched.result()["facts"] + done["profile"]["facts"]
+            candidate = _research(name, row, facts, done, profile, trend=done.get("trend"))
+            if evidence_settled_without(candidate, *missing):
+                early_run = early_run or candidate
+                early = _start_fit_free_scoring(ex, candidate, company, deps, llm, do_web,
+                                                started=early, trend_free="trend" in missing)
         pending = {fut: section for section, fut in jobs.items()}
+        # Enrichment is not a branch, but its landing is what can settle the evidence: the facts
+        # it adds come before verification in evidence_for, and verification itself thinks for
+        # another ~15s after it. None marks it.
+        pending[enriched] = None
         for fut in concurrent.futures.as_completed(pending):
             section = pending[fut]
+            if section is None:
+                fut.result()
+                _start_settled()
+                continue
             done[section] = fut.result()
             if section == "profile":
                 done[section] = carry_forward.merge_profile(
@@ -486,19 +516,7 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
                                   "deep_profile": deep_profile, "profile_researching": False})
             else:
                 _emit(section, done[section])
-            if (deps and trend_free is None and "trend" not in done
-                    and all(s in done for s in ("verification", "summary", "profile"))):
-                # Team & Ecosystem, the pillar concepts, Collaborate and Empower read the trend
-                # only through the evidence budget, which almost always runs out before reaching
-                # it. When it does, they start now on the same evidence they would read later;
-                # Market, Connect and the model score still wait, because they read the trend.
-                from .pillar_match import evidence_settled_without
-                facts = enriched.result()["facts"] + done["profile"]["facts"]
-                candidate = _research(name, row, facts, done, profile, trend=None)
-                trend_free = candidate if evidence_settled_without(candidate, "trend") else False
-                if trend_free:
-                    early = _start_fit_free_scoring(ex, trend_free, company, deps, llm, do_web,
-                                                    trend_free=True)
+            _start_settled()
             if research is None and all(s in done for s in jobs if s != "fit"):
                 enrichment = enriched.result()
                 research, traction = _join_research(name, row, enrichment, done, profile,
@@ -507,10 +525,11 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
                     early = _start_fit_free_scoring(ex, research, company, deps, llm, do_web,
                                                     started=early)
             if deps and f_empower is None and "fit" in done and "prep" in early:
-                # Empower reads fit and the prepared concepts, never the trend: it starts on
-                # whichever research started the concepts, the moment fit lands.
+                # Empower reads fit and the prepared concepts, never the trend or verification
+                # outside the evidence: it starts on whichever research started the concepts, the
+                # moment fit lands.
                 f_empower = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"], "Empower",
-                                    {**(trend_free or research), "fit": done["fit"], "company": company}, llm)
+                                    {**(early_run or research), "fit": done["fit"], "company": company}, llm)
         _step("REVIEW", "done")
 
         fit = done["fit"]
@@ -637,7 +656,7 @@ def _research(name, row, facts, done, profile, trend) -> dict:
     return {"company": name, "application": row.to_dict(), "profile": profile,
             "deep_profile": done["profile"]["profile"], "summary": done["summary"], "fit": None,
             "facts": [f.as_dict() for f in facts],
-            "verification": done["verification"], "trend": trend}
+            "verification": done.get("verification"), "trend": trend}
 
 
 def _start_fit_free_scoring(ex, research, company, departments, llm, do_web,
@@ -648,7 +667,9 @@ def _start_fit_free_scoring(ex, research, company, departments, llm, do_web,
     Collaborate runs once per department, in parallel.
 
     ``trend_free`` starts only what never reads the trend (``research`` has none yet); a later
-    call with ``started`` adds Market and Connect and keeps every job already running.
+    call with ``started`` adds Market and Connect and keeps every job already running. Nothing
+    here reads verification outside the evidence budget, so ``research`` may lack it whenever
+    ``pillar_match.evidence_settled_without`` says the budget ran out first.
     """
     from .team_ecosystem import assess_team
     from .market import assess_market

@@ -172,13 +172,97 @@ def test_team_and_pillars_start_before_the_trend_lands_and_conclude_the_same(off
 
     monkeypatch.setattr(team_ecosystem, "assess_team", team)
     monkeypatch.setattr(pipeline, "analyze_trend", trend)
-    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, key: True)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, *keys: True)
     early = _run(df, tools, departments=DEPS)
     assert seen["team_first"] is True
 
     monkeypatch.setattr(pipeline, "analyze_trend", real_trend)
-    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, key: False)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, *keys: False)
     late = _run(df, tools, departments=DEPS)
+    clock = re.compile(r'"retrieved_at": "[^"]*"')
+    assert clock.sub("", json.dumps(early, sort_keys=True, default=str)) == \
+           clock.sub("", json.dumps(late, sort_keys=True, default=str))
+
+
+# ----------------------------------------------------------------- scoring that starts before verification
+
+def test_verification_cannot_change_evidence_whose_budget_ran_out_before_it():
+    run = {"company": "Acme", "summary": "Vision", "facts": _facts(60)}
+    assert pillar_match.evidence_settled_without(run, "verification", "trend") is True
+    assert pillar_match.evidence_settled_without(run, "verification") is True
+    # Verification is read whenever the budget lasts that far, even if only the trend exhausts it.
+    late = {"company": "Acme", "summary": "Vision", "trend": {f"t{i}": "y" * 380 for i in range(60)}}
+    assert pillar_match.evidence_settled_without(late, "verification") is False
+    assert pillar_match.evidence_settled_without(late, "verification", "trend") is False
+    # Nothing outstanding: nothing can change.
+    assert pillar_match.evidence_settled_without({"company": "Acme"}) is True
+
+
+def test_settled_evidence_is_the_same_records_with_or_without_verification():
+    run = {"company": "Acme", "summary": "Vision", "facts": _facts(60)}
+    full = {**run, "verification": {"claims": [{"field": "hq", "value": "Munich", "status": "verified"}]},
+            "trend": {"summary": "a niche growing fast"}}
+    assert pillar_match._evidence(run) == pillar_match._evidence(full)
+
+
+def test_team_and_pillars_start_before_verification_lands_and_read_the_same_evidence(offline, monkeypatch):
+    """Verification waits for enrichment's whole search wave and then thinks for ~15s, and scoring
+    used to wait for it. With the evidence budget spent before verification's records, Team, the
+    pillar concepts, Collaborate — and once the trend is in, Market and Connect — start without it,
+    on records identical to the ones they read after it. Here verification refuses to finish until
+    Team and Market have started: under the old schedule that wait never ends."""
+    import json
+    import re
+    import threading
+    from core import pipeline, team_ecosystem, market as market_mod
+    from core.provenance import Fact
+    df, tools = offline
+    started = {"team": threading.Event(), "market": threading.Event()}
+    seen: dict = {}
+    real_team, real_market, real_prep = team_ecosystem.assess_team, market_mod.assess_market, pillar_match.prepare_pillars
+    real_verify, real_profile = pipeline.verify_facts, pipeline.research_profile
+
+    def profile(*a, **kw):
+        # Enough sourced facts to spend the 14k budget before verification is reached, as on most
+        # real runs (the evidence order is company, summary, profile, deep profile, facts, ...).
+        out = real_profile(*a, **kw)
+        out["facts"] = list(out["facts"]) + [Fact(key=f"k{i}", value=f"{i} " + "x" * 380, method="ddg_search",
+                                                  source_url=f"https://e{i}.example") for i in range(60)]
+        return out
+
+    def team(research, llm):
+        seen.setdefault("team", []).append(pillar_match._evidence(research))
+        started["team"].set()
+        return real_team(research, llm)
+
+    def market(research, llm):
+        seen.setdefault("market", []).append(pillar_match._evidence(research))
+        started["market"].set()
+        return real_market(research, llm)
+
+    def prep(run, *a, **kw):
+        seen.setdefault("prep", []).append(pillar_match._evidence(run))
+        return real_prep(run, *a, **kw)
+
+    def slow_verify(*a, **kw):
+        seen.setdefault("overlapped", []).append(all(e.wait(5) for e in started.values()))
+        return real_verify(*a, **kw)
+
+    monkeypatch.setattr(pipeline, "research_profile", profile)
+    monkeypatch.setattr(team_ecosystem, "assess_team", team)
+    monkeypatch.setattr(market_mod, "assess_market", market)
+    monkeypatch.setattr(pillar_match, "prepare_pillars", prep)
+    monkeypatch.setattr(pipeline, "verify_facts", slow_verify)
+    early = _run(df, tools, departments=DEPS)
+    assert seen["overlapped"] == [True]
+
+    for e in started.values():
+        e.clear()
+    monkeypatch.setattr(pipeline, "verify_facts", real_verify)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, *keys: False)
+    late = _run(df, tools, departments=DEPS)
+    for key in ("team", "market", "prep"):
+        assert seen[key][0] == seen[key][1], key           # the same records, so the same prompt
     clock = re.compile(r'"retrieved_at": "[^"]*"')
     assert clock.sub("", json.dumps(early, sort_keys=True, default=str)) == \
            clock.sub("", json.dumps(late, sort_keys=True, default=str))

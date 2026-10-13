@@ -601,7 +601,10 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
     Pass ``stats`` to receive observability for exactly that failure mode: it is populated with
     ``requested`` / ``returned`` / ``empty`` / ``timed_out``, where ``timed_out`` counts queries
     still in flight at the deadline (silently dropped) as distinct from those that genuinely
-    came back with no hits.
+    came back with no hits. ``timed_out_keys`` / ``empty_keys`` name them.
+
+    The dict returned is a snapshot taken at the deadline: a search that lands later never
+    appears in it, however long the caller holds it.
 
     ``stats`` also carries ``cached`` (how many keys were replayed rather than searched) and
     ``cached_at`` (``{key: iso8601}`` for those that were). A run that replays week-old results is
@@ -621,7 +624,8 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
     items = [(k, q) for k, q in (queries or {}).items() if str(q).strip()]
     if isinstance(stats, dict):
         stats.update({"requested": len(items), "returned": 0, "empty": 0,
-                      "timed_out": len(items), "cached": 0, "cached_at": {}})
+                      "timed_out": len(items), "cached": 0, "cached_at": {},
+                      "timed_out_keys": sorted(k for k, _ in items), "empty_keys": []})
     if not items:
         return out
     sem = threading.Semaphore(max(1, min(max_workers, len(items))))
@@ -668,22 +672,29 @@ def _ddg_many(queries: dict, max_results: int = 4, max_workers: int = 10,
                          args=(worker, k, q), daemon=True).start()
     started.wait(timeout=overall_timeout)
     done.wait(timeout=overall_timeout)   # returns early once all finish, else at the deadline
+    # One snapshot, taken under the lock, is both what the caller gets and what the stats describe.
+    # Returning `out` itself handed the caller a dict that abandoned workers were still writing
+    # into: profile.research_profile reads its wave while other branches run, so a search landing
+    # a second late could appear in one read of a key and not in the next, and which one a run
+    # saw depended on thread timing alone.
     with lock:
-        settled, replayed = set(finished), len(cached_at)
+        result = dict(out)
+        settled = set(finished)
+        replayed = dict(cached_at)
     # queued_ms is the wait for a process-wide search slot: other waves' searches, not this one's.
-    mark("search_wave", called, queries=len(items), cached=replayed, timed_out=len(items) - len(settled),
+    mark("search_wave", called, queries=len(items), cached=len(replayed), timed_out=len(items) - len(settled),
          queued_ms=int(((first_search[0] if first_search else called) - called) * 1000))
     if isinstance(stats, dict):
-        # Snapshot under the lock: workers may still be running past the deadline.
-        with lock:
-            settled = set(finished)
-            replayed = dict(cached_at)
         stats["returned"] = len(settled)
         stats["timed_out"] = len(items) - len(settled)
-        stats["empty"] = sum(1 for k in settled if not out.get(k))
+        stats["empty"] = sum(1 for k in settled if not result.get(k))
+        # Which slots, not just how many: a slot that timed out says nothing about the company,
+        # while one that came back empty is a finding, and the two must not be read alike.
+        stats["timed_out_keys"] = sorted(k for k, _ in items if k not in settled)
+        stats["empty_keys"] = sorted(k for k in settled if not result.get(k))
         stats["cached"] = len(replayed)
         stats["cached_at"] = replayed
-    return out
+    return result
 
 
 # --------------------------------------------------------------------------- direct site fetch

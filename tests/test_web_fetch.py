@@ -221,7 +221,53 @@ def test_ddg_many_reports_empty_and_timed_out(monkeypatch):
     out = web._ddg_many({"a": "good one", "b": "bad one"}, stats=stats)
     assert out["a"] and out["b"] == []
     assert stats == {"requested": 2, "returned": 2, "empty": 1, "timed_out": 0,
-                     "cached": 0, "cached_at": {}}
+                     "cached": 0, "cached_at": {}, "timed_out_keys": [], "empty_keys": ["b"]}
+
+
+def test_ddg_many_names_the_slots_that_timed_out_and_the_ones_that_came_back_empty(monkeypatch):
+    """A slot that never came back says nothing about the company; one that came back empty is a
+    finding. The counts alone could not say which slot was which."""
+    import threading
+    release = threading.Event()
+
+    def search(q, n=4, **kw):
+        if "slow" in q:
+            release.wait(5)
+            return [{"title": "late"}]
+        return [{"title": "hit"}] if "good" in q else []
+
+    monkeypatch.setattr(web, "ddg_search", search)
+    stats = {}
+    try:
+        web._ddg_many({"a": "good one", "b": "bad one", "c": "slow one", "d": "  "},
+                      overall_timeout=0.3, stats=stats)
+    finally:
+        release.set()
+    assert stats["timed_out_keys"] == ["c"] and stats["empty_keys"] == ["b"]
+    assert stats["timed_out"] == 1 and stats["empty"] == 1
+
+
+def test_a_search_landing_after_the_deadline_never_reaches_the_returned_wave(monkeypatch):
+    """The caller reads the wave while other branches run (profile.research_profile). A worker
+    abandoned at the deadline used to write into the very dict it held, so one read of a key
+    could miss a search and the next see it, depending on thread timing alone."""
+    import threading
+    release, late = threading.Event(), []
+
+    def search(q, n=4, **kw):
+        if "slow" in q:
+            late.append(threading.current_thread())
+            release.wait(5)
+            return [{"title": "late"}]
+        return [{"title": "hit"}]
+
+    monkeypatch.setattr(web, "ddg_search", search)
+    out = web._ddg_many({"a": "fast one", "b": "slow one"}, overall_timeout=0.3)
+    assert out == {"a": [{"title": "hit"}], "b": []}
+    release.set()
+    late[0].join(5)                        # the abandoned worker has now recorded its result
+    assert not late[0].is_alive()
+    assert out == {"a": [{"title": "hit"}], "b": []}
 
 
 def test_ddg_many_reports_which_queries_were_replayed_from_cache(monkeypatch):

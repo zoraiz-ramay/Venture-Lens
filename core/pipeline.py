@@ -36,6 +36,7 @@ from .fit import match_siemens_tools
 from .trend import analyze_trend
 from .text import format_funding
 from .profile import research_profile
+from . import recheck
 
 log = logging.getLogger(__name__)
 
@@ -426,6 +427,7 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
                        **{k: _cell(row.get(k, "")) for k in
                           ("funding", "employees_count", "employee_band", "customers")}}
     team = market = None
+    rechecked = None
     # One pool for the research branches AND the scoring after them. Scoring used to start only
     # once all five branches had returned, which put fit's ~35s match call in front of everything.
     # Only the model score and Empower read fit; Team & Ecosystem, Market, concept extraction,
@@ -532,6 +534,10 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
             if section == "profile":
                 done[section] = carry_forward.merge_profile(
                     done[section], priors, now.isoformat(timespec="seconds"), carried)
+                if do_web and priors:
+                    # Re-read the pages behind carried facts while scoring runs (core/recheck.py).
+                    rechecked = ex.submit(contextvars.copy_context().run, recheck.recheck,
+                                          done[section]["profile"], company, priors[-1].get("fact_status"))
             elif section == "trend":
                 done[section] = carry_forward.merge_trend(
                     done[section], priors, now.isoformat(timespec="seconds"), now.date(), carried)
@@ -612,6 +618,12 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
         # Surface partial coverage instead of letting it look like a complete run.
         engine += f" · {stats['timed_out']}/{stats.get('requested', 0)} web queries timed out"
 
+    fact_status = []
+    if rechecked is not None:
+        try:
+            fact_status = rechecked.result(timeout=recheck.RECHECK_BUDGET_S + 2)
+        except Exception:
+            fact_status = []
     result = {
         "found": True,
         "source": source,
@@ -635,6 +647,9 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
     # figure) still do.
     notes = {k: v for k, v in carried.items()
              if not (isinstance(v, dict) and set(v) == {"new", "reconfirmed", "carried"})}
+    if fact_status:
+        # Not scorer evidence (not in judgment.EVIDENCE_KEYS): it labels facts, never removes them.
+        result["fact_status"] = fact_status
     if priors or notes:
         result["carry_forward"] = {"prior_runs": len(priors), **(carried if priors else notes)}
     if departments:

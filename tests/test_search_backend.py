@@ -260,6 +260,25 @@ def test_one_evaluation_pays_for_each_topic_once_but_reads_it_for_each_query(gem
     assert len(client.asked) == 3
 
 
+def test_a_query_reads_as_many_pages_whether_it_searched_or_reused_the_topics_list(gemini, monkeypatch):
+    """Which query of a topic searches and which reuses its list is a race. Reading twice as far
+    down a reused list made the hits depend on who won it."""
+    pages = [{"title": f"p{i}", "url": f"https://acme.example/p{i}"} for i in range(10)]
+    gemini(pages, lambda url, **kw: (TEAM_PAGE, url))
+    fetched = []
+    monkeypatch.setattr(web, "_read_page", lambda url: fetched.append(url) or (TEAM_PAGE, url))
+    token, state = web.share_searches("Acme")
+    try:
+        web.ddg_search("Acme linkedin employees company size over time", 3)
+        owned = list(fetched)
+        fetched.clear()
+        web.ddg_search("Acme number of employees 2021 2022 2023 2024 headcount growth", 3)
+    finally:
+        web.stop_sharing_searches(token)
+    assert state["reused"] == 1
+    assert len(owned) == len(fetched) == 3
+
+
 def test_an_empty_shared_search_does_not_stand_in_for_the_next_one(gemini):
     client, _ = gemini([], lambda url, **kw: (PAGE, url))
     token, state = web.share_searches("Acme")

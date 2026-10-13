@@ -491,12 +491,13 @@ def _grounded_search(query: str, max_results: int = 5, meta: dict | None = None)
     llm = _grounding_client()
     if not llm.available or llm.provider not in ("gemini", "openai"):
         return []
-    found, shared = _search_pages(query, lambda: llm.web_answer(
+    found, _shared = _search_pages(query, lambda: llm.web_answer(
         f"Search the web for: {query}\nList the pages you found, one per line.",
         max_tokens=256, thinking_budget=0))
-    # A query answered from another's page list reads further down it: the first pages were picked
-    # for the other wording, and reading a page costs no tokens.
-    pages = found[:max_results * 2 if shared else max_results]
+    # The same number of pages whether this query searched or reused another's list. Which of the
+    # two happens is a race between queries of one topic, and reading twice as far down a shared
+    # list made the hits — and so the facts — depend on which query's search went out first.
+    pages = found[:max_results]
     if not pages:
         return []
 

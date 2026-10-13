@@ -30,6 +30,9 @@ import sqlite3
 import sys
 from collections import defaultdict
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from core.carry_forward import degraded  # noqa: E402
+
 DB = os.getenv("RUNS_DB", os.path.join(os.path.dirname(__file__), "..", "data", "runs.db"))
 
 # (label, path into the result, the item field that names it)
@@ -110,6 +113,8 @@ def load(db_path: str, company: str = "") -> dict[str, list[dict]]:
             result = json.loads(payload or "{}")
         except ValueError:
             continue
+        if degraded(result):
+            continue          # most model calls failed: the app ignores it too (carry_forward.degraded)
         result["_run_id"] = rid
         runs[name].append(result)
     return runs

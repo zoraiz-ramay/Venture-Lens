@@ -37,10 +37,18 @@ _cache_put = None
 _cache_entry = None
 
 # Set False for a run that must hit the network — "Re-evaluate" has to re-search, otherwise it
-# would just replay week-old results. A ContextVar rather than a parameter so the flag follows
+# would just replay week-old results (model answers still replay; see REPLAYED_ON_REFRESH). A ContextVar rather than a parameter so the flag follows
 # the request through _ddg_many's worker threads without touching every signature in between.
 _cache_private: contextvars.ContextVar = contextvars.ContextVar("web_cache_private", default=False)
 _cache_enabled: contextvars.ContextVar = contextvars.ContextVar("web_cache_enabled", default=True)
+# What a Refresh still replays. A completion and an embedding are keyed on their full input, so a
+# replay is the answer to exactly the question being asked: Refresh re-searches, and wherever the
+# fresh evidence is unchanged the prompt is unchanged and so is the answer. Re-asking used to make
+# the model rewrite trend's stage-1 query plan on every Refresh, and the competitors changed with
+# it (Dow/NOVA on one run, Sulzer/Clariter on the next, never found again). Search results, site
+# pages and every other kind are evidence about the company and are renewed. A private run still
+# reads nothing, these included.
+REPLAYED_ON_REFRESH = frozenset({"llm", "embed"})
 
 
 def install_cache(getter, putter, entry_getter=None) -> None:
@@ -63,7 +71,8 @@ def reset_cache_private(token) -> None:
 
 
 def set_cache_enabled(enabled: bool):
-    """Enable/disable cache reads for the current context; returns the ContextVar token."""
+    """Enable/disable cache reads of evidence (searches, pages) for the current context; returns
+    the ContextVar token. Model answers keep replaying (REPLAYED_ON_REFRESH)."""
     return _cache_enabled.set(bool(enabled))
 
 
@@ -271,7 +280,8 @@ def _cached(kind: str, key: str, meta: dict | None = None, shared: bool = False)
     ``shared`` is for entries that are not evidence about the company being evaluated (whether a
     Siemens catalog tool exists): a refresh has nothing of the company's to renew in them, and a
     private run has nothing of its own to protect, so neither flag applies."""
-    if not shared and (_cache_private.get() or not _cache_enabled.get()):
+    if not shared and (_cache_private.get()
+                       or (not _cache_enabled.get() and kind not in REPLAYED_ON_REFRESH)):
         return None
     if _cache_entry is not None:
         try:

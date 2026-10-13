@@ -449,7 +449,9 @@ class LLMClient:
         # Replies are cached on the full request. Sound only because temperature is 0: at the
         # old default of 1.0 the same prompt gave a different answer every time, so a cache
         # would have frozen one arbitrary sample. A changed prompt changes the key, so prompt
-        # edits can never be masked by a stale entry. LLM_CACHE=0 disables.
+        # edits can never be masked by a stale entry. LLM_CACHE=0 disables. A Refresh still
+        # reads it (web.REPLAYED_ON_REFRESH): it re-searches, and identical evidence is an
+        # identical prompt, so the stored answer is the answer. A cut-off reply is never stored.
         ckey = _web._cache_key("llm", use_model, system, prompt, budget,
                                extra.get("temperature"), extra.get("reasoning_effort"))
         started = time.time()
@@ -620,7 +622,8 @@ class LLMClient:
     def embed(self, texts: list[str], dims: int = EMBEDDING_DIMS, cache: bool = True) -> Optional[list]:
         """Embedding vectors for ``texts`` (one per text), or None when this provider cannot embed.
 
-        A single text is cached like a completion (same store, same refresh bypass), so a re-run of
+        A single text is cached like a completion (same store; Refresh replays it too, a private
+        run never reads it), so a re-run of
         a startup does not pay for its query again; catalog batches are built once into a file by
         core/tool_search.py and are not cached here.
         """

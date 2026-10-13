@@ -209,6 +209,104 @@ def test_cache_bypass_forces_a_fresh_search(monkeypatch):
         _uninstall_cache()
 
 
+def test_refresh_re_searches_but_replays_model_answers_and_embeddings(monkeypatch):
+    """Refresh renews the evidence, not the model's answer to an unchanged question. A completion
+    and an embedding are keyed on their whole input, so a replay can only happen where the fresh
+    evidence produced the identical prompt. Re-asking re-sampled trend's query plan every Refresh
+    and the competitor list changed with it."""
+    store = _install_dict_cache()
+    try:
+        store[("ddg", "s")], store[("site", "p")] = ["old hit"], ["old page", "u"]
+        store[("llm", "c")], store[("embed", "e")] = "same answer", [[0.1]]
+        token = web.set_cache_enabled(False)
+        try:
+            assert web._cached("ddg", "s") is None and web._cached("site", "p") is None
+            assert web._cached("llm", "c") == "same answer"
+            assert web._cached("embed", "e") == [[0.1]]
+        finally:
+            web.reset_cache_enabled(token)
+    finally:
+        _uninstall_cache()
+
+
+def test_a_private_run_reads_no_cached_kind_at_all(monkeypatch):
+    """A Tracxn run's answers are licensed to one reviewer: it neither reads nor writes the shared
+    cache, model answers included."""
+    store = _install_dict_cache()
+    try:
+        store[("ddg", "s")], store[("llm", "c")], store[("embed", "e")] = ["hit"], "answer", [[0.1]]
+        token = web.set_cache_private(True)
+        try:
+            assert all(web._cached(k, key) is None for k, key in (("ddg", "s"), ("llm", "c"), ("embed", "e")))
+            web._store("llm", "new", "private answer")
+        finally:
+            web.reset_cache_private(token)
+        assert ("llm", "new") not in store
+    finally:
+        _uninstall_cache()
+
+
+def test_a_refreshed_completion_is_answered_from_the_cache_and_a_cut_off_one_never_stored(monkeypatch):
+    """End to end through LLMClient.complete: under Refresh an unchanged prompt is not sent again,
+    and a reply that hit its ceiling is still never cached, Refresh or not."""
+    from core import web as core_web
+
+    class _Resp:
+        def __init__(self, text, reason):
+            self.choices = [type("C", (), {"message": type("M", (), {"content": text})(),
+                                           "finish_reason": reason})()]
+            self.usage = None
+
+    sent = []
+
+    class _Completions:
+        def __init__(self, reason):
+            self.reason = reason
+
+        def create(self, **kw):
+            sent.append(kw["messages"][1]["content"])
+            return _Resp('{"ok": true}', self.reason)
+
+    store = {}
+    monkeypatch.setattr(core_web, "_cache_entry", None)
+    monkeypatch.setattr(core_web, "_cache_get", lambda kind, key: store.get((kind, key)))
+    monkeypatch.setattr(core_web, "_cache_put", lambda kind, key, payload: store.__setitem__((kind, key), payload))
+    monkeypatch.setattr(llm_mod, "LLM_CACHE", True)
+    monkeypatch.setattr(llm_mod, "MAX_RETRIES", 1)
+    c = _client("gemini", _Completions("stop"))
+    assert c.complete("same prompt") == '{"ok": true}'
+    token = core_web.set_cache_enabled(False)
+    try:
+        assert c.complete("same prompt") == '{"ok": true}'
+        assert sent == ["same prompt"]                       # replayed, not re-asked
+        monkeypatch.setattr(llm_mod, "LLM_MAX_BUDGET", llm_mod.LLM_MIN_BUDGET)   # no room to re-ask
+        cut = _client("gemini", _Completions("length"))
+        cut.complete("another prompt")
+        assert sent[-1] == "another prompt"
+        assert len([k for k in store if k[0] == "llm"]) == 1     # only the complete reply
+    finally:
+        core_web.reset_cache_enabled(token)
+
+
+def test_model_answers_outlive_the_weekly_evidence_cache():
+    """A completion or embedding is keyed on its whole input, so it cannot go stale the way a
+    search result does; a Refresh weeks later over unchanged evidence still replays it."""
+    from datetime import datetime, timedelta, timezone
+    from api import store
+    ago = lambda d: (datetime.now(timezone.utc) - timedelta(days=d)).isoformat(timespec="seconds")  # noqa: E731
+    for kind, key in (("llm", "k-llm-60"), ("embed", "k-embed-60"), ("ddg", "k-ddg-60"),
+                      ("llm", "k-llm-120"), ("embed", "k-embed-120")):
+        store.cache_put(kind, key, "x")
+    with store._cache_conn() as con:
+        for key in ("k-llm-60", "k-embed-60", "k-ddg-60"):
+            con.execute("UPDATE web_cache SET created_at=? WHERE key=?", (ago(60), key))
+        for key in ("k-llm-120", "k-embed-120"):
+            con.execute("UPDATE web_cache SET created_at=? WHERE key=?", (ago(120), key))
+    assert store.cache_get("llm", "k-llm-60") == "x" and store.cache_get("embed", "k-embed-60") == "x"
+    assert store.cache_get("ddg", "k-ddg-60") is None
+    assert store.cache_get("llm", "k-llm-120") is None and store.cache_get("embed", "k-embed-120") == "x"
+
+
 def test_bypass_flag_reaches_the_search_worker_threads(monkeypatch):
     """_ddg_many runs its searches in fresh threads, which start with an EMPTY context.
 

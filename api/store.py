@@ -545,7 +545,13 @@ WEB_CACHE_TTL_DAYS = float(os.getenv("WEB_CACHE_TTL_DAYS", "7"))
 # Whether a Siemens catalog tool exists is not evidence about a startup and does not go stale in a
 # week: at the shared 7 days every tool cited across the corpus was searched again weekly, one
 # gateway web search each, inside whichever evaluation cited it first.
-_KIND_TTL_DAYS = {"tool_check": float(os.getenv("TOOL_CHECK_TTL_DAYS", "180"))}
+# A model answer or an embedding is keyed on its whole input, so it cannot go stale as evidence
+# does: the same prompt deserves the same answer for as long as the model is the same (the model
+# is in the key). Kept long so a Refresh weeks later over unchanged evidence replays it rather
+# than re-sampling a query plan or an extraction (core/web.py REPLAYED_ON_REFRESH).
+_KIND_TTL_DAYS = {"tool_check": float(os.getenv("TOOL_CHECK_TTL_DAYS", "180")),
+                  "llm": float(os.getenv("LLM_CACHE_TTL_DAYS", "90")),
+                  "embed": float(os.getenv("EMBED_CACHE_TTL_DAYS", "180"))}
 _cache_lock = threading.Lock()
 
 

@@ -208,7 +208,9 @@ def evaluate(name: str, glassdollar_path: str, tools_path: str, do_web: bool = T
 
     ``use_web_cache=False`` forces every search and site fetch to hit the network. A forced
     re-evaluation must not replay cached results, or "Re-evaluate" would hand back the same
-    week-old evidence it was asked to refresh.
+    week-old evidence it was asked to refresh. Model answers and embeddings still replay
+    (web.REPLAYED_ON_REFRESH): keyed on the full prompt, they only replay where the fresh evidence
+    is unchanged, which is what keeps a Refresh of an unchanged company from re-sampling them.
 
     ``on_partial(section, data)`` is called as each part of the result becomes available, so a
     caller can show the profile while scoring is still running. The return value is unchanged and

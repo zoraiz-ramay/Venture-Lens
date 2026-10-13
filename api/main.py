@@ -501,7 +501,7 @@ def _fresh_evaluation(name, body, principal, on_partial, user, departments, trac
     token = core.web.set_cache_private(True) if tracxn else None
     try:
         # An explicit refresh must re-search: serving cached hits would replay the very evidence
-        # the caller asked to renew.
+        # the caller asked to renew. Model answers over unchanged evidence still replay.
         res = core.evaluate(name, None, core.DEFAULT_TOOLS_CSV, do_web=body.do_web, df=df,
                             use_web_cache=not body.refresh, on_partial=on_partial, tracxn=tracxn,
                             departments=departments, prior_runs=store.prior_runs_for(name),

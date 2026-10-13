@@ -240,6 +240,23 @@ def test_a_current_market_figure_from_an_earlier_run_fills_a_gap_and_a_stale_one
     assert cf.merge_trend(fresh, stale, NOW, TODAY, {})["landscape"]["market_size"] is None
 
 
+def test_a_different_market_figure_seen_once_does_not_replace_the_stored_one():
+    # Radical Dot read $815M, then USD 3.7B, then USD 4.8B across three refreshes.
+    ident = cf.identity("Acme Vision", "https://acme.example")
+    stored = {**_size("2024"), "value": "$815 Million"}
+    fresh = {"landscape": {"market_size": {**_size("2025"), "value": "USD 3.7 billion"}, "competitors": []}}
+    one = cf.usable_priors([prior("2026-10-01T00:00:00+00:00", trend={"landscape": {"market_size": stored}})], ident)
+    report = {}
+    out = cf.merge_trend(fresh, one, NOW, TODAY, report)
+    assert out["landscape"]["market_size"]["value"] == "$815 Million"
+    assert report["market_size_candidate"]["value"] == "USD 3.7 billion"
+    # Seen on the newest earlier run as well: now it is the figure.
+    two = cf.usable_priors([prior("2026-10-01T00:00:00+00:00", trend={"landscape": {"market_size": stored}}),
+                            prior("2026-10-02T00:00:00+00:00", trend={"landscape": {
+                                "market_size": {**_size("2025"), "value": "USD 3.7 billion"}}})], ident)
+    assert cf.merge_trend(fresh, two, NOW, TODAY, {})["landscape"]["market_size"]["value"] == "USD 3.7 billion"
+
+
 # ----------------------------------------------------------------------------------- pipeline
 
 def test_an_evaluation_carries_an_earlier_runs_investor_into_its_result(offline):

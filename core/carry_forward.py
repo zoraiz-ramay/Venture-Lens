@@ -612,11 +612,27 @@ def merge_trend(fresh: dict, prior_runs: list, now: str, today: _dt.date, report
                 land[path[-1]] = _merge_list(_get(out, path), prior_runs, path, fields,
                                              lambda run, p: _get(run.get("trend") or {}, p), report,
                                              ".".join(path))
-            if not land.get("market_size"):
-                for run in reversed(prior_runs):            # newest qualifying prior figure
-                    prior = _get(run.get("trend") or {}, ("landscape", "market_size"))
-                    if prior and _http(prior.get("source_url")) and market_size_current(prior, today, _run_date(run)):
-                        land["market_size"] = {**prior, "last_confirmed_at": prior.get("last_confirmed_at") or _when(run)}
-                        report.setdefault("fields_carried", []).append("landscape.market_size")
-                        break
+            stored, stored_run = None, None
+            for run in reversed(prior_runs):                # newest qualifying prior figure
+                prior = _get(run.get("trend") or {}, ("landscape", "market_size"))
+                if prior and _http(prior.get("source_url")) and market_size_current(prior, today, _run_date(run)):
+                    stored, stored_run = prior, run
+                    break
+            fresh_size = land.get("market_size")
+            # A different figure is adopted only when the newest earlier run found it too. Every
+            # refresh used to show another number for the same market — Radical Dot read $815M,
+            # then USD 3.7B, then USD 4.8B — because each search wave lands on another report that
+            # sizes a differently drawn market. Seen twice, it is the figure the web now gives.
+            if stored and fresh_size and _norm(fresh_size.get("value")) != _norm(stored.get("value")):
+                evaluations = [r for r in prior_runs if not r.get("team_record")]
+                newest = _get((evaluations[-1] if evaluations else {}).get("trend") or {},
+                              ("landscape", "market_size")) or {}
+                if _norm(newest.get("value")) != _norm(fresh_size.get("value")):
+                    report["market_size_candidate"] = {"value": fresh_size.get("value", ""),
+                                                       "as_of": fresh_size.get("as_of", "")}
+                    fresh_size = None
+            if not fresh_size and stored:
+                land["market_size"] = {**stored, "last_confirmed_at": stored.get("last_confirmed_at")
+                                       or _when(stored_run)}
+                report.setdefault("fields_carried", []).append("landscape.market_size")
     return out

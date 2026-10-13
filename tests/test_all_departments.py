@@ -205,6 +205,52 @@ def test_settled_evidence_is_the_same_records_with_or_without_verification():
     assert pillar_match._evidence(run) == pillar_match._evidence(full)
 
 
+def test_empower_starts_when_enrichment_settles_the_evidence_after_fit_has_landed(offline, monkeypatch):
+    """The usual order on a real run: fit (~10-15s) and the profile land, then enrichment's wave
+    (~30s), then verification (~45s). Settling happens on enrichment's landing, which is not a
+    branch, and Empower must start right there rather than wait for the next branch to land."""
+    import threading
+    import time
+    from core import pipeline
+    df, tools = offline
+    landed = {"fit": threading.Event(), "profile": threading.Event()}
+    empower = threading.Event()
+    seen = {}
+    real_fit, real_profile, real_combine = pipeline.match_siemens_tools, pipeline.research_profile, pipeline.combine
+    real_verify, real_after = pipeline.verify_facts, pipeline._pillar_after
+
+    def fit(*a, **kw):
+        out = real_fit(*a, **kw)
+        landed["fit"].set()
+        return out
+
+    def profile(*a, **kw):
+        out = real_profile(*a, **kw)
+        landed["profile"].set()
+        return out
+
+    def combine(*a, **kw):
+        all(e.wait(5) for e in landed.values())
+        time.sleep(0.3)                      # the loop takes both branches in before enrichment lands
+        return real_combine(*a, **kw)
+
+    def after(prep, pillar, *a, **kw):
+        if pillar == "Empower":
+            empower.set()
+        return real_after(prep, pillar, *a, **kw)
+
+    def verify(*a, **kw):
+        seen["empower_first"] = empower.wait(5)
+        return real_verify(*a, **kw)
+
+    for attr, fn in (("match_siemens_tools", fit), ("research_profile", profile), ("combine", combine),
+                     ("_pillar_after", after), ("verify_facts", verify)):
+        monkeypatch.setattr(pipeline, attr, fn)
+    monkeypatch.setattr(pillar_match, "evidence_settled_without", lambda run, *keys: True)
+    _run(df, tools, departments=DEPS)
+    assert seen["empower_first"] is True
+
+
 def test_team_and_pillars_start_before_verification_lands_and_read_the_same_evidence(offline, monkeypatch):
     """Verification waits for enrichment's whole search wave and then thinks for ~15s, and scoring
     used to wait for it. With the evidence budget spent before verification's records, Team, the

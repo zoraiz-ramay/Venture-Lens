@@ -496,6 +496,15 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
                 early_run = early_run or candidate
                 early = _start_fit_free_scoring(ex, candidate, company, deps, llm, do_web,
                                                 started=early, trend_free="trend" in missing)
+
+        def _start_empower():
+            # Empower reads fit and the prepared concepts, never the trend or verification outside
+            # the evidence: it starts on whichever research started the concepts, the moment fit
+            # lands.
+            nonlocal f_empower
+            if deps and f_empower is None and "fit" in done and "prep" in early:
+                f_empower = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"], "Empower",
+                                    {**(early_run or research), "fit": done["fit"], "company": company}, llm)
         pending = {fut: section for section, fut in jobs.items()}
         # Enrichment is not a branch, but its landing is what can settle the evidence: the facts
         # it adds come before verification in evidence_for, and verification itself thinks for
@@ -506,6 +515,7 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
             if section is None:
                 fut.result()
                 _start_settled()
+                _start_empower()        # fit has usually landed long before enrichment
                 continue
             done[section] = fut.result()
             if section == "profile":
@@ -536,12 +546,7 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
                 if deps:
                     early = _start_fit_free_scoring(ex, research, company, deps, llm, do_web,
                                                     started=early)
-            if deps and f_empower is None and "fit" in done and "prep" in early:
-                # Empower reads fit and the prepared concepts, never the trend or verification
-                # outside the evidence: it starts on whichever research started the concepts, the
-                # moment fit lands.
-                f_empower = _submit(ex, "pipeline.pillars", _pillar_after, early["prep"], "Empower",
-                                    {**(early_run or research), "fit": done["fit"], "company": company}, llm)
+            _start_empower()
         _step("REVIEW", "done")
 
         fit = done["fit"]

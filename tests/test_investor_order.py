@@ -18,7 +18,8 @@ class _Model:
 
 def _investors(listed):
     prof = {}
-    web = {"investors_web": [{"title": "Radical Dot raises", "body": "investors", "href": "https://press.example/a"}]}
+    body = "Radical Dot raises from " + ", ".join(f"Fund {c}" for c in "KJIHGFEDCBA") + " and Angel Zed"
+    web = {"investors_web": [{"title": "Radical Dot raises", "body": body, "href": "https://press.example/a"}]}
     P._extract_commercial_posture(prof, "Radical Dot", pd.Series({"company_name": "Radical Dot"}), {}, web,
                                   _Model(listed))
     return [i["name"] for i in prof.get("commercial", {}).get("investors", [])]
@@ -30,4 +31,8 @@ def test_the_same_investors_listed_in_another_order_come_out_the_same():
     first = _investors(named + unsourced)
     second = _investors(list(reversed(named)) + unsourced)
     assert first == second
-    assert len(first) == 8 and "Angel Zed" not in first        # sourced ones win the cap
+    assert len(first) == 8 and "Angel Zed" not in first        # no source of its own: not kept
+
+
+def test_an_investor_no_result_names_with_the_company_is_not_kept():
+    assert _investors([{"name": "Unrelated Capital", "source_url": "https://press.example/x"}]) == []

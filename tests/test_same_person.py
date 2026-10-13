@@ -119,3 +119,15 @@ def test_the_team_refresh_merge_applies_the_same_identity_rules():
                                          p("Alex"), p("Unknown")]})
     assert [x["name"] for x in out["founders"]] == ["Andreas Wagner"]
     assert out["founders"][0]["background"] == "PhD, Cambridge"
+
+
+def test_a_person_is_kept_only_where_one_result_names_them_with_the_company():
+    from core import profile as P
+    results = {"founders": [{"title": "Andreas Wagner - Co-Founder - Radical Dot | LinkedIn", "body": "",
+                             "href": "https://linkedin.com/in/aw"},
+                            {"title": "Jane Doe joins Other Startup", "body": "", "href": "https://news.example"}],
+               "__site__0": [{"title": "Radical Dot — /team", "body": "Radical Dot Alexandre Krémer, CTO",
+                              "href": "https://radicaldot.com"}]}
+    people = [{"name": "Andreas Wagner"}, {"name": "Alexandre Kremer"}, {"name": "Jane Doe"}]
+    kept = [p["name"] for p in P._ground_people(people, "Radical Dot", results)]
+    assert kept == ["Andreas Wagner", "Alexandre Kremer"]          # accent folded; Jane never with the company

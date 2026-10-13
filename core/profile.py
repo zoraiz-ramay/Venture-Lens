@@ -678,7 +678,8 @@ def _recover_founders(prof: dict, company: str, llm: LLMClient) -> None:
         "f2": f"{company} founder CEO co-founder LinkedIn",
         "f3": f"{company} startup team about us founders",
     }
-    corpus = _corpus(_ddg_many(queries, max_results=5))
+    hits = _ddg_many(queries, max_results=5)
+    corpus = _corpus(hits)
     if not corpus:
         return
     data = LLMClient.parse_json(llm.complete(
@@ -690,8 +691,8 @@ def _recover_founders(prof: dict, company: str, llm: LLMClient) -> None:
         'Return ONLY JSON: {"founders": [{"name":"","role":"","background":"","linkedin":"","source_url":""}]}',
         system="You extract structured facts strictly from supplied evidence. JSON only.",
         max_tokens=700, reasoning="none")) or {}
-    found = [f for f in data.get("founders", [])
-             if isinstance(f, dict) and str(f.get("name", "")).strip()]
+    found = _ground_people([f for f in data.get("founders", [])
+                            if isinstance(f, dict) and str(f.get("name", "")).strip()], company, hits)
     if found:
         prof["founders"] = dedupe_people(found)
         founders_first(prof)
@@ -1194,15 +1195,21 @@ def _extract_commercial_posture(prof: dict, company: str, row: pd.Series,
             commercial["revenue_signal"] = revenue
             commercial["revenue_source"] = url
 
+    # An investor needs its own http source and one result (or one of the company's own pages)
+    # naming it together with the company — the bar _recover_investors already set. Unsourced names
+    # appeared on one refresh and not the next, and were never carried, so the list flickered.
+    site_hits = {"site": [{"title": company, "body": f"{company} {t}"} for t in (site or {}).values() if t]}
+    blobs = [b.casefold() for b in _hit_blobs(web, site_hits) if _names_company(b, company)]
     investors, seen = [], set()
     for inv in data.get("investors") or []:
         name = str(inv.get("name", "") if isinstance(inv, dict) else inv).strip()
         if not name or len(name) > 60 or name.lower() in seen:
             continue
+        url = _clean_source_url(inv.get("source_url") if isinstance(inv, dict) else "")
+        if not url or not any(name.casefold() in b for b in blobs):
+            continue
         seen.add(name.lower())
-        investors.append({"name": name,
-                          "source_url": _clean_source_url(
-                              inv.get("source_url") if isinstance(inv, dict) else "")})
+        investors.append({"name": name, "source_url": url})
     # Sourced investors first, then by name: the cap used to keep whichever eight the model
     # happened to list first, so the same evidence gave a different list each refresh.
     investors.sort(key=lambda i: (not i["source_url"], i["name"].casefold()))
@@ -1949,6 +1956,32 @@ def _names_in(person: str, page: str) -> bool:
     return all(part in words for part in person_key(person).split() if len(part) > 1)
 
 
+def _hit_blobs(*hit_dicts) -> list[str]:
+    """Each search hit (or site pseudo-hit) as one text: title, body and address."""
+    return [f"{h.get('title', '')} {h.get('body', '')} {h.get('href', '')}"
+            for hits in hit_dicts for found in (hits or {}).values() for h in found or [] if isinstance(h, dict)]
+
+
+def _names_company(blob: str, company: str) -> bool:
+    """The text names the company, as written or run together ("Radical Dot" / radicaldot.com)."""
+    text, name = blob.casefold(), str(company or "").casefold().strip()
+    return bool(name) and (name in text or name.replace(" ", "") in text.replace(" ", ""))
+
+
+def _ground_people(people: list, company: str, *hit_dicts) -> list:
+    """Keep a person only where ONE result (or one of the company's own pages) names both the person
+    and the company — the co-occurrence bar programmes, customers and investors already meet.
+
+    The extraction reads a 24k corpus of many results, and a name it lists there was never checked
+    against any one of them: a namesake on a page about another startup, or a person the model
+    half-remembered, entered the team and then flickered between refreshes. Site pages carry the
+    company name in their pseudo-hit (``_merge_site_results``), so the company's own team page
+    grounds its people."""
+    blobs = [b for b in _hit_blobs(*hit_dicts) if _names_company(b, company)]
+    return [p for p in people or [] if isinstance(p, dict) and p.get("name")
+            and any(_names_in(p["name"], b) for b in blobs)]
+
+
 def _carried(claim: str, page: str) -> bool:
     """The business flow's bar: half the claim's content words, and every number in it, on the page."""
     from .business_flow import _supported
@@ -2162,6 +2195,8 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         if prof is None:
             prof = _offline_extract(row, results)
         else:
+            for key in ("founders", "key_team", "advisors"):
+                prof[key] = _ground_people(prof.get(key), company, results)
             # Ground the LLM's programs against the evidence (it may name any program
             # worldwide, but each membership must be tied to THIS startup), then union
             # with the KNOWN_PROGRAMS keyword scan so a known program never vanishes

@@ -185,3 +185,12 @@ def test_reusing_research_rescores_the_model_only_when_the_source_has_no_current
     assert out["assessment"]["total"] == round(0.3 * 80 + 0.35 * 78 + 0.2 * 60 + 0.15 * 66.7, 1)
     assert out["score"]["llm_market"] == (72 if rescored else 70)
     assert out["assessment"]["market_method"] == "rubric"
+
+
+def test_a_run_whose_model_calls_mostly_failed_is_not_served_from_cache():
+    # Two Radical Dot refreshes made after the OpenAI credits ran out were the latest runs, with no
+    # total and no pillars; serving them would show that to everyone until someone refreshed.
+    name = f"Broken-{uuid.uuid4().hex[:6]}"
+    key = main._all_key(main._all_departments(user()))
+    store.save_run({**all_run(name, key), "token_usage": {"calls": 78, "failed_calls": 63}}, aliases=[name])
+    assert main._evaluation_cached(name, main.EvaluateBody(name=name), user()) is None

@@ -42,6 +42,7 @@ import core
 from core.solve import solve_problem, load_challenges, set_challenge_status
 from core.chat import run_brief
 from core import s3 as _s3
+from core.carry_forward import degraded
 from api import store
 from api.auth import Principal, current_user, require_admin, sessions, settings as auth_settings
 from api.auth import admin_upns as auth_admin_upns, db_admin_upns as auth_db_admin_upns
@@ -428,6 +429,10 @@ def _evaluation_cached(name, body, user):
         cached = workspace.private_latest(user.oid, name, "*", key)
     else:
         cached = store.latest_department_run(name, "*", key)
+    if cached and degraded(cached):
+        # Most of its model calls failed (an exhausted quota, an outage): it has no total and no
+        # pillars, and serving it would show that broken run to everyone until someone refreshed.
+        cached = None
     if cached:
         cached["cached"] = True
         cached["freshness"] = _freshness(cached.get("run_created_at", ""))
@@ -492,7 +497,7 @@ def _fresh_evaluation(name, body, principal, on_partial, user, departments, trac
         # it is reused and only the department assessments are redone — as a NEW run, never a
         # rewrite of the old one.
         research = store.latest_research_run(name)
-        if research and _freshness(research.get("run_created_at", ""))["status"] == "fresh":
+        if research and not degraded(research)                 and _freshness(research.get("run_created_at", ""))["status"] == "fresh":
             from core.pipeline import assess_departments
             res = assess_departments(research, departments, do_web=body.do_web)
             return _saved(res, name, body, principal, served_from="research", started=started)

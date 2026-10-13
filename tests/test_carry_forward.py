@@ -437,3 +437,13 @@ def test_a_run_whose_model_calls_all_failed_is_not_used_as_an_earlier_run():
     assert usable == []
     partly = {**dead, "token_usage": {"calls": 19, "failed_calls": 3}}
     assert cf.usable_priors([partly], cf.identity("Acme Vision", "https://acme.example")) == [partly]
+
+
+def test_a_web_only_company_keeps_the_website_its_earlier_runs_settled_on():
+    own = prior("2026-10-01T00:00:00+00:00", website="https://acmevision.example")
+    directory = prior("2026-10-02T00:00:00+00:00", website="https://clutch.co/profile/acme-vision")
+    assert cf.pinned_website("Acme Vision", [own, directory]) == "https://acmevision.example"
+    broken = {**prior("2026-10-03T00:00:00+00:00", website="https://acme-vision.example"),
+              "token_usage": {"calls": 10, "failed_calls": 10}}
+    assert cf.pinned_website("Acme Vision", [own, broken]) == "https://acmevision.example"
+    assert cf.pinned_website("Other Co", [own]) == ""

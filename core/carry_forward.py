@@ -438,6 +438,26 @@ def degraded(run: dict) -> bool:
     return calls > 0 and failed * 2 >= calls
 
 
+def pinned_website(name: str, prior_runs) -> str:
+    """The company's own website as its newest usable earlier run recorded it, or ''.
+
+    A company outside the database is re-resolved from a web search on every run, and the website
+    that resolution picks can change (a directory page one time, the company's domain the next).
+    Every domain-pinned query and cache key follows the website, and identity matching follows the
+    domain, so a changed guess re-ran different searches and could orphan every earlier run.
+    Only a website whose domain is the company's own (``_own_domain``) is pinned.
+    """
+    norm = _norm(name)
+    for run in reversed([r for r in prior_runs or () if isinstance(r, dict) and not degraded(r)]):
+        ident = _run_identity(run)
+        if ident["domain"] and ident["name"] == norm:
+            prof = run.get("profile") or {}
+            site = prof.get("website") or (run.get("deep_profile") or {}).get("website") or ""
+            if _domain(site) == ident["domain"]:
+                return str(site)
+    return ""
+
+
 def usable_priors(prior_runs, fresh_identity: dict) -> list:
     """The prior runs that are the same company and not degraded, oldest first."""
     runs = [r for r in prior_runs or () if isinstance(r, dict) and not degraded(r)

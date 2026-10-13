@@ -339,8 +339,19 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
         hydrated = row is not None     # by-domain returns the full company, not a search hit
     if row is None:
         # Not confidently in the GlassDollar database -> research it live on the web.
-        row = web_profile_row(name, llm=llm)
-        source = "web"
+        pinned = carry_forward.pinned_website(name, prior_runs)
+        if pinned:
+            # The database may know the company by the domain its earlier runs settled on.
+            row = _by_domain(pinned)
+            hydrated = row is not None
+        if row is None:
+            row = web_profile_row(name, llm=llm)
+            source = "web"
+            if row is not None and pinned and carry_forward._domain(pinned) != carry_forward._domain(row.get("website")):
+                # Keep the website earlier runs settled on: a changed guess re-ran different
+                # domain-pinned searches and could orphan every earlier run (pinned_website).
+                row["website"] = pinned
+                row["domain"] = carry_forward._domain(pinned)
         if row is None:
             _step("INPUT", "error")
             return {"found": False, "query": name, "source": "none",

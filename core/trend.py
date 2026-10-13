@@ -97,14 +97,18 @@ def _figure_sentences(text: str, limit: int = 1500) -> str:
 def _read_size_pages(hits: list[dict], pages: int = 2) -> list[dict]:
     """The top size-query results fetched as pages and cut to their figure sentences.
 
-    A fetch, not a model call, through the SSRF-guarded and cached web.fetch_url; a page that does
-    not load is simply skipped."""
-    from .web import fetch_url
+    A fetch, not a model call, through the SSRF-guarded web._fetch_cached; a page that does not
+    load is simply skipped. Cached like a site page: fetched uncached, a page that answered on one
+    run and timed out on the next moved the market size between evaluations of the same company.
+    Each fetch runs in a copy of the caller's context, which carries the Refresh and private-run
+    flags: a private run must not write a page into the shared cache from a pool thread."""
+    from .web import _fetch_cached
     urls = [h.get("href", "") for h in hits[:pages] if h.get("href")]
     if not urls:
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls)) as ex:
-        texts = list(ex.map(lambda u: fetch_url(u, timeout=8.0), urls))
+        texts = [f.result()[0] for f in [ex.submit(contextvars.copy_context().run, _fetch_cached, u, 8.0)
+                                         for u in urls]]
     return [{"title": h.get("title", ""), "url": u, "snippet": s}
             for h, u, t in zip(hits, urls, texts) if (s := _figure_sentences(t))]
 

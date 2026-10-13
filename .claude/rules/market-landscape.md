@@ -34,7 +34,7 @@ extra model or search call:
   reports are titled. The niche label returned CAGR definitions and calculators.
 - Snippets are read whole (a 200-character cut lost Phena's CAGR). The landscape and trend results
   have separate budgets. The top two size results are fetched as pages and cut to their figure
-  sentences (`_read_size_pages`, `web.fetch_url`).
+  sentences (`_read_size_pages`, through the cached `web._fetch_cached`).
 - The model returns the **base-year** `value` / `as_of` and the forecast apart (`forecast_value`,
   `forecast_year`). `market.size_level` reads the first amount, never the largest. The largest was
   the forecast, and put Wandelbots' 2032 figure in the size band.

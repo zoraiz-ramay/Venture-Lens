@@ -225,3 +225,30 @@ def test_without_a_company_name_nothing_is_filtered():
     out = _run({"competitors": [{"name": "Fireflies.ai",
                                  "source_url": "https://techcrunch.example/fireflies"}]})
     assert len(out["competitors"]) == 1
+
+
+# ----------------------------------------------------------------- size pages go through the cache
+
+def test_market_size_pages_are_cached_and_a_private_run_stores_none(monkeypatch):
+    """Fetched uncached, a size page that loaded on one run and timed out on the next moved the
+    market size between evaluations of one company. The fetch runs in pool threads, so the
+    private-run flag has to travel with it or a Tracxn run would fill the shared cache."""
+    from core import trend, web
+    page = "The chemical recycling market was USD 12.5 billion in 2025 and grows at a CAGR of 8.1%."
+    fetched, store = [], {}
+    monkeypatch.setattr(web, "_cache_entry", None)
+    monkeypatch.setattr(web, "_cache_get", lambda kind, key: store.get((kind, key)))
+    monkeypatch.setattr(web, "_cache_put", lambda kind, key, payload: store.__setitem__((kind, key), payload))
+    monkeypatch.setattr(web, "_fetch_with_url", lambda url, **kw: fetched.append(url) or (page, url))
+    hits = [{"title": "Report", "href": "https://r.example/size"}]
+
+    token = web.set_cache_private(True)
+    try:
+        assert trend._read_size_pages(hits)[0]["snippet"].startswith("The chemical recycling market")
+    finally:
+        web.reset_cache_private(token)
+    assert store == {}
+
+    first, second = trend._read_size_pages(hits), trend._read_size_pages(hits)
+    assert first == second
+    assert fetched == ["https://r.example/size"] * 2          # the private fetch, then one shared

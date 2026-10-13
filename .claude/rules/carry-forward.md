@@ -82,3 +82,27 @@ One more of the same family, and the most expensive: `siemens_fit` blended
 approved challenge recorded, that taxed every startup ~30% of its tool fit and accounted for
 **all eight** `Pass` verdicts in the corpus. A demand-side match is now a bonus that can only
 raise fit. `tests/test_siemens_fit_scoring.py` pins it.
+
+## The record a company keeps, and how it stays current
+
+The stored runs ARE the company's record: every run is merged with every usable earlier one
+(`store.prior_runs_for`, up to 50), so no separate fact table is kept. Around that merge:
+
+- **Usable earlier runs** exclude runs where half or more of the model calls failed
+  (`carry_forward.degraded`) — an exhausted quota produced two Radical Dot runs with no trend and
+  no total. Such a run is also never served from cache or re-assessed (`api/main.py`).
+- **Identity is pinned.** A company outside the database is re-resolved from a web search each
+  run; `carry_forward.pinned_website` keeps the own website its earlier runs settled on, so the
+  domain-pinned searches and the identity match do not move.
+- **Source re-check.** `core/recheck.py` re-reads up to 24 pages cited by CARRIED facts while
+  scoring runs (no tokens, 8s budget). Supported / unsupported / unreachable; two fetched misses
+  in a row make a fact `unconfirmed`. Nothing is removed: `result.fact_status`, shown by
+  `ConfirmedTag` as "source no longer states this".
+- **Slots.** `result.slot_status` says per kind of fact whether the run holds one, and for an empty
+  one how many runs in a row found nothing; the profile names those empty for 3+ runs.
+  `known_team(..., today)["recent"]` lets the main wave skip its dedicated founder / programme
+  searches for 30 days after a run re-found them itself (the broader ones still run).
+- **Streaming.** The first profile partial already carries the merged record of earlier runs, so
+  a refreshed profile does not start empty and fill in.
+- **Measuring it.** `scripts/fact_stability.py` (advisory in gates.sh) compares a company's stored
+  runs; `tests/test_fact_stability_harness.py` folds seeded-random refreshes through the merge.

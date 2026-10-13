@@ -80,7 +80,8 @@ not loaded. The grounding gates and fail-closed rules in them are deliberate —
 - `.claude/rules/siemens-contacts.md` — Relevant Siemens Contact via the Directory API, ranked as an inference.
 - `.claude/rules/streaming.md` — Streaming partial results over SSE; the header profile emitted three times; nothing waits for more than it reads.
 - `.claude/rules/benchmarks.md` — Replaying stored runs to measure a routing change against human labels.
-- `.claude/rules/carry-forward.md` — Folding prior runs into a refresh without dropping evidence; evidence age.
+- `.claude/rules/carry-forward.md` — Folding prior runs into a refresh without dropping evidence; evidence age;
+  keeping a company's facts the same on every run (identity, source re-check, settled values and lists).
 - `.claude/rules/assistant.md` — The assistant: run brief first, Tracxn second, model web search third.
 - `.claude/rules/storage.md` — What a run stores row by row, enrichments, and per-reviewer workspaces.
 - `.claude/rules/telemetry-auth.md` — OpenTelemetry export rules and the Entra ID backend-for-frontend auth, fail-closed.

@@ -944,7 +944,7 @@
     },
     {
       "path": "ui/src/pages/profile/people.test.jsx",
-      "lines": 73,
+      "lines": 124,
       "exports": [],
       "css_classes": []
     },
@@ -1888,6 +1888,6 @@
     "api_methods": 40,
     "design_tokens": 70,
     "jsx_files": 109,
-    "jsx_lines": 11417
+    "jsx_lines": 11468
   }
 }

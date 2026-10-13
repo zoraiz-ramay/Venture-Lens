@@ -16,13 +16,26 @@ Dot's investors went 8 → 3 → 0 → 2 → 6 across refreshes. `core/carry_for
 run of the company (`store.prior_runs_for`, oldest first) into the fresh one as each branch lands,
 **before** anything is scored or emitted:
 
-- Lists (people, programmes, investors, competitors, headcount points) are a union. An item only an
-  earlier run found keeps its own `source_url` and gains `last_confirmed_at`; the UI shows "last
-  confirmed {date}" (`ConfirmedTag.jsx`). Carried items must still name an http source — older runs
-  made under weaker gates must not resurrect what today's gates would drop.
-- Single values: a blank or unsourced fresh value never replaces a sourced prior; between two
-  sourced values the newer wins and the loser goes to `deep_profile.history`. GlassDollar facts count
-  as sourced (their `source_url` is "GlassDollar", not a URL). A web value beats an `*_origin="llm"` recall.
+- Lists (people, programmes, investors, competitors, headcount points) are one entry per entity
+  across this run and every earlier one. The earliest grounded copy is the base (so a spelling
+  does not flip) and every later copy only fills its blanks — a thin fresh founder never replaces a
+  richer carried one, and corroborated programme evidence beats a self-asserted claim either way
+  round. Order never depends on which refresh found what: entities earlier runs knew first, by
+  first-seen date then key; new ones after, by key. An item only earlier runs found keeps its own
+  `source_url` and gains `last_confirmed_at`; the UI shows "last confirmed {date}"
+  (`ConfirmedTag.jsx`). Carried items must still name an http source — older runs made under
+  weaker gates must not resurrect what today's gates would drop.
+- Single values: a blank or unsourced fresh value never replaces a sourced prior. When two sourced
+  values disagree, the stored one (the most trusted earlier value: database > web > model recall)
+  stands unless the fresh one is at least as trusted and is more trusted, names a later funding
+  round, or was also found by the newest earlier run. A value seen once is kept in `history` as a
+  candidate, so one lucky search no longer flips a headline value; a real change shows a refresh
+  later. GlassDollar facts count as sourced (their `source_url` is "GlassDollar", not a URL).
+- A run whose model calls all failed (`token_usage` failed_calls == calls) is not used as an
+  earlier run: its keyword-fallback profile is no evidence that anything went missing.
+- Dates carry_forward writes (`carried_fields`, `history[].replaced_at/found_at`) and
+  `deep_profile.history` itself are excluded from scorer evidence (`judgment._NOT_RESEARCH`); in
+  the records they gave every refresh a new prompt.
 - Values that carry their own source are carried the same way: `customer_segment_grade` (it scores
   traction's Customers division when no customer is named — missing it flipped Radical Dot's
   Customers between evidenced and unknown across refreshes), `commercial.revenue`, certifications.
@@ -35,9 +48,13 @@ run of the company (`store.prior_runs_for`, oldest first) into the fresh one as 
   dated ahead. A future-dated figure is a forecast, not the size.
 - People are one person by `text.same_person`, not by the name alone: equal name keys, names that
   differ only by initials ("KD Kutadgu Gokalp Demirci"), or the same profile link plus a shared
-  name token. The token is required because research once attached one colleague's LinkedIn to
-  another. `founders_first` drops from key_team and advisors anyone already listed as a founder.
-  `ui/src/pages/profile/people.js` mirrors both, so stored runs display correctly unrewritten.
+  name token. Names are cleaned first (`text.clean_person_name`: bracketed qualifiers such as
+  "(surname not stated)" go). A first name alone joins the ONE full-name person it names — the same
+  given name, a prefix of three letters or more, or a listed short form (Andi/Andreas) — and is
+  dropped otherwise; Radical Dot's three refreshes had stored "Alexandre", "Alex (surname not
+  stated)" and "Andi (surname not stated)" beside its two founders. `founders_first` drops from
+  key_team and advisors anyone already listed as a founder. `ui/src/pages/profile/people.js`
+  mirrors these rules, so stored runs display correctly unrewritten.
 - The Team & Ecosystem panel lists every entity of a cited kind on record, cited ones first and
   marked. Showing only the model's citations made carried investors look lost: it cited a
   different two of fifteen each run.

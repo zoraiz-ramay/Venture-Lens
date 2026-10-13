@@ -69,7 +69,10 @@ def test_a_founder_spelled_with_a_title_or_accent_is_one_founder_not_two():
         {"name": "Dr. Andreas Wagner", "role": "CEO", "source_url": src},
         {"name": "Alexandre Krémer (CTO)", "source_url": src}])
     out, report = merge(fresh, [older])
-    assert [f["name"] for f in out["profile"]["founders"]] == ["Andreas Wagner", "Alexandre Kremer"]
+    # One founder each, the cleaned name, in name order (not the order this run listed them).
+    # The spelling first on record is kept (accent included), so it does not flip between refreshes.
+    assert sorted(f["name"] for f in out["profile"]["founders"]) == ["Alexandre Krémer", "Dr. Andreas Wagner"]
+    assert len(out["profile"]["founders"]) == 2
     assert report["founders"]["reconfirmed"] == 2
 
 
@@ -90,7 +93,8 @@ def test_a_founder_stored_with_and_without_initials_is_one_founder():
         {"name": "Kutadgu Gokalp Demirci", "role": "Co-Founder", "linkedin": "kutadgu@phena.tech",
          "source_url": "https://phena.example"}])
     out, report = merge(fresh, [older])
-    assert [f["name"] for f in out["profile"]["founders"]] == ["KD Kutadgu Gokalp Demirci"]
+    # One founder; the spelling on record first stays, so it does not flip between refreshes.
+    assert [f["name"] for f in out["profile"]["founders"]] == ["Kutadgu Gokalp Demirci"]
     assert report["founders"]["carried"] == 0
 
 
@@ -281,3 +285,59 @@ def test_traction_scores_a_carried_customer_with_its_earlier_source():
     (customer,) = inputs["customers"]
     assert (customer["name"], customer["source_url"], customer["origin"]) == \
         ("LANXESS", "https://lanxess.example/case", "carried")
+
+
+# ------------------------------------------------------------------- one entry per entity, stable order
+
+SRC = "https://acme.example/team"
+
+
+def test_radical_dots_name_forms_are_two_founders_not_five():
+    # Three refreshes of Radical Dot stored 2, 3 and 5 founders for a company with two.
+    older = prior("2026-10-12T00:00:00+00:00", founders=[
+        {"name": "Andreas Wagner", "role": "Co-CEO, CTO", "source_url": SRC},
+        {"name": "Alexandre Kremer", "role": "Co-Founder", "source_url": SRC}])
+    middle = prior("2026-10-13T00:00:00+00:00", founders=[
+        {"name": "Andreas Wagner", "source_url": SRC}, {"name": "Alexandre", "source_url": SRC}])
+    fresh = {"founders": [{"name": "Alex (surname not stated)", "source_url": SRC},
+                          {"name": "Andi (surname not stated)", "source_url": SRC}]}
+    out, _ = merge(fresh, [older, middle])
+    assert sorted(f["name"] for f in out["profile"]["founders"]) == ["Alexandre Kremer", "Andreas Wagner"]
+
+
+def test_a_thin_fresh_founder_never_replaces_a_richer_carried_one():
+    older = prior("2026-09-01T00:00:00+00:00", founders=[
+        {"name": "Andreas Wagner", "role": "Co-CEO, CTO", "background": "PhD, TUM", "source_url": SRC}])
+    out, _ = merge({"founders": [{"name": "Andreas Wagner", "role": "", "source_url": SRC}]}, [older])
+    (founder,) = out["profile"]["founders"]
+    assert founder["role"] == "Co-CEO, CTO" and founder["background"] == "PhD, TUM"
+
+
+def test_a_corroborated_programme_survives_a_fresh_self_asserted_claim():
+    older = prior("2026-09-01T00:00:00+00:00", programs=[
+        {"name": "Xpreneurs", "confidence": "corroborated", "source_url": "https://indexed.example/radical-dot"}])
+    out, _ = merge({"programs": [{"name": "Xpreneurs", "confidence": "self_asserted",
+                                  "source_url": "https://acme.example/about"}]}, [older])
+    (programme,) = out["profile"]["programs"]
+    assert programme["confidence"] == "corroborated"
+    assert programme["source_url"] == "https://indexed.example/radical-dot"
+
+
+def test_the_same_programmes_come_out_in_the_same_order_whichever_run_found_them():
+    a = {"name": "Xpreneurs", "source_url": "https://x.example"}
+    b = {"name": "ChemSPACE", "source_url": "https://c.example"}
+    c = {"name": "Respond Accelerator", "source_url": "https://r.example"}
+    older = prior("2026-09-01T00:00:00+00:00", programs=[a, b])
+    first, _ = merge({"programs": [c, a]}, [older])
+    second, _ = merge({"programs": [b, c]}, [older])
+    names = lambda out: [p["name"] for p in out["profile"]["programs"]]  # noqa: E731
+    assert names(first) == names(second)
+
+
+def test_a_run_whose_model_calls_all_failed_is_not_used_as_an_earlier_run():
+    dead = prior("2026-10-12T00:00:00+00:00", investors=[UVC])
+    dead["token_usage"] = {"calls": 19, "failed_calls": 19}
+    usable = cf.usable_priors([dead], cf.identity("Acme Vision", "https://acme.example"))
+    assert usable == []
+    partly = {**dead, "token_usage": {"calls": 19, "failed_calls": 3}}
+    assert cf.usable_priors([partly], cf.identity("Acme Vision", "https://acme.example")) == [partly]

@@ -38,7 +38,8 @@ import datetime as _dt
 import re
 from urllib.parse import urlparse
 
-from .text import dedupe_people, founders_first, person_key, same_person
+from .text import (clean_person_name, founders_first, is_full_name, merge_person, parse_funding_stage, person_key,
+                   same_person, short_name_matches)
 
 MARKET_MAX_AGE_DAYS = 548                    # 18 months: an undated figure, by when it was found
 MARKET_MAX_AGE_YEARS = 2                     # a dated figure: its year within the last two
@@ -52,7 +53,9 @@ _PROFILE_LISTS = (
     (("programs",), ("name",)),
     (("commercial", "investors"), ("name",)),
     (("commercial", "certifications"), ("name",)),
-    (("employees_over_time",), ("date", "source_url")),
+    # A point is {year, count, source_url}. This was keyed on a "date" field no point has, so every
+    # point from one source shared a key and a carried series kept only the last of them.
+    (("employees_over_time",), ("year", "source_url")),
     # Carried only with an http source, like every list: an application-only mention earns no bonus
     # on the run that found it either.
     (("siemens_engagements",), ("unit", "type", "product")),
@@ -205,33 +208,131 @@ def _facts_of(run_like: dict) -> list:
 
 # ------------------------------------------------------------------------------- list merging
 
+def _fill_blanks(known: dict, found: dict) -> None:
+    for field, value in found.items():
+        if field not in ("name", "last_confirmed_at") and not _blank(value) and _blank(known.get(field)):
+            known[field] = copy.deepcopy(value)
+
+
+# Fields that say where a programme membership is evidenced; they travel with its confidence.
+_EVIDENCE_FIELDS = ("source_url", "evidence_url", "evidence", "quote")
+
+
+def _prefer_corroborated(entry: dict, members: list) -> None:
+    """A membership someone else's page states beats one only the company's own site claims
+    (score.py discounts the claim), whichever run found which: keep the corroborated evidence."""
+    if "confidence" not in entry or str(entry.get("confidence") or "").lower() == "corroborated":
+        return
+    for m in members:
+        if str(m["item"].get("confidence") or "").lower() == "corroborated":
+            entry["confidence"] = m["item"]["confidence"]
+            for f in _EVIDENCE_FIELDS:
+                if f in m["item"]:
+                    entry[f] = m["item"][f]
+            return
+
+
 def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, label: str) -> list:
-    """Fresh items first (current), then every grounded item only earlier runs found."""
-    fresh_items = dedupe_people(fresh_items) if fields == ("person",) else list(fresh_items or [])
-    seen = {_item_key(i, fields) for i in fresh_items if _item_key(i, fields)}
-    carried: dict = {}
-    for run in prior_runs:                                  # oldest → newest: later runs win
-        for item in getter(run, path) or []:
-            key = _item_key(item, fields)
-            if not key or not any(key) or key in seen or not _grounded(item):
-                continue
+    """One entry per entity across this run and every earlier one, in an order that does not depend
+    on which run found what.
+
+    - **One entry**: an entity this run and earlier runs both found is kept once. The earliest
+      grounded copy is the base — so a name's spelling does not flip between refreshes — and every
+      later copy, then this run's, only fills its blanks. A thin fresh founder therefore never
+      replaces a richer carried one, and a richer fresh one still adds what the carried copy lacked.
+      A programme keeps corroborated evidence over a self-asserted claim either way round.
+    - **People** are one person by ``same_person``; a first name alone joins the one full-name
+      person on record it names (``text.short_name_matches``) and is otherwise dropped, as at
+      extraction (``text.dedupe_people``). Placeholder names are never kept.
+    - **Order**: entities earlier runs knew come first, by the earliest run that had them and then
+      by key; entities only this run found follow, by key. The order a model listed them in, or
+      which refresh happened to find which, no longer moves anything. A dated series (headcount
+      points) is ordered by its key alone.
+    - A carried entity (not found by this run) must still name an http source and says when it was
+      last found (``last_confirmed_at``).
+    """
+    people = fields == ("person",)
+    groups: list = []                       # [{"key", "full", "members": [{item, when, fresh, grounded}]}]
+    loose: list = []                        # fresh items with no identity: kept as they are, last
+
+    def place(item, when, fresh):
+        if not isinstance(item, dict):
+            if fresh:
+                loose.append(item)
+            return
+        full = True
+        if people:
+            name = clean_person_name(item.get("name"))
+            if not name:
+                return
+            item, full = {**item, "name": name}, is_full_name(name)
+        key = _item_key(item, fields)
+        if not key or not any(key):
+            if fresh:
+                loose.append(item)
+            return
+        member = {"item": item, "when": when, "fresh": fresh, "grounded": fresh or _grounded(item)}
+        if people:
             # A person is matched on more than the name key: an earlier run's "KD Kutadgu Gokalp
             # Demirci" is this run's "Kutadgu Gokalp Demirci", and carrying both listed him twice.
-            if fields == ("person",) and any(same_person(item, i) for i in fresh_items
-                                             + [v for k, v in carried.items() if k != key]):
-                continue
-            entry = copy.deepcopy(item)
-            entry["last_confirmed_at"] = item.get("last_confirmed_at") or _when(run)
-            carried[key] = entry
-    reconfirmed = 0
-    for item in fresh_items:
-        if isinstance(item, dict):
-            reconfirmed += any(_item_key(item, fields) == _item_key(i, fields)
-                               for run in prior_runs for i in getter(run, path) or [])
-            item.pop("last_confirmed_at", None)             # found by this run: it is current
-    report[label] = {"new": len(fresh_items) - reconfirmed, "reconfirmed": reconfirmed,
-                     "carried": len(carried)}
-    return fresh_items + list(carried.values())
+            group = next((g for g in groups if g["full"] == full
+                          and any(same_person(m["item"], item) for m in g["members"])), None)
+        else:
+            group = next((g for g in groups if g["key"] == key), None)
+        if group is None:
+            group = {"key": key, "full": full, "members": []}
+            groups.append(group)
+        group["members"].append(member)
+
+    for run in prior_runs:                                  # oldest → newest
+        for item in getter(run, path) or []:
+            place(item, _when(run), False)
+    for item in fresh_items or []:
+        place(item, "", True)
+
+    def live(group):
+        return any(m["fresh"] or m["grounded"] for m in group["members"])
+
+    if people:
+        named = [g for g in groups if g["full"] and live(g)]
+        for g in [g for g in groups if not g["full"]]:
+            # Unique or nothing: "Alex" beside two Alexanders is neither of them.
+            hits = [n for n in named if any(short_name_matches(m["item"], n_m["item"])
+                                            for m in g["members"] for n_m in n["members"])]
+            if len(hits) == 1:
+                hits[0]["members"] += g["members"]
+        groups = [g for g in groups if g["full"]]
+
+    entries, reconfirmed, fresh_count = [], 0, 0
+    for g in groups:
+        if not live(g):
+            continue
+        data = sorted((m for m in g["members"] if m["grounded"]), key=lambda m: (m["fresh"], m["when"]))
+        base = next(m for m in data if not people or is_full_name(m["item"].get("name")))
+        entry = copy.deepcopy(base["item"])
+        entry.pop("last_confirmed_at", None)
+        for m in data:
+            if m is not base:
+                (merge_person if people else _fill_blanks)(entry, m["item"])
+        _prefer_corroborated(entry, data)
+        seen = [m["when"] for m in g["members"] if not m["fresh"]]
+        found_now = any(m["fresh"] for m in g["members"])
+        if found_now:
+            fresh_count += 1
+            reconfirmed += bool(seen)
+        else:
+            newest = data[-1]
+            entry["last_confirmed_at"] = newest["item"].get("last_confirmed_at") or newest["when"]
+        sort_key = person_key(entry.get("name")) if people else "\x1f".join(_item_key(entry, fields))
+        entries.append((min(seen) if seen else None, sort_key, entry))
+    if "year" in fields:
+        ordered = sorted(entries, key=lambda e: e[1])
+    else:
+        ordered = sorted((e for e in entries if e[0] is not None), key=lambda e: (e[0], e[1])) \
+            + sorted((e for e in entries if e[0] is None), key=lambda e: e[1])
+    report[label] = {"new": fresh_count - reconfirmed, "reconfirmed": reconfirmed,
+                     "carried": len(entries) - fresh_count}
+    return [e[2] for e in ordered] + loose
 
 
 def _profile_of(run: dict) -> dict:
@@ -247,7 +348,9 @@ def team_run(record: dict | None) -> dict | None:
     items = lambda k: [{f: v for f, v in i.items() if f != "new"} for i in record.get(k) or [] if isinstance(i, dict)]  # noqa: E731
     dp = {k: items(k) for k in ("founders", "key_team", "advisors", "programs")}
     dp["commercial"] = {"investors": items("investors")}
-    return {"deep_profile": dp, "created_at": str(record.get("retrieved_at") or record.get("stored_at") or "")}
+    # Marked so merge_profile does not read it as the newest evaluation: it holds lists, no single values.
+    return {"deep_profile": dp, "created_at": str(record.get("retrieved_at") or record.get("stored_at") or ""),
+            "team_record": True}
 
 
 def known_team(prior_runs: list) -> dict:
@@ -260,9 +363,30 @@ def known_team(prior_runs: list) -> dict:
 
 # ----------------------------------------------------------------------------------- public API
 
+def degraded(run: dict) -> bool:
+    """A run in which every model call failed.
+
+    Its profile is the keyword fallback and its trend, fit and verification are heuristics, so it
+    is no evidence that a fact went missing or changed. Read from the run's own call log
+    (``token_usage``: failed_calls == calls): that is attached to every run that called the model,
+    and unlike ``degraded`` — which names a stage when any one call fails — it says *all* failed.
+    Radical Dot's first two stored runs (a dead Gemini key, 19 of 19 calls failed) are such runs.
+    A run made with no model configured makes no calls and is not degraded; it never claimed more.
+    """
+    usage = run.get("token_usage") if isinstance(run, dict) else None
+    if not isinstance(usage, dict):
+        return False
+    try:
+        calls, failed = int(usage.get("calls") or 0), int(usage.get("failed_calls") or 0)
+    except (TypeError, ValueError):
+        return False
+    return calls > 0 and failed >= calls
+
+
 def usable_priors(prior_runs, fresh_identity: dict) -> list:
-    """The prior runs that are the same company, oldest first."""
-    runs = [r for r in prior_runs or () if isinstance(r, dict) and same_company(_run_identity(r), fresh_identity)]
+    """The prior runs that are the same company and not degraded, oldest first."""
+    runs = [r for r in prior_runs or () if isinstance(r, dict) and not degraded(r)
+            and same_company(_run_identity(r), fresh_identity)]
     return sorted(runs, key=_when)
 
 

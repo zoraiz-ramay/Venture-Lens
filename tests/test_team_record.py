@@ -15,10 +15,12 @@ ADA = {"name": "Ada Lovelace", "role": "CEO", "source_url": "https://ada.test/ab
 PROG = {"name": "Techstars", "type": "accelerator", "source_url": "https://techstars.test/x"}
 
 
+# Deepening always runs: it only touches founders whose background is still empty, and skipping it
+# once an earlier run knew a founder left that founder thin on every later run.
 @pytest.mark.parametrize("known, searched", [
     ({}, {"founders", "deepen", "programs"}),
-    ({"founders": True, "programs": True}, set()),
-    ({"founders": True}, {"programs"}),
+    ({"founders": True, "programs": True}, {"deepen"}),
+    ({"founders": True}, {"deepen", "programs"}),
 ])
 def test_a_full_evaluation_skips_the_searches_for_what_is_already_known(monkeypatch, known, searched):
     calls = set()

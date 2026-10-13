@@ -1203,6 +1203,9 @@ def _extract_commercial_posture(prof: dict, company: str, row: pd.Series,
         investors.append({"name": name,
                           "source_url": _clean_source_url(
                               inv.get("source_url") if isinstance(inv, dict) else "")})
+    # Sourced investors first, then by name: the cap used to keep whichever eight the model
+    # happened to list first, so the same evidence gave a different list each refresh.
+    investors.sort(key=lambda i: (not i["source_url"], i["name"].casefold()))
     commercial["investors"] = investors[:8]
     commercial["revenue"] = _clean_revenue(data.get("revenue"), corpus)
     prof["customer_classes"] = _clean_customer_classes(data.get("customer_classes"), customers)
@@ -2271,7 +2274,9 @@ def research_profile(row: pd.Series, llm: LLMClient, do_web: bool = True,
         tail = [functools.partial(_grade_programs, prof.get("programs", []), company, llm),
                 functools.partial(_recall_hq_offline, prof, company, row, llm),
                 functools.partial(_recall_links_offline, prof, company, row, llm)]
-        if do_web and not (known_team or {}).get("founders"):
+        # Always, not only before any earlier run found founders: it only touches founders whose
+        # background is still empty, and skipping it once one was known left them thin for good.
+        if do_web:
             tail.append(functools.partial(_deepen_founders, prof, company, llm))
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(tail)) as ex:
             for fut in [ex.submit(contextvars.copy_context().run, fn) for fn in tail]:

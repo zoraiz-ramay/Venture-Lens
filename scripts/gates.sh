@@ -51,6 +51,10 @@ run "ix conformance"       node scripts/ix_lint.mjs
 # once the stored runs are current.
 printf '\n\033[1m── dimension variance (advisory)\033[0m\n'
 $PY scripts/dimension_variance.py --report || true
+# Advisory too: whether re-evaluating one company brings back the same facts. It reads the stored
+# runs, so it has something to say only once a company has been evaluated more than once.
+printf '\n\033[1m── fact stability (advisory)\033[0m\n'
+$PY scripts/fact_stability.py --report || true
 # Also advisory, and deliberately noisy while unlabelled: routing quality is the one thing here
 # that no amount of unit testing establishes, and the labels can only come from a reviewer. A
 # silent reminder is one nobody acts on. Once benchmarks/labels.json is filled in, swap this for

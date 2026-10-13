@@ -143,13 +143,43 @@ def test_a_blank_on_refresh_never_replaces_a_sourced_value():
     assert report["fields_carried"] == ["founded_year"]
 
 
-def test_a_newer_sourced_value_wins_and_the_older_one_is_kept_as_history():
+def test_a_different_sourced_value_seen_once_does_not_replace_the_stored_one():
+    # One search finding another figure is not enough to flip a headline value between refreshes.
     old = {"key": "funding_research", "value": "€2.7M", "source_url": "https://old.example"}
     new = {"key": "funding_research", "value": "€4.1M", "source_url": "https://new.example"}
     out, _ = merge({"funding": "€4.1M"}, [prior("2026-08-01T00:00:00+00:00", funding="€2.7M", facts=[old])],
                    facts=[new])
+    assert out["profile"]["funding"] == "€2.7M"
+    assert out["profile"]["history"]["funding"][0]["value"] == "€4.1M"
+
+
+def test_a_different_sourced_value_seen_on_two_runs_in_a_row_replaces_the_stored_one():
+    old = {"key": "funding_research", "value": "€2.7M", "source_url": "https://old.example"}
+    new = {"key": "funding_research", "value": "€4.1M", "source_url": "https://new.example"}
+    priors = [prior("2026-08-01T00:00:00+00:00", funding="€2.7M", facts=[old]),
+              prior("2026-09-01T00:00:00+00:00", funding="€4.1M", facts=[new])]
+    out, _ = merge({"funding": "€4.1M"}, priors, facts=[new])
     assert out["profile"]["funding"] == "€4.1M"
-    assert out["profile"]["history"]["funding"][0]["value"] == "€2.7M"
+
+
+def test_a_later_funding_round_replaces_the_stored_one_at_once():
+    old = {"key": "funding_research", "value": "Seed, €2.7M", "source_url": "https://old.example"}
+    new = {"key": "funding_research", "value": "Series A, €12M", "source_url": "https://new.example"}
+    out, _ = merge({"funding": "Series A, €12M"},
+                   [prior("2026-08-01T00:00:00+00:00", funding="Seed, €2.7M", facts=[old])], facts=[new])
+    assert out["profile"]["funding"] == "Series A, €12M"
+
+
+def test_the_database_value_outranks_a_web_value_at_once_and_is_never_replaced_by_one():
+    web = {"key": "funding_research", "value": "€2.7M", "source_url": "https://press.example"}
+    database = {"key": "funding", "value": "€2.8M", "source_url": "GlassDollar", "method": "glassdollar_api"}
+    out, _ = merge({"funding": "€2.8M"}, [prior("2026-08-01T00:00:00+00:00", funding="€2.7M", facts=[web])],
+                   facts=[database])
+    assert out["profile"]["funding"] == "€2.8M"
+    priors = [prior("2026-08-01T00:00:00+00:00", funding="€2.8M", facts=[database]),
+              prior("2026-09-01T00:00:00+00:00", funding="€2.7M", facts=[web])]
+    out, _ = merge({"funding": "€2.7M"}, priors, facts=[web])
+    assert out["profile"]["funding"] == "€2.8M"         # a web value never replaces the database
 
 
 def test_a_model_recalled_headquarters_never_replaces_a_web_sourced_one():

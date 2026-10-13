@@ -202,6 +202,34 @@ def _backed(fact: dict) -> bool:
         or fact.get("source_type") in ("private", "self_reported")
 
 
+# How far a single value's source is trusted. A value is replaced only by one at least this
+# trusted, so a third-party page can never overwrite what the database states, and a model recall
+# never overwrites anything sourced.
+_DATABASE, _WEB, _RECALL = 3, 1, 0
+_STAGE_RANK = {"grant": 0, "pre_seed": 1, "seed": 2, "series_a": 3, "series_b_plus": 4}
+
+
+def _authority(container: dict, path, spec: dict, facts: list) -> int:
+    parent = _get(container, path[:-1]) if len(path) > 1 else container
+    parent = parent if isinstance(parent, dict) else {}
+    if spec.get("origin") and parent.get(spec["origin"]) == "llm":
+        return _RECALL
+    keys = set(spec.get("facts", ()))
+    if any(f.get("key") in keys and (str(f.get("method", "")).startswith(("glassdollar", "tracxn"))
+                                     or f.get("source_type") in ("private", "self_reported"))
+           for f in facts or ()):
+        return _DATABASE
+    return _WEB
+
+
+def _later_round(path, new, old) -> bool:
+    """A funding value naming a later stage than the stored one: the company raised again."""
+    if path[-1] not in ("funding", "funding_stage"):
+        return False
+    rank = lambda v: _STAGE_RANK.get(parse_funding_stage(v), -1)  # noqa: E731
+    return rank(new) > rank(old) >= 0
+
+
 def _facts_of(run_like: dict) -> list:
     return [f if isinstance(f, dict) else f.as_dict() for f in run_like.get("facts") or ()]
 
@@ -404,25 +432,44 @@ def merge_profile(fresh: dict, prior_runs: list, now: str, report: dict) -> dict
             _set(dp, path, merged)
     founders_first(dp)
     history = dp["history"] if isinstance(dp.get("history"), dict) else {}
+    evaluations = [r for r in prior_runs if not r.get("team_record")]
     for path, spec in _SCALARS:
         fresh_val = _get(dp, path)
         fresh_ok = not _blank(fresh_val) and _sourced(dp, path, spec, fresh_facts)
-        best = None                                          # newest sourced prior value
+        best, best_auth = None, -1                           # most trusted, then newest, sourced prior value
         for run in prior_runs:
             pdp, val = _profile_of(run), _get(_profile_of(run), path)
             if not _blank(val) and _sourced(pdp, path, spec, _facts_of(run)):
-                best = (val, run, pdp)
+                auth = _authority(pdp, path, spec, _facts_of(run))
+                if auth >= best_auth:
+                    best, best_auth = (val, run, pdp), auth
         if best is None:
             continue
         val, run, pdp = best
         name = ".".join(path)
         if fresh_ok:
-            if _norm(val) != _norm(fresh_val):
+            if _norm(val) == _norm(fresh_val):
+                continue
+            # Two sourced values disagree. The stored one stands unless the fresh one is at least
+            # as trusted AND either more trusted, a later funding round, or what the newest earlier
+            # run also found. One lucky (or unlucky) search no longer flips a headline value; a
+            # real change shows on the next refresh, when it is seen twice.
+            fresh_auth = _authority(dp, path, spec, fresh_facts)
+            stored_auth = _authority(pdp, path, spec, _facts_of(run))
+            newest = _get(_profile_of(evaluations[-1]), path) if evaluations else None
+            adopt = fresh_auth >= stored_auth and (
+                fresh_auth > stored_auth or _later_round(path, fresh_val, val)
+                or _norm(newest) == _norm(fresh_val))
+            if adopt:
                 history.setdefault(name, []).append({"value": val, "replaced_at": now,
                                                      "found_at": _when(run)})
-            continue
-        # Blank, unsourced, or an *_origin="llm" recall on this run: the sourced value stands.
-        if not _blank(fresh_val):
+                continue
+            history.setdefault(name, []).append({"value": fresh_val, "replaced_at": now,
+                                                 "reason": "candidate: seen once"})
+            # Falls through: the stored sourced value is kept, like a blank fresh one.
+        # Blank, unsourced, an *_origin="llm" recall, or a candidate not yet adopted: the sourced
+        # value stands.
+        if not _blank(fresh_val) and not fresh_ok:
             history.setdefault(name, []).append({"value": fresh_val, "replaced_at": now,
                                                  "reason": "unsourced on this run"})
         _set(dp, path, copy.deepcopy(val))

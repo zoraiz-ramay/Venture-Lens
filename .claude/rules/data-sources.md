@@ -68,3 +68,11 @@ It is not faster. The grounded call takes ~3s, but opening Google's redirect and
 page takes 4–6s when a ten-query wave fetches ~40 pages at once, so a wave lands at ~12s, the same
 as DuckDuckGo. Capping the downloads at 4s dropped every page and left trend scoring on no
 evidence (measured October 2026). Using it for trend alone was tried and removed for that reason.
+
+## People and investors meet the same co-occurrence bar
+
+A founder, key-team member or advisor is kept only where ONE search result, or one of the company's
+own pages (a `__site__` pseudo-hit), names both the person and the company (`profile._ground_people`,
+accents folded). Investors additionally need their own http source. The extraction reads a corpus
+of many results, so without this a namesake or a half-remembered name entered the team and
+flickered between refreshes. People already on record are carried by `core/carry_forward.py`.

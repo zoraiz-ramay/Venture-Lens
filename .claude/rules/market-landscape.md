@@ -44,3 +44,11 @@ extra model or search call:
 
 `landscape` absent and `landscape` present-but-empty are different statements, and the UI renders
 them differently: "not researched on this run" versus "the search named no competitor".
+
+## Open-ended lists settle
+
+Competitors, funded peers and active investors show at most 8 / 6 / 8 entities
+(`carry_forward.LANDSCAPE_CAPS`), chosen by how many runs found each one themselves; the rest are
+kept in `landscape.held_back` (still counted, never scorer evidence). Each refresh's search turns
+up a name or two, and without the cap the union never settled (Radical Dot: 7 -> 9 -> 13).
+A market size changes only when two refreshes in a row find the new figure.

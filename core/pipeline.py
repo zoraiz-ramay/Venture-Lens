@@ -656,6 +656,8 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
     if fact_status:
         # Not scorer evidence (not in judgment.EVIDENCE_KEYS): it labels facts, never removes them.
         result["fact_status"] = fact_status
+    # Which kinds of fact this run holds, and how long an empty one has been empty. Not evidence.
+    result["slot_status"] = carry_forward.slot_status(result, priors)
     if priors or notes:
         result["carry_forward"] = {"prior_runs": len(priors), **(carried if priors else notes)}
     if departments:

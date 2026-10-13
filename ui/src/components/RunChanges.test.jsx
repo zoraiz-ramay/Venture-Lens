@@ -18,6 +18,15 @@ describe("RunChanges", () => {
     expect(line).toHaveTextContent("1 fact whose source no longer states it");
   });
 
+  it("names the kinds of fact no run has found three times in a row", () => {
+    render(<RunChanges carryForward={{ prior_runs: 2 }}
+      slotStatus={{ customers: { status: "empty", empty_streak: 3 }, revenue: { status: "empty", empty_streak: 1 },
+        founders: { status: "found" } }} />);
+    const line = screen.getByLabelText("Changes since the last run");
+    expect(line).toHaveTextContent("not found in the last 3+ runs: customers");
+    expect(line).not.toHaveTextContent("revenue");
+  });
+
   it("says nothing on a first evaluation", () => {
     const { container } = render(<RunChanges carryForward={undefined} />);
     expect(container).toBeEmptyDOMElement();

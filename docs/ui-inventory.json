@@ -565,7 +565,7 @@
     },
     {
       "path": "ui/src/components/RunChanges.jsx",
-      "lines": 23,
+      "lines": 35,
       "exports": [
         "RunChanges"
       ],
@@ -575,7 +575,7 @@
     },
     {
       "path": "ui/src/components/RunChanges.test.jsx",
-      "lines": 47,
+      "lines": 56,
       "exports": [],
       "css_classes": []
     },
@@ -1905,6 +1905,6 @@
     "api_methods": 40,
     "design_tokens": 70,
     "jsx_files": 111,
-    "jsx_lines": 11560
+    "jsx_lines": 11581
   }
 }

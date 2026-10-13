@@ -483,6 +483,38 @@ def pinned_website(name: str, prior_runs) -> str:
     return ""
 
 
+# The kinds of fact a reviewer looks for, and where a run holds each. A slot is "empty" when the
+# run (carried entries included) has nothing there.
+SLOTS = {
+    "founders": ("deep_profile", "founders"),
+    "programs": ("deep_profile", "programs"),
+    "investors": ("deep_profile", "commercial", "investors"),
+    "customers": ("deep_profile", "reference_customers"),
+    "revenue": ("deep_profile", "commercial", "revenue"),
+    "headcount_history": ("deep_profile", "employees_over_time"),
+    "competitors": ("trend", "landscape", "competitors"),
+    "market_size": ("trend", "landscape", "market_size"),
+}
+
+
+def slot_status(run: dict, prior_runs) -> dict:
+    """Per slot: found / empty, and for an empty one how many runs in a row found nothing.
+
+    A blank row reads the same whether one search failed or three refreshes looked and the web
+    has nothing; the streak is what tells them apart ("not found in the last 3 runs")."""
+    previous = next((r.get("slot_status") for r in reversed(prior_runs or [])
+                     if isinstance(r, dict) and isinstance(r.get("slot_status"), dict)), {})
+    out = {}
+    for slot, path in SLOTS.items():
+        if not _blank(_get(run, path)):
+            out[slot] = {"status": "found"}
+        else:
+            before = previous.get(slot) or {}
+            streak = int(before.get("empty_streak") or 0) if before.get("status") == "empty" else 0
+            out[slot] = {"status": "empty", "empty_streak": streak + 1}
+    return out
+
+
 def usable_priors(prior_runs, fresh_identity: dict) -> list:
     """The prior runs that are the same company and not degraded, oldest first."""
     runs = [r for r in prior_runs or () if isinstance(r, dict) and not degraded(r)

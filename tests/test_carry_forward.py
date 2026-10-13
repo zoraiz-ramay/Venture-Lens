@@ -458,3 +458,15 @@ def test_the_first_profile_partial_already_shows_what_earlier_runs_found(offline
     _run(df, tools, prior_runs=[earlier], on_partial=lambda section, data: partials.append((section, data)))
     first = next(data for section, data in partials if section == "profile")
     assert [i["name"] for i in first["deep_profile"]["commercial"]["investors"]] == ["UVC Partners"]
+
+
+def test_an_empty_slot_counts_how_many_runs_in_a_row_found_nothing():
+    run = {"deep_profile": {"founders": [{"name": "Andreas Wagner"}], "reference_customers": []},
+           "trend": {"landscape": {"market_size": None}}}
+    first = cf.slot_status(run, [])
+    assert first["founders"] == {"status": "found"}
+    assert first["customers"] == {"status": "empty", "empty_streak": 1}
+    third = cf.slot_status(run, [{"slot_status": first}, {"slot_status": cf.slot_status(run, [{"slot_status": first}])}])
+    assert third["customers"]["empty_streak"] == 3
+    found_again = cf.slot_status({**run, "deep_profile": {"reference_customers": ["BASF"]}}, [{"slot_status": third}])
+    assert found_again["customers"] == {"status": "found"}

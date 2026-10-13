@@ -225,7 +225,7 @@ export default function Profile() {
         </div>
       </div>
       <DegradedNotice degraded={res.degraded} />
-      <RunChanges carryForward={res.carry_forward} factStatus={res.fact_status} />
+      <RunChanges carryForward={res.carry_forward} factStatus={res.fact_status} slotStatus={res.slot_status} />
 
       {/* Navigation is the rail alone. The pipeline ribbon that used to sit here rendered all
           seven steps as done on every finished run, so it reported nothing a reader could act on

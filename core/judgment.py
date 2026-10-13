@@ -20,7 +20,13 @@ CRITERIA = {"strategic": "Relevant Siemens use case", "complement": "Relevant Si
             "impact": "Demonstrated customer value"}
 
 
-_NOT_RESEARCH = frozenset({"retrieved_at", "freshness_days", "last_confirmed_at"})
+# Provenance and bookkeeping, not research: each changes between runs while the evidence does not.
+# carry_forward stamps replaced_at/found_at/carried_fields with run dates, and a team record
+# carries stored_at/from_store; left in, they gave every refresh a new prompt and moved the cut.
+_NOT_RESEARCH = frozenset({"retrieved_at", "freshness_days", "last_confirmed_at", "replaced_at",
+                           "found_at", "carried_fields", "stored_at", "from_store"})
+# Paths left out whole: deep_profile.history holds superseded values, which are not current research.
+_NOT_RESEARCH_PATHS = frozenset({"deep_profile.history"})
 
 
 # The order evidence_for visits a run in. A budget cut drops the tail, so this order is also what
@@ -40,7 +46,7 @@ def evidence_for(run: dict) -> list[dict]:
                 # never hit on a re-run and the model re-answered identical evidence differently
                 # (two replays of one company: Siemens Fit 89 vs 100). It also took ~10% of the
                 # evidence budget on every stored run.
-                if key in _NOT_RESEARCH:
+                if key in _NOT_RESEARCH or f"{path}.{key}" in _NOT_RESEARCH_PATHS:
                     continue
                 visit(child, f"{path}.{key}", url)
         elif isinstance(value, (list, tuple)):

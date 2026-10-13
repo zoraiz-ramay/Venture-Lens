@@ -201,3 +201,16 @@ def test_the_same_evidence_retrieved_at_another_time_reads_identically():
                                             "last_confirmed_at": "2026-10-05T09:00:00+00:00"}]}
     assert evidence_for(monday) == evidence_for(friday)
     assert any(r["text"] == "UVC Partners" for r in evidence_for(monday))
+
+
+def test_a_refresh_carrying_values_forward_sends_the_same_evidence():
+    """carry_forward stamps run dates into deep_profile (carried_fields, history[].replaced_at and
+    found_at). In the records, every refresh sent a new prompt and moved the 14k budget cut."""
+    from core.judgment import evidence_for
+    base = {"company": "Radical Dot", "deep_profile": {"crunchbase_url": "https://www.crunchbase.com/organization/radical-dot"}}
+    refreshed = {"company": "Radical Dot", "deep_profile": {
+        "crunchbase_url": "https://www.crunchbase.com/organization/radical-dot",
+        "carried_fields": {"crunchbase_url": "2026-10-12T22:13:18+00:00"},
+        "history": {"hq": [{"value": "Munich", "replaced_at": "2026-10-13T01:00:00+00:00",
+                            "found_at": "2026-10-12T22:11:26+00:00"}]}}}
+    assert evidence_for(refreshed) == evidence_for(base)

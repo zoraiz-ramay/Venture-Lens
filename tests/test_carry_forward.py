@@ -257,6 +257,33 @@ def test_a_different_market_figure_seen_once_does_not_replace_the_stored_one():
     assert cf.merge_trend(fresh, two, NOW, TODAY, {})["landscape"]["market_size"]["value"] == "USD 3.7 billion"
 
 
+def test_competitors_settle_on_the_ones_most_runs_found():
+    # Radical Dot's competitors went 7 -> 9 -> 13: every refresh added one or two the search turned up.
+    ident = cf.identity("Acme Vision", "https://acme.example")
+    comp = lambda n: {"name": n, "source_url": f"https://web.example/{n}"}  # noqa: E731
+    core_names = [f"Core{i}" for i in range(8)]
+    priors = [prior(f"2026-10-0{d}T00:00:00+00:00",
+                    trend={"landscape": {"competitors": [comp(n) for n in core_names]}}) for d in (1, 2)]
+    fresh = {"landscape": {"competitors": [comp("OneOff")] + [comp(n) for n in core_names[:3]]}}
+    out = cf.merge_trend(fresh, cf.usable_priors(priors, ident), NOW, TODAY, {})
+    shown = [c["name"] for c in out["landscape"]["competitors"]]
+    assert sorted(shown) == sorted(core_names)                      # the one-off does not displace any
+    assert [c["name"] for c in out["landscape"]["held_back"]["competitors"]] == ["OneOff"]
+    # Held back, it is still counted: found again by two more runs, it outranks the core names found
+    # by fewer runs.
+    later = priors + [prior("2026-10-03T00:00:00+00:00", trend={"landscape": {
+        "competitors": [comp(n) for n in core_names[:7]], "held_back": {"competitors": [comp("OneOff")]}}})]
+    again = cf.merge_trend({"landscape": {"competitors": [comp("OneOff")]}},
+                           cf.usable_priors(later, ident), NOW, TODAY, {})
+    assert len(again["landscape"]["competitors"]) == 8
+
+
+def test_held_back_entries_are_not_scorer_evidence():
+    from core.judgment import evidence_for
+    run = {"company": "Acme", "trend": {"landscape": {"held_back": {"competitors": [{"name": "OneOff"}]}}}}
+    assert not any(r["text"] == "OneOff" for r in evidence_for(run))
+
+
 # ----------------------------------------------------------------------------------- pipeline
 
 def test_an_evaluation_carries_an_earlier_runs_investor_into_its_result(offline):

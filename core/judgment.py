@@ -24,7 +24,7 @@ CRITERIA = {"strategic": "Relevant Siemens use case", "complement": "Relevant Si
 # carry_forward stamps replaced_at/found_at/carried_fields with run dates, and a team record
 # carries stored_at/from_store; left in, they gave every refresh a new prompt and moved the cut.
 _NOT_RESEARCH = frozenset({"retrieved_at", "freshness_days", "last_confirmed_at", "replaced_at",
-                           "found_at", "carried_fields", "stored_at", "from_store"})
+                           "found_at", "carried_fields", "stored_at", "from_store", "held_back"})
 # Paths left out whole: deep_profile.history holds superseded values, which are not current research.
 _NOT_RESEARCH_PATHS = frozenset({"deep_profile.history"})
 

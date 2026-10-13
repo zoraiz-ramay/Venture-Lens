@@ -60,6 +60,8 @@ _PROFILE_LISTS = (
     # on the run that found it either.
     (("siemens_engagements",), ("unit", "type", "product")),
 )
+# How many entries an open-ended landscape list shows; the rest are held back (see _merge_list).
+LANDSCAPE_CAPS = {"competitors": 8, "funded_peers": 6, "active_investors": 8}
 _TREND_LISTS = (
     (("landscape", "competitors"), ("name",)),
     (("landscape", "funded_peers"), ("company",)),
@@ -260,7 +262,8 @@ def _prefer_corroborated(entry: dict, members: list) -> None:
             return
 
 
-def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, label: str) -> list:
+def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, label: str,
+                cap: int = 0, overflow: list | None = None) -> list:
     """One entry per entity across this run and every earlier one, in an order that does not depend
     on which run found what.
 
@@ -352,7 +355,19 @@ def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, lab
             newest = data[-1]
             entry["last_confirmed_at"] = newest["item"].get("last_confirmed_at") or newest["when"]
         sort_key = person_key(entry.get("name")) if people else "\x1f".join(_item_key(entry, fields))
-        entries.append((min(seen) if seen else None, sort_key, entry))
+        # How many runs found it themselves (a carried copy in a later run's record is not a find).
+        found_by = len({m["when"] for m in g["members"]
+                        if not m["fresh"] and not m["item"].get("last_confirmed_at")}) + found_now
+        entries.append((min(seen) if seen else None, sort_key, entry, found_by))
+    if cap and len(entries) > cap:
+        # Open-ended lists (competitors, peers) gain a name or two on every refresh, so the union
+        # never settled: Radical Dot's competitors went 7 -> 9 -> 13. Show the `cap` entities the
+        # most runs found (earliest first-seen breaks ties); hold the rest back, still counted, so
+        # a name one search turned up once cannot displace established ones.
+        ranked = sorted(entries, key=lambda e: (-e[3], e[0] or "￿", e[1]))
+        if overflow is not None:
+            overflow.extend(e[2] for e in sorted(ranked[cap:], key=lambda e: e[1]))
+        entries = ranked[:cap]
     if "year" in fields:
         ordered = sorted(entries, key=lambda e: e[1])
     else:
@@ -608,10 +623,18 @@ def merge_trend(fresh: dict, prior_runs: list, now: str, today: _dt.date, report
             report["market_size_dropped"] = {"as_of": (size or {}).get("as_of", ""),
                                              "reason": "a forecast or older than two years"}
         if prior_runs:
+            held_back: dict = {}
             for path, fields in _TREND_LISTS:
-                land[path[-1]] = _merge_list(_get(out, path), prior_runs, path, fields,
-                                             lambda run, p: _get(run.get("trend") or {}, p), report,
-                                             ".".join(path))
+                held: list = []
+                land[path[-1]] = _merge_list(
+                    _get(out, path), prior_runs, path, fields,
+                    lambda run, p: (_get(run.get("trend") or {}, p) or [])
+                    + (_get(run.get("trend") or {}, ("landscape", "held_back", p[-1])) or []),
+                    report, ".".join(path), cap=LANDSCAPE_CAPS.get(path[-1], 0), overflow=held)
+                if held:
+                    held_back[path[-1]] = held
+            if held_back:
+                land["held_back"] = held_back
             stored, stored_run = None, None
             for run in reversed(prior_runs):                # newest qualifying prior figure
                 prior = _get(run.get("trend") or {}, ("landscape", "market_size"))

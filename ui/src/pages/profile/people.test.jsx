@@ -8,7 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../../api.js", () => ({ api: { runBusinessFlow: vi.fn() } }));
 
 import OverviewTab from "./OverviewTab.jsx";
-import { dedupePeople, personKey, personResolver, samePerson, withoutListed } from "./people.js";
+import { cleanPersonName, dedupePeople, personKey, personResolver, resolveShortName, samePerson, withoutListed }
+  from "./people.js";
 
 describe("personKey", () => {
   it("ignores titles, post-nominals, a role in brackets, accents and case", () => {
@@ -48,6 +49,56 @@ describe("samePerson", () => {
   it("drops an advisor already listed as a founder", () => {
     expect(withoutListed([{ name: "Trevor Amanya" }, { name: "Jane Roe" }], [{ name: "Trevor Amanya" }]))
       .toEqual([{ name: "Jane Roe" }]);
+  });
+});
+
+describe("first names and placeholders", () => {
+  // Radical Dot's third refresh stored five founders for a company with two.
+  const radicalDot = [
+    { name: "Andreas Wagner", source_url: "https://fundraisingfox.example/radicaldot" },
+    { name: "Alex (surname not stated)", background: "HEC Paris", source_url: "https://radicaldot.notion.example" },
+    { name: "Andi (surname not stated)", source_url: "https://radicaldot.notion.example" },
+    { name: "Alexandre Kremer", source_url: "https://openregister.example/radical-dot" },
+    { name: "Alexandre", source_url: "https://radicaldot.notion.example" },
+  ];
+
+  it("collapses every spelling to the two founders, keeping the full names", () => {
+    const out = dedupePeople(radicalDot);
+    expect(out.map((p) => p.name)).toEqual(["Andreas Wagner", "Alexandre Kremer"]);
+    expect(out[1].background).toBe("HEC Paris");            // a blank filled from the first-name entry
+  });
+
+  it("never keeps a placeholder as a name", () => {
+    expect(cleanPersonName("Alex (surname not stated)")).toBe("Alex");
+    expect(cleanPersonName("Founder (name not given)")).toBe("");
+    expect(cleanPersonName("Unknown")).toBe("");
+    expect(dedupePeople([{ name: "Not stated" }, { name: "CEO" }])).toEqual([]);
+  });
+
+  it("drops a first name that names nobody on record, and one that could be two people", () => {
+    expect(dedupePeople([{ name: "Alex" }])).toEqual([]);
+    expect(dedupePeople([{ name: "Alex" }, { name: "Alexandre Kremer" }, { name: "Alexander Ochs" }])
+      .map((p) => p.name)).toEqual(["Alexandre Kremer", "Alexander Ochs"]);
+  });
+
+  it("matches a first name, a prefix of one, or a common short form, and nothing looser", () => {
+    expect(resolveShortName({ name: "Andi" }, [{ name: "Andreas Wagner" }])?.name).toBe("Andreas Wagner");
+    expect(resolveShortName({ name: "Al" }, [{ name: "Alexandre Kremer" }])).toBeNull();
+    expect(resolveShortName({ name: "Kremer" }, [{ name: "Alexandre Kremer" }])).toBeNull();
+  });
+
+  it("gives a first name the id of the one person it names", () => {
+    const id = personResolver();
+    expect(id({ name: "Alexandre Kremer" })).toBe(id({ name: "Alex" }));
+    expect(withoutListed([{ name: "Andi" }, { name: "Jane Roe" }], [{ name: "Andreas Wagner" }]))
+      .toEqual([{ name: "Jane Roe" }]);
+  });
+
+  it("shows Radical Dot's stored five founders as two", () => {
+    render(<OverviewTab res={{ company: "Radical Dot", score: {}, deep_profile: { founders: radicalDot } }} />);
+    expect(screen.getAllByText(/Alexandre Kremer/)).toHaveLength(1);
+    expect(screen.queryByText(/surname not stated/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Andi$/)).not.toBeInTheDocument();
   });
 });
 

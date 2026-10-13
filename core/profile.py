@@ -36,8 +36,10 @@ from .web import _ddg_many
 from .llm import LLMClient
 from .config import KNOWN_PROGRAM_TIERS
 from . import programs as programs_mod
-from .text import (_clean_source_url, _norm, dedupe_people, founders_first, has_funding_signal, is_named_org,
-                   is_revenue_estimate, parse_funding_stage, person_key, same_person)
+from .text import (_clean_source_url, _norm, clean_person_name, dedupe_people, founders_first,
+                   has_funding_signal, is_full_name, is_named_org, is_revenue_estimate, parse_funding_stage,
+                   person_key, resolve_short_name, same_person, says_nothing)
+from .text import fill_person as _fill_person
 
 # ------------------------------------------------------------- the profile's shape
 # Known startup programs for offline detection (matched case-insensitively).
@@ -483,6 +485,15 @@ def _offline_extract(row: pd.Series, results: dict) -> dict:
     return prof
 
 
+# Every prompt that extracts people says this. The prompt is not the gate — dedupe_people drops a
+# placeholder and a first name alone that names nobody on record — but a model told to write the
+# name as the source does writes fewer of them: Radical Dot's refreshes stored "Alex (surname not
+# stated)" and "Andi (surname not stated)" beside the founders they abbreviate.
+_PEOPLE_NAMES = ("People: give each person's full name exactly as the source writes it. Never write a "
+                 "placeholder such as '(surname not stated)' or 'unknown'; leave out a person whose "
+                 "name the source does not state.")
+
+
 def _llm_extract(company: str, row: pd.Series, results: dict, llm: LLMClient) -> dict | None:
     """The main extraction: one call over the corpus, cleaned field by field; None when unreadable.
 
@@ -505,6 +516,7 @@ def _llm_extract(company: str, row: pd.Series, results: dict, llm: LLMClient) ->
         "short phrase here; leave empty if the customers are named or unknown.\n"
         "- founders: include role AND a specific background (prior companies, roles, university/PhD) "
         "whenever the evidence mentions it; include the LinkedIn URL if present in the results.\n"
+        f"- founders / key_team / advisors: {_PEOPLE_NAMES}\n"
         "- employees: a number or tight range (e.g. '25' or '50-100'), not vague words.\n"
         "- hq: the headquarters as 'City, Country' (e.g. 'Munich, Germany'), and ONLY if a "
         "result states where the company is based. Never infer it from a top-level domain, a "
@@ -546,6 +558,9 @@ def _llm_extract(company: str, row: pd.Series, results: dict, llm: LLMClient) ->
     for key in ("founders", "key_team", "advisors", "programs", "reference_customers"):
         if isinstance(data.get(key), list):
             prof[key] = [x for x in data[key] if x]
+    # The prompt asks for full names; this is what enforces it. dedupe_people drops placeholders and
+    # keeps a first name alone only as the one full-name person it names, so a model that writes
+    # "Alex (surname not stated)" beside "Alexandre Kremer" still yields one founder.
     for key in ("founders", "key_team", "advisors"):
         prof[key] = dedupe_people(prof[key])
     founders_first(prof)
@@ -671,7 +686,7 @@ def _recover_founders(prof: dict, company: str, llm: LLMClient) -> None:
         "Extract the FOUNDERS of this company: name, role, specific background (prior "
         "companies/roles, education), LinkedIn URL, and the supporting source_url. Only "
         "people the results clearly identify as founders/co-founders/founding CEO-CTO. "
-        "Never invent names; return an empty list if the results name nobody.\n"
+        f"Never invent names; return an empty list if the results name nobody. {_PEOPLE_NAMES}\n"
         'Return ONLY JSON: {"founders": [{"name":"","role":"","background":"","linkedin":"","source_url":""}]}',
         system="You extract structured facts strictly from supplied evidence. JSON only.",
         max_tokens=700, reasoning="none")) or {}
@@ -699,14 +714,15 @@ def _deepen_founders(prof: dict, company: str, llm: LLMClient) -> None:
     data = LLMClient.parse_json(llm.complete(
         f"Web results about the founders of '{company}' ({names}):\n\n{corpus}\n\n"
         "For each founder, extract role, a SPECIFIC background (prior companies/roles, "
-        "education/PhD), and LinkedIn URL — only what the results support; leave empty otherwise.\n"
+        "education/PhD), and LinkedIn URL — only what the results support; leave empty otherwise. "
+        "Name each founder exactly as listed above.\n"
         'Return ONLY JSON: {"founders": [{"name":"","role":"","background":"","linkedin":"","source_url":""}]}',
         system="You extract structured facts strictly from supplied evidence. JSON only.",
         max_tokens=700, reasoning="none")) or {}
-    updates = {str(f.get("name", "")).strip().lower(): f
-               for f in data.get("founders", []) if isinstance(f, dict) and f.get("name")}
+    updates = [u for u in data.get("founders", []) if isinstance(u, dict) and u.get("name")]
     for f in prof["founders"]:
-        u = updates.get(str(f.get("name", "")).strip().lower())
+        # Matched by person, not by spelling: an answer naming "Dr. Andreas Wagner" fills "Andreas Wagner".
+        u = next((u for u in updates if same_person(f, u)), None)
         if u:
             if says_nothing(f.get("background"), f.get("name", "")):
                 f["background"] = ""
@@ -1837,7 +1853,7 @@ def search_team_web(company: str, website: str, llm: LLMClient) -> dict:
         "Background: education and previous employers in one short line, only as the notes state them. "
         "Programme names as the programme calls itself (e.g. \"XPRENEURS\", not \"XPRENEURS Batch 15\"). "
         "One partner per entry, named as the page names it. Investors are not partners. Leave out "
-        "anything without a URL.\n"
+        f"anything without a URL. {_PEOPLE_NAMES}\n"
         "Return ONLY JSON: " + _TEAM_WEB_JSON,
         system="You extract structured facts strictly from supplied evidence. JSON only.",
         max_tokens=1500, reasoning="none"))
@@ -1849,7 +1865,7 @@ def search_team_web(company: str, website: str, llm: LLMClient) -> dict:
     name = company.casefold()
     out: dict = {"founders": [], "programs": [], "partners": []}
     for f in data.get("founders") or []:
-        person = str(f.get("name") or "").strip() if isinstance(f, dict) else ""
+        person = clean_person_name(f.get("name")) if isinstance(f, dict) else ""
         # A founder needs a page naming them at this company. Their background may come from another
         # page that names them in full — an alumni story or an employer's profile seldom names the
         # startup (Kremer's HEC Paris profile does not) — and that page is linked as its source.
@@ -1885,6 +1901,7 @@ def search_team_web(company: str, website: str, llm: LLMClient) -> dict:
                 entry["prestige"] = _program_tier_offline(label)
             if not any(_program_key(e["name"]) == _program_key(label) for e in out[key]):
                 out[key].append(entry)
+    out["founders"] = dedupe_people(out["founders"])
     return out
 
 
@@ -1956,47 +1973,6 @@ def _tied(label: str, company: str, page: str, url: str = "") -> bool:
     return any(abs(a - b) <= _NEAR for a in spots for b in at)
 
 
-# A background that says only that there is none: the evaluation's extraction wrote "Dr. Andreas
-# Wagner; no prior companies or roles are specified in the results." for Radical Dot's CEO. It is
-# shown as nothing, and a found background replaces it.
-_SAYS_NOTHING = re.compile(r"\b(?:not (?:specified|stated|mentioned|available|provided|given|found|disclosed)|"
-                           r"no (?:prior|previous|further|other|specific) (?:compan|role|information|detail|background)|"
-                           r"unknown|n/a)", re.I)
-
-
-_HONORIFICS = {"dr", "prof", "mr", "mrs", "ms", "sir", "dame", "herr", "frau"}
-
-
-def says_nothing(background, name: str = "") -> bool:
-    """Filler, or nothing but the person's own name ("Dr. Andreas Wagner" was his "background")."""
-    def words(text):
-        text = "".join(c for c in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(c))
-        return set(re.findall(r"[a-z0-9]+", text.casefold()))
-    text = str(background or "")
-    if _SAYS_NOTHING.search(text):
-        return True
-    return bool(text.strip()) and not (words(text) - words(name) - _HONORIFICS)
-
-
-def _fill_person(known: dict, found: dict) -> None:
-    """What a later record knows about a person the earlier one listed thinly: a background the
-    earlier one left blank, and a role that only adds to the earlier one ("Co-founder" becomes
-    "Co-founder and CEO", but a different role never replaces one). Each carries its own source."""
-    if says_nothing(known.get("background"), known.get("name", "")):
-        known["background"] = ""
-    if not str(known.get("background") or "").strip() and str(found.get("background") or "").strip() \
-            and not says_nothing(found.get("background"), found.get("name", "")):
-        known["background"] = str(found["background"]).strip()
-        if found.get("background_source"):
-            known["background_source"] = found["background_source"]
-    old_role, new_role = str(known.get("role") or "").strip(), str(found.get("role") or "").strip()
-    if new_role and len(new_role) > len(old_role) and old_role.casefold() in new_role.casefold():
-        known["role"] = new_role
-    for k in ("linkedin", "source_url"):
-        if not str(known.get(k) or "").strip() and str(found.get(k) or "").strip():
-            known[k] = found[k]
-
-
 def merge_team(base: dict, *more: dict) -> dict:
     """``base``'s lists first and in their order, then what each later record adds.
 
@@ -2015,7 +1991,17 @@ def merge_team(base: dict, *more: dict) -> dict:
                 if not isinstance(item, dict) or not str(item.get("name", "")).strip():
                     continue
                 if key in ("founders", "key_team", "advisors"):
+                    # Same identity rules as dedupe_people: no placeholder is a name, and a first
+                    # name alone counts only as the one full-name person it names.
+                    name = clean_person_name(item.get("name"))
+                    if not name:
+                        continue
+                    item = {**item, "name": name}
                     same = next((m for m in merged if same_person(item, m)), None)
+                    if same is None and not is_full_name(name):
+                        same = resolve_short_name(item, merged)
+                        if same is None:
+                            continue
                     known = same is not None
                     if known:
                         _fill_person(same, item)

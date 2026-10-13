@@ -6,7 +6,7 @@ so the cases that must stay apart are pinned as firmly as the ones that must mer
 """
 import pytest
 
-from core.text import dedupe_people, founders_first, same_person
+from core.text import clean_person_name, dedupe_people, founders_first, resolve_short_name, same_person
 
 
 def p(name, **kw):
@@ -50,3 +50,72 @@ def test_a_founder_wins_over_the_same_person_in_key_team_or_advisors():
     founders_first(prof)
     assert [x["name"] for x in prof["key_team"]] == ["Ann Lee"]
     assert [x["name"] for x in prof["advisors"]] == ["Bo Chen"]
+
+
+# ------------------------------------------------------------------ first names and placeholders
+# Radical Dot has two founders, Andreas Wagner and Alexandre Kremer. Three refreshes stored 2, 3 and
+# then 5, because the model wrote a different form of each name every run.
+RADICAL_DOT = [
+    p("Andreas Wagner", source_url="https://fundraisingfox.example/radicaldot"),
+    p("Alex (surname not stated)", background="HEC Paris", source_url="https://radicaldot.notion.example"),
+    p("Andi (surname not stated)", source_url="https://radicaldot.notion.example"),
+    p("Alexandre Kremer", source_url="https://openregister.example/radical-dot"),
+    p("Alexandre", source_url="https://radicaldot.notion.example"),
+]
+
+
+def test_radical_dots_name_variants_are_its_two_founders_with_their_full_names():
+    out = dedupe_people(RADICAL_DOT)
+    assert [x["name"] for x in out] == ["Andreas Wagner", "Alexandre Kremer"]
+    assert out[1]["background"] == "HEC Paris"                       # a blank filled from "Alex"
+
+
+@pytest.mark.parametrize("raw, name", [
+    ("Alex (surname not stated)", "Alex"), ("Jane Doe (CEO)", "Jane Doe"), ("Alex, last name unknown", "Alex"),
+    ("Founder (name not given)", ""), ("Unknown", ""), ("Not stated", ""), ("CEO", ""), ("王伟", "王伟"),
+])
+def test_a_placeholder_is_never_part_of_a_name(raw, name):
+    assert clean_person_name(raw) == name
+
+
+def test_a_placeholder_entry_is_never_stored():
+    assert dedupe_people([p("Unknown", role="CTO"), p("Co-founder (name not stated)")]) == []
+    assert all("stated" not in x["name"] for x in dedupe_people(RADICAL_DOT))
+
+
+def test_a_first_name_with_no_full_name_to_join_is_dropped():
+    assert dedupe_people([p("Alex", role="CTO")]) == []
+
+
+def test_a_first_name_that_could_be_two_people_merges_with_neither():
+    out = dedupe_people([p("Alex", background="HEC"), p("Alexandre Kremer"), p("Alexander Ochs")])
+    assert [x["name"] for x in out] == ["Alexandre Kremer", "Alexander Ochs"]
+    assert not any(x.get("background") for x in out)
+
+
+@pytest.mark.parametrize("short, full, match", [
+    ("Alexandre", "Alexandre Kremer", True),        # the first name itself
+    ("Alex", "Alexandre Kremer", True),             # a prefix of three letters or more
+    ("Andi", "Andreas Wagner", True),               # a common short form
+    ("Tom", "Thomas Müller", True),
+    ("Al", "Alexandre Kremer", False),              # too short to be a prefix
+    ("Kremer", "Alexandre Kremer", False),          # a surname alone is not a given name
+    ("Andi", "Alexandre Kremer", False),
+])
+def test_which_first_names_can_name_a_full_name(short, full, match):
+    assert (resolve_short_name(p(short), [p(full)]) is not None) is match
+
+
+def test_a_founder_named_by_first_name_only_in_key_team_is_dropped_there():
+    prof = {"founders": [p("Andreas Wagner")], "key_team": [p("Andi"), p("Ann Lee")]}
+    founders_first(prof)
+    assert [x["name"] for x in prof["key_team"]] == ["Ann Lee"]
+
+
+def test_the_team_refresh_merge_applies_the_same_identity_rules():
+    from core.profile import merge_team
+    run = {"founders": [p("Andreas Wagner", source_url="https://a.example")]}
+    out = merge_team(run, {"founders": [p("Andi (surname not stated)", background="PhD, Cambridge"),
+                                         p("Alex"), p("Unknown")]})
+    assert [x["name"] for x in out["founders"]] == ["Andreas Wagner"]
+    assert out["founders"][0]["background"] == "PhD, Cambridge"

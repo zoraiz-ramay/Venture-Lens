@@ -343,6 +343,7 @@ def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, lab
                 hits[0]["members"] += g["members"]
         groups = [g for g in groups if g["full"]]
 
+    newest_when = max((_when(r) for r in prior_runs or ()), default=None)
     entries, reconfirmed, fresh_count = [], 0, 0
     for g in groups:
         if not live(g):
@@ -367,7 +368,12 @@ def _merge_list(fresh_items, prior_runs, path, fields, getter, report: dict, lab
         # How many runs found it themselves (a carried copy in a later run's record is not a find).
         found_by = len({m["when"] for m in g["members"]
                         if not m["fresh"] and not m["item"].get("last_confirmed_at")}) + found_now
-        entries.append((min(seen) if seen else None, sort_key, entry, found_by))
+        # Shown (not held back) by the newest earlier run: it keeps its slot unless a challenger
+        # has clearly more finds, so near-equal counts do not swap entries back and forth.
+        shown_before = any(not m["fresh"] and m["when"] == newest_when and not m["item"].get("_held")
+                           for m in g["members"])
+        entry.pop("_held", None)
+        entries.append((min(seen) if seen else None, sort_key, entry, found_by + shown_before))
     if cap and len(entries) > cap:
         # Open-ended lists (competitors, peers) gain a name or two on every refresh, so the union
         # never settled: Radical Dot's competitors went 7 -> 9 -> 13. Show the `cap` entities the
@@ -467,17 +473,20 @@ def usable_priors(prior_runs, fresh_identity: dict) -> list:
 
 def merge_profile(fresh: dict, prior_runs: list, now: str, report: dict) -> dict:
     """``fresh`` is research_profile's result: {"profile": deep_profile, "facts": [...], ...}."""
-    if not prior_runs:
-        return fresh
     out = dict(fresh)
     dp = copy.deepcopy(fresh.get("profile") or {})
     fresh_facts = _facts_of(fresh)
+    # Lists are put in their stable order even on a company's first run; otherwise run 1 showed
+    # the model's listing order and run 2 the merged order, so the first refresh reordered them.
     for path, fields in _PROFILE_LISTS:
         merged = _merge_list(_get(dp, path), prior_runs, path, fields,
                              lambda run, p: _get(_profile_of(run), p), report, ".".join(path))
         if merged or _get(dp, path) is not None:
             _set(dp, path, merged)
     founders_first(dp)
+    if not prior_runs:
+        out["profile"] = dp
+        return out
     history = dp["history"] if isinstance(dp.get("history"), dict) else {}
     evaluations = [r for r in prior_runs if not r.get("team_record")]
     for path, spec in _SCALARS:
@@ -661,14 +670,15 @@ def merge_trend(fresh: dict, prior_runs: list, now: str, today: _dt.date, report
             land["market_size"] = None
             report["market_size_dropped"] = {"as_of": (size or {}).get("as_of", ""),
                                              "reason": "a forecast or older than two years"}
-        if prior_runs:
+        if True:                                     # lists settle on a first run as well
             held_back: dict = {}
             for path, fields in _TREND_LISTS:
                 held: list = []
                 land[path[-1]] = _merge_list(
                     _get(out, path), prior_runs, path, fields,
                     lambda run, p: (_get(run.get("trend") or {}, p) or [])
-                    + (_get(run.get("trend") or {}, ("landscape", "held_back", p[-1])) or []),
+                    + [{**i, "_held": True} for i in _get(run.get("trend") or {}, ("landscape", "held_back", p[-1])) or []
+                       if isinstance(i, dict)],
                     report, ".".join(path), cap=LANDSCAPE_CAPS.get(path[-1], 0), overflow=held)
                 if held:
                     held_back[path[-1]] = held

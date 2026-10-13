@@ -631,8 +631,12 @@ def _evaluate(name: str, tools_path: str, do_web: bool = True,
         "traction": traction,
         "traction_inputs": traction_inputs,
     }
-    if priors or carried:
-        result["carry_forward"] = {"prior_runs": len(priors), **carried}
+    # A first run's per-list counts say nothing (everything is new); its notes (a dropped market
+    # figure) still do.
+    notes = {k: v for k, v in carried.items()
+             if not (isinstance(v, dict) and set(v) == {"new", "reconfirmed", "carried"})}
+    if priors or notes:
+        result["carry_forward"] = {"prior_runs": len(priors), **(carried if priors else notes)}
     if departments:
         from .assessment import build_all
         result = build_all(result, deps, pillar_results, team, market)

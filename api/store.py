@@ -940,15 +940,25 @@ def _ensure_company(con: sqlite3.Connection, name: str) -> int:
 
 def latest_enrichment(company: str, kind: str, run_id: int | None = None) -> dict | None:
     """The newest stored result of a lookup for this company (or, for per-run kinds, this run):
-    {**payload, 'stored_at', 'from_store': True}, or None when it was never fetched."""
+    {**payload, 'stored_at', 'from_store': True}, or None when it was never fetched.
+
+    ``company`` may be any string the company is reached by. A per-company kind is resolved through
+    `company_aliases` first: an evaluation looks its team record up by the name the reviewer typed,
+    which is rarely the resolved name the record was filed under, so "radical dot" never found
+    the team refresh stored for "Radical Dot GmbH". The exact-name match stays the fallback."""
+    cid = None if kind in PER_RUN_KINDS else _company_id_for(company)
     with _conn() as con:
         if kind in PER_RUN_KINDS:
             row = con.execute("SELECT payload, fetched_at FROM enrichments WHERE run_id=? AND kind=? "
                               "ORDER BY id DESC LIMIT 1", (run_id, kind)).fetchone()
         else:
-            row = con.execute("SELECT e.payload, e.fetched_at FROM enrichments e JOIN companies c ON c.id=e.company_id "
-                              "WHERE c.name=? COLLATE NOCASE AND e.kind=? ORDER BY e.id DESC LIMIT 1",
-                              (str(company or "").strip(), kind)).fetchone()
+            row = None if cid is None else con.execute(
+                "SELECT payload, fetched_at FROM enrichments WHERE company_id=? AND kind=? "
+                "ORDER BY id DESC LIMIT 1", (cid, kind)).fetchone()
+            if row is None:
+                row = con.execute("SELECT e.payload, e.fetched_at FROM enrichments e JOIN companies c ON c.id=e.company_id "
+                                  "WHERE c.name=? COLLATE NOCASE AND e.kind=? ORDER BY e.id DESC LIMIT 1",
+                                  (str(company or "").strip(), kind)).fetchone()
     if not row:
         return None
     return {**json.loads(row[0]), "stored_at": row[1], "from_store": True}

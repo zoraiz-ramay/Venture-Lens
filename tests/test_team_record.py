@@ -270,6 +270,22 @@ def test_merging_fills_a_known_founders_blanks_and_extends_a_role_without_replac
     assert out[1]["role"] == "COO" and out[1]["background"] == "HEC Paris"         # never overwritten
 
 
+def test_the_team_record_is_found_by_any_name_the_company_is_reached_by(monkeypatch, tmp_path):
+    """An evaluation looks its team record up by the name the reviewer typed (api/main.py), while
+    the record is filed under the resolved name. Matching the exact name only, a refresh typed as
+    "radical dot" never carried the team the section's own Refresh had stored."""
+    from api import store
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "runs.db"))
+    monkeypatch.setattr(store, "_restore_from_s3", lambda: None)
+    monkeypatch.setattr(store, "_upload_to_s3", lambda: None)
+    store.save_run({"company": "Radical Dot GmbH", "found": True, "profile": {"website": "https://radicaldot.test"},
+                    "deep_profile": {}}, aliases=["radical dot"])
+    store.save_enrichment("Radical Dot GmbH", "team", {"founders": [ADA]})
+    assert store.latest_enrichment("radical dot", "team")["founders"] == [ADA]
+    assert store.latest_enrichment("Radical Dot GmbH", "team")["founders"] == [ADA]
+    assert store.latest_enrichment("someone else", "team") is None
+
+
 def test_a_searched_team_is_really_stored_and_the_next_open_reads_it(monkeypatch, tmp_path, poll):
     """The other tests stub the store; "team" was not a stored kind, so the save was a silent no-op
     and every open searched again."""
